@@ -5,6 +5,18 @@ option(
     description: 'Build the C++ shared libraries.'
 )
 option(
+    'sbio_data_formats',
+    type: 'string',
+    value: 'xtc2',
+    description: 'Select data formats to build. Provide multiple with comma separator. Options: all, xtc1, xtc2',
+)
+option(
+    'build_mpi',
+    type: 'string',
+    value: 'auto',
+    description: 'Whether to build MPI support and if so how. Choices: auto, mpich, ompi, none'
+)
+option(
     'build_python',
     type: 'boolean',
     value: true,

@@ -95,9 +95,16 @@ endif
 #############################
 # Core options
 build_core_opt = get_option('build_core')
+sbio_data_formats_opt = get_option('sbio_data_formats')
+build_mpi_opt = get_option('build_mpi')
 build_python_opt = get_option('build_python')
 sbio_cuda_archs_opt = get_option('sbio_cuda_archs')
 sbio_as_wheel_opt = get_option('sbio_as_wheel')
+
+if not build_python_opt and sbio_as_wheel_opt
+    warning('Requested wheel-build, but not Python bindings. Overriding and will build Python bindings!')
+    build_python_opt = true
+endif
 
 # Add-ons and development
 build_examples_opt = get_option('build_examples')
@@ -173,6 +180,37 @@ else
     endforeach
 endif
 
+#### Parse Chosen Data Formats to Build ####
+############################################
+sbio_build_xtc1 = false
+sbio_build_xtc2 = false
+
+if sbio_data_formats_opt == 'all'
+    sbio_build_xtc1 = true
+    sbio_build_xtc2 = true
+else
+    selected_formats = sbio_data_formats_opt.split(',')
+    foreach data_fmt : selected_formats
+        data_fmt = data_fmt.strip()
+        if data_fmt == 'xtc1'
+            sbio_build_xtc1 = true
+        elif data_fmt == 'xtc2'
+            sbio_build_xtc2 = true
+        else
+            warning('Provided unrecognized data format which will be skipped: ' + data_fmt)
+        endif
+    endforeach
+endif
+
+if sbio_build_xtc1
+    add_project_arguments('-DSBIO_HAS_XTC1', language: ['cpp', 'cuda'])
+    message('Will build XTC1 data format support.')
+endif
+if sbio_build_xtc2
+    add_project_arguments('-DSBIO_HAS_XTC2', language: ['cpp', 'cuda'])
+    message('Will build XTC2 data format support.')
+endif
+
 #### Main Python Setup ####
 ###########################
 
@@ -236,22 +274,59 @@ endif
 deps_for_sbio += ncarray_dep
 
 #### MPI
-mpi_dep = dependency('mpi', language: 'cpp', required: true)
-deps_for_sbio += mpi_dep
+if build_mpi_opt == 'none'
+    message('Skipping MPI support.')
+else
+    try_sys = false
+    try_mpich = false
+    try_ompi = false
+    if build_mpi_opt == 'auto'
+        try_sys = true
+        try_mpich = true
+        try_ompi = true
+    endif
+    if build_mpi_opt == 'mpich'
+        try_mpich = true
+    endif
+    if build_mpi_opt == 'ompi'
+        try_ompi = true
+    endif
+
+    found_mpi = false
+    bundle_mpi = false # Only bundle if using subproject
+    if try_sys
+        mpi_dep = dependency('mpi', language: 'cpp', required: false)
+        if mpi_dep.found()
+            found_mpi = true
+        endif
+    endif
+    if not found_mpi and try_mpich
+        message('Will try building MPICH subproject.')
+        mpi_proj = subproject('mpich')
+        mpi_dep = mpi_proj.get_variable('mpich_dep')
+        bundle_mpi = true
+        found_mpi = true
+    endif
+    if not found_mpi and try_ompi
+        message('Will try building OpenMPI subproject.')
+        mpi_proj = subproject('ompi')
+        mpi_dep = mpi_proj.get_variable('ompi_dep')
+        bundle_mpi = true
+        found_mpi = true
+    endif
+
+    if not found_mpi
+        warning('MPI was requested, but was not built!')
+    else
+        add_project_arguments('-DSBIO_HAS_MPI', language: ['cpp', 'cuda'])
+        deps_for_sbio += mpi_dep
+    endif
+endif # MPI builds
 
 #### OpenMP
 #openmp_dep = dependency('openmp', required: true)
 
 #### pybind11
-if build_python_opt
-    pybind11_dep = dependency('pybind11', required: false)
-    if not pybind11_dep.found()
-        message('pybind11 not found, but required for Python bindings - will build subproject.')
-        pybind11_proj = subproject('pybind11')
-        pybind11_dep = pybind11_proj.get_variable('pybind11_dep')
-    endif # pybind11 not found
-endif
-
 if build_python_opt
     pybind11_dep = dependency('pybind11', required: false)
     if not pybind11_dep.found()
@@ -277,7 +352,7 @@ else
     if (xalg_libs_raw.length() == 0) or (xalg_libs_raw.length() == 1  and xalg_libs_raw[0] == '')
         message('XAlgosPP not found via Python - will use subproject.')
         xalg_proj = subproject('xalgospp')
-        xalgospp_dep = ncarray_proj.get_variable('xalgospp_dep')
+        xalgospp_dep = xalg_proj.get_variable('xalgospp_dep')
     else
         fs = import('fs')
         xalg_link_args = []
@@ -374,7 +449,7 @@ installed_core_headers = [
     'src/lib/sbio/core/execution.hh',
     'src/lib/sbio/core/io.hh',
     'src/lib/sbio/core/pipeline.hh',
-    'src/lib/sbio/core/storage.hh,'
+    'src/lib/sbio/core/storage.hh',
     'src/lib/sbio/core/stream.hh',
     'src/lib/sbio/core/sync.hh',
     'src/lib/sbio/core/utility.hh',
@@ -389,13 +464,13 @@ installed_formats_headers = [
     'src/lib/sbio/formats/format_traits.hh',
 ]
 
-# installed_formats_xtc1_headers = [
-#     'src/lib/sbio/formats/xtc1/registry.hh',
-#     'src/lib/sbio/formats/xtc1/traversal.hh',
-#     'src/lib/sbio/formats/xtc1/xtc1.hh',
-#     'src/lib/sbio/formats/xtc1/xtc1_schemas.hh',
-#     'src/lib/sbio/formats/xtc1/xtc1_traits.hh',
-# ]
+installed_formats_xtc1_headers = [
+    'src/lib/sbio/formats/xtc1/registry.hh',
+    'src/lib/sbio/formats/xtc1/traversal.hh',
+    'src/lib/sbio/formats/xtc1/xtc1.hh',
+    'src/lib/sbio/formats/xtc1/xtc1_schemas.hh',
+    'src/lib/sbio/formats/xtc1/xtc1_traits.hh',
+]
 
 installed_formats_xtc2_headers = [
     'src/lib/sbio/formats/xtc2/traversal.hh',
@@ -408,6 +483,12 @@ installed_mpi_headers = [
     'src/lib/sbio/mpi/storage.hh',
 ]
 
+installed_py_bindings_headers = [
+    'src/lib/pysbio/pydatasource.hh',
+    'src/lib/pysbio/pydetector.hh',
+    'src/lib/pysbio/utilities.hh',
+]
+
 #### Core Library and Definitions
 
 # Headers are always fully qualified using `sbio/core/...` `sbio/formats/...`
@@ -415,56 +496,63 @@ installed_mpi_headers = [
 sbio_headers = include_directories('src/lib')
 
 if build_core_opt
-    libxtc2slim = shared_library(
-        'xtc2slim',
-        [
-            'src/lib/sbio/formats/xtc2/xtc2.cc',
-            'src/lib/sbio/formats/xtc2/traversal.cc',
-        ],
-        include_directories: sbio_headers,
-        install: true,
-        install_dir: libsbio_install_dir,
-        install_rpath: lib_install_rpath,
-        version: '1',
-        soversion: '1',
-    )
+    core_sources = ['src/lib/sbio/posix_io.cc']
 
-    xtc2slim_dep = declare_dependency(
-        link_with: [
-            libxtc2slim,
-        ],
-        include_directories: sbio_headers,
-    )
+    if sbio_build_xtc1
+        libxtc1slim = shared_library(
+            'xtc1slim',
+            [
+                'src/lib/sbio/formats/xtc1/xtc1.cc',
+                'src/lib/sbio/formats/xtc1/traversal.cc',
+            ],
+            include_directories: sbio_headers,
+            install: true,
+            install_dir: libsbio_install_dir,
+            install_rpath: lib_install_rpath,
+            version: '1',
+            soversion: '1',
+        )
 
+        xtc1slim_dep = declare_dependency(
+            link_with: [
+                libxtc1slim,
+            ],
+            include_directories: sbio_headers,
+        )
+        deps_for_sbio += xtc1slim_dep
 
-    # libxtc1slim = shared_library(
-    #     'xtc1slim',
-    #     [
-    #         'src/lib/sbio/formats/xtc1/xtc1.cc',
-    #         'src/lib/sbio/formats/xtc1/traversal.cc',
-    #     ],
-    #     include_directories: sbio_headers,
-    #     install: true,
-    #     install_dir: libsbio_install_dir,
-    #     install_rpath: lib_install_rpath,
-    #     version: '1',
-    #     soversion: '1',
-    # )
+        core_sources += ['src/lib/sbio/formats/xtc1/xtc1_traits.cc']
+    endif
 
-    # xtc1slim_dep = declare_dependency(
-    #     link_with: [
-    #         libxtc1slim,
-    #     ],
-    #     include_directories: sbio_headers,
-    # )
+    if sbio_build_xtc2
+        libxtc2slim = shared_library(
+            'xtc2slim',
+            [
+                'src/lib/sbio/formats/xtc2/xtc2.cc',
+                'src/lib/sbio/formats/xtc2/traversal.cc',
+            ],
+            include_directories: sbio_headers,
+            install: true,
+            install_dir: libsbio_install_dir,
+            install_rpath: lib_install_rpath,
+            version: '1',
+            soversion: '1',
+        )
+
+        xtc2slim_dep = declare_dependency(
+            link_with: [
+                libxtc2slim,
+            ],
+            include_directories: sbio_headers,
+        )
+        deps_for_sbio += xtc2slim_dep
+
+        core_sources += ['src/lib/sbio/formats/xtc2/xtc2_traits.cc']
+    endif
 
     libsbio = shared_library(
         'sbio',
-        [
-            # 'src/lib/sbio/formats/xtc1/xtc1_traits.cc',
-            'src/lib/sbio/formats/xtc2/xtc2_traits.cc',
-            'src/lib/sbio/posix_io.cc',
-        ],
+        core_sources,
         dependencies: deps_for_sbio,
         include_directories: sbio_headers,
         install: true,
@@ -511,11 +599,26 @@ if build_core_opt
             installed_mpi_headers,
             install_dir: header_install_dir / 'sbio/mpi',
         )
+
+        # Python bindings headers - we'll always provide headers even without bindings
+        install_headers(
+            installed_py_bindings_headers,
+            install_dir: header_install_dir / 'pysbio',
+        )
     endif # not nca_as_wheel_opt
 else
     libsbio = cpp.find_library('sbio', required: true)
+    found_libs = [libsbio]
+    if sbio_build_xtc1
+        libxtc1slim = cpp.find_library('xtc1slim', required: true)
+        found_libs += [libxtc1slim]
+    endif
+    if sbio_build_xtc2
+        libxtc2slim = cpp.find_library('xtc2slim', required: true)
+        found_libs += [libxtc2slim]
+    endif
     sbio_dep = declare_dependency(
-        dependencies: deps_for_sbio + [libsbio],
+        dependencies: deps_for_sbio + found_libs,
         include_directories: sbio_headers,
     )
 endif # end build_core_opt
@@ -525,7 +628,7 @@ endif # end build_core_opt
 
 if build_python_opt
     # Figure out dependencies
-    deps_for_py_mod = deps_for_sbio + [pybind11_dep, py3_dep]
+    deps_for_py_mod = deps_for_sbio + [pybind11_dep, py3_dep, sbio_dep]
 
     # If building bindings as a wheel, install the headers into the package itself
     # If not building as a wheel, then these should be installed in prefix/include when
@@ -566,18 +669,19 @@ if build_python_opt
             pure: false,
             subdir: 'sbio/include/sbio/mpi',
         )
-    endif # sbio_as_wheel_opt
 
-    py_bindings_headers = [
-        'src/lib/pysbio/pydatasource.hh',
-        'src/lib/pysbio/pydetector.hh',
-        'src/lib/pysbio/utilities.hh',
-    ]
-    py3.install_source(
-        py_bindings_headers,
-        pure: false,
-        subdir: 'sbio/include/pysbio',
-    )
+        # Also add the headers for the bindings
+        py3.install_sources(
+            installed_py_bindings_headers,
+            pure: false,
+            subdir: 'sbio/include/pysbio',
+        )
+
+        # if bundle_mpi
+        #  ... do something to relink mpirun ....
+        # endif # bundle_mpi
+
+    endif # sbio_as_wheel_opt
 
     py_mod = py3.extension_module(
         '_pysbio',

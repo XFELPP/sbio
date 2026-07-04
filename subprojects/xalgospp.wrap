@@ -1,0 +1,8 @@
+[wrap-git]
+#url = https://github.com/XFELPP/XAlgosPP.git
+url = git@github.com:XFELPP/XAlgosPP
+revision = ENH/staging
+depth = 1
+
+[provide]
+xalgospp = xalgospp_dep
