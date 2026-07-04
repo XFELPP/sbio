@@ -293,6 +293,7 @@ namespace sbio {
       char name[MaxNameSize];
       char type[MaxNameSize];
       char alg[MaxNameSize];
+      char detId[MaxNameSize];
       unsigned segment;
     };
 

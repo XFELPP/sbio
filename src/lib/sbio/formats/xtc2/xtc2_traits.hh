@@ -222,6 +222,7 @@ namespace sbio {
       char detname[MaxNameSize];
       std::uint32_t segment;
       char algname[MaxNameSize];
+      char detId[MaxNameSize];
 
       SBIO_HD inline bool operator<(const DetAlgKey& other) const {
         int cmp = std::strcmp(dettype, other.dettype);

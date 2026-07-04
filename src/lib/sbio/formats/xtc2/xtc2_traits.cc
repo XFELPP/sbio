@@ -66,6 +66,7 @@ namespace {
       XTC2::safe_strncpy(n_map.key.dettype, det.type);
       XTC2::safe_strncpy(n_map.key.detname, det.name);
       XTC2::safe_strncpy(n_map.key.algname, det.alg);
+      XTC2::safe_strncpy(n_map.key.detId, det.detId);
       n_map.key.segment = det.segment;
       n_map.names_id = nid;
       // Jump Tables

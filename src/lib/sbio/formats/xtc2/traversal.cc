@@ -53,6 +53,7 @@ namespace sbio {
                              names->detName(),
                              names->alg().name(),
                              names->detType(),
+                             names->detId(),
                              names->segment(),
                              offset);
 

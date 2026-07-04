@@ -378,6 +378,49 @@ else
 endif
 deps_for_sbio += xalgospp_dep
 
+## TODO: See if possible to make XAlgosPP headers not need transitive includes.
+##       This may not be feasible - and with the wheel-based provisions, the
+##       pure dependency mechanism from the meson object would not suffice,
+##       so, we may require these vendored subprojects long term.
+################################################################################
+cpp_httplib_dep = dependency('cpp-httplib', required: false)
+if not cpp_httplib_dep.found()
+    message('cpp-httplib not found - using subproject')
+    # cpp-httplib deps:
+    brotli_proj = subproject('google-brotli')
+    zlib_proj = subproject('zlib')
+
+    # Now build
+    cpp_httplib_proj = subproject('cpp-httplib')
+    cpp_httplib_dep = cpp_httplib_proj.get_variable('cpp_httplib_dep')
+endif
+deps_for_sbio += cpp_httplib_dep
+
+eigen_dep = dependency('eigen', required: false)
+if not eigen_dep.found()
+    message('eigen not found - using subproject')
+    eigen_proj = subproject('eigen')
+    eigen_dep = dependency('eigen3')
+endif
+deps_for_sbio += eigen_dep
+
+rapidjson_dep = dependency('rapidjson', required: false)
+if not rapidjson_dep.found()
+    message('rapidjson not found - using subproject')
+    rapidjson_proj = subproject('rapidjson')
+    rapidjson_dep = rapidjson_proj.get_variable('rapidjson_dep')
+endif
+deps_for_sbio += rapidjson_dep
+
+spdlog_dep = dependency('spdlog', required: false)
+if not spdlog_dep.found()
+    message('spdlog not found - using subproject')
+    spdlog_proj = subproject('spdlog')
+    spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
+endif
+deps_for_sbio += spdlog_dep
+################################################################################
+
 #### Path Setup ####
 ####################
 
