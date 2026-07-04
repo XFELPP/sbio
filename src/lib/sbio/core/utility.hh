@@ -20,8 +20,12 @@
 #ifndef SBIO_CORE_UTILITY_HH
 #define SBIO_CORE_UTILITY_HH
 
+#ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_traits.hh"
+#endif
+#ifdef SBIO_HAS_XTC2
 #include "sbio/formats/xtc2/xtc2_traits.hh"
+#endif
 
 #include "ncarray/ncarrays.hh"
 
@@ -36,6 +40,7 @@ typedef SSIZE_T ssize_t;
 #include <vector>
 
 namespace sbio {
+#ifdef SBIO_HAS_XTC1
   inline ncarray::DType to_ncarray_dtype(XTC1::DType type) {
     switch (type) {
     case XTC1::DType::UINT8:
@@ -62,7 +67,9 @@ namespace sbio {
       return ncarray::DType::uint8;
     }
   }
+#endif
 
+#ifdef SBIO_HAS_XTC2
   inline ncarray::DType to_ncarray_dtype(XTC2::DType type) {
     switch (type) {
     case XTC2::DType::UINT8:
@@ -89,6 +96,7 @@ namespace sbio {
       return ncarray::DType::uint8;
     }
   }
+#endif
 
   template <typename MemTag = ncarray::HostTag>
   ncarray::NCViewFor<MemTag> as_ncarray(const void** data,
