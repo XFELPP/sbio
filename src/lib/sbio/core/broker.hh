@@ -99,6 +99,7 @@ namespace sbio {
    * I suspect this can genericaly expose the required interfaces.
    */
   template <
+    class Derived,
     IOTraits IO,
     class EPolicy,
     FormatTraits FTraits
@@ -146,7 +147,8 @@ namespace sbio {
      *
      * @param[in] cfg The data format specif configuration parameters.
      */
-    SBIO_HD inline void configure_broker(this auto&& self, const Config& cfg) {
+    SBIO_HD inline void configure_broker(const Config& cfg) {
+      auto& self = *static_cast<Derived*>(this);
       self.m_config = cfg;
     }
 
@@ -155,7 +157,8 @@ namespace sbio {
      *
      * This corresponds to the ALLOCATE stage of the state machine.
      */
-    SBIO_HD inline void allocate_storage(this auto&& self) {
+    SBIO_HD inline void allocate_storage() {
+      auto& self = *static_cast<Derived *>(this);
       self.m_broker_state = BrokerState::ALLOCATE;
 
       AllocationRequest<FTraits> request;
@@ -172,7 +175,8 @@ namespace sbio {
      *
      * This corresponds to the CONNECT stage of the state machine.
      */
-    SBIO_HD inline IOStatus open_data_stream(this auto&& self) {
+    SBIO_HD inline IOStatus open_data_stream() {
+      auto& self = *static_cast<Derived *>(this);
       self.m_broker_state = BrokerState::CONNECT;
       return self.open_data_stream_impl();
     }
@@ -186,7 +190,9 @@ namespace sbio {
      * This corresponds to the DISCOVERY stage of the state machine.
      * @returns An IOStatus for whether metadata reads were successful.
      */
-    SBIO_HD inline IOStatus discover_metadata(this auto&& self) {
+    SBIO_HD inline IOStatus discover_metadata() {
+      auto& self = *static_cast<Derived*>(this);
+
       self.m_broker_state = BrokerState::DISCOVERY;
       EPolicy::template pre_discovery<decltype(self), FTraits>(self,
                                                                self.m_metadata_inv);
@@ -204,7 +210,9 @@ namespace sbio {
     // A higher-level wrapper for the INIT -> READY stages
     // In general, you will want to allocate, connect and discover in one swoop.
     // The low-level breakdown is available if you need more precise control, though.
-    SBIO_HD inline IOStatus prepare(this auto&& self) {
+    SBIO_HD inline IOStatus prepare() {
+      auto& self = *static_cast<Derived*>(this);
+
       // Proceed through allocation
       self.allocate_storage();
 
@@ -227,7 +235,9 @@ namespace sbio {
      * This corresponds to the INDEXING stage of the state machine.
      * @returns An IOStatus for whether indexing was successful.
      */
-    SBIO_HD inline IOStatus index_stream(this auto&& self) {
+    SBIO_HD inline IOStatus index_stream() {
+      auto& self = *static_cast<Derived*>(this);
+
       self.m_broker_state = BrokerState::INDEXING;
 
       EPolicy::template pre_update<IndexRole>(self.m_storage);
@@ -263,9 +273,10 @@ namespace sbio {
      * @param[in] ptn A lookup pattern. Some data formats support access in various ways.
      * @returns An IOStatus for whether the lookup was succesful.
      */
-    SBIO_HD inline IOStatus fetch_step(this auto&& self,
-                                       StepIdxType step_idx,
+    SBIO_HD inline IOStatus fetch_step(StepIdxType step_idx,
                                        const DataAccessPtn ptn) {
+      auto& self = *static_cast<Derived*>(this);
+
       self.m_broker_state = BrokerState::STREAMING;
 
       EPolicy::template pre_update<DataRole>(self.m_storage);
@@ -313,17 +324,23 @@ namespace sbio {
     }
     */
 
-    SBIO_HD inline IOStatus process(this auto&& self) {
+    SBIO_HD inline IOStatus process() {
+      auto& self = *static_cast<Derived*>(this);
+
       return self.process();
     }
 
-    SBIO_HD inline IOStatus run(this auto&& self) {
+    SBIO_HD inline IOStatus run() {
+      auto& self = *static_cast<Derived*>(this);
+
       return self.run();
     }
 
     // Provide option to include callback?
     template <class CBType>
-    SBIO_HD inline IOStatus step(this auto&& self, CBType&& callback) {
+    SBIO_HD inline IOStatus step(CBType&& callback) {
+      auto& self = *static_cast<Derived*>(this);
+
       return self.step(std::forward<CBType>(callback));
     }
 
@@ -359,7 +376,11 @@ namespace sbio {
      *
      * @returns The current capacity: the number of immediately available indices.
      */
-    SBIO_HD inline std::size_t capacity(this auto&& self) { return self.capacity(); }
+    SBIO_HD inline std::size_t capacity() {
+      auto& self = *static_cast<Derived*>(this);
+
+      return self.capacity();
+    }
 
     // Functions to set and retrieve buffers
     /**
@@ -374,7 +395,9 @@ namespace sbio {
      *
      * @returns A pointer to the buffer filled after a fetch from (a) Stream(s).
      */
-    SBIO_HD inline typename FTraits::DataUnit* current_buffer(this auto&& self) {
+    SBIO_HD inline typename FTraits::DataUnit* current_buffer() {
+      auto& self = *static_cast<Derived*>(this);
+
       return self.current_buffer();
     }
 
@@ -390,9 +413,10 @@ namespace sbio {
      * @returns A data-format-dependent result object with the requested data.
      */
     SBIO_HD inline DataResult
-    get_data_in_buffer(this auto&& self,
-                       const DataRequest& req,
+    get_data_in_buffer(const DataRequest& req,
                        const DataAccessPtn ptn) {
+      auto& self = *static_cast<Derived*>(this);
+
       return self.get_data_in_buffer(req, ptn);
     }
 
@@ -404,7 +428,9 @@ namespace sbio {
      *
      * @returns The compiled metadata from the brokered Stream(s).
      */
-    SBIO_HD inline MetadataInventory& metadata(this auto&& self) {
+    SBIO_HD inline MetadataInventory& metadata() {
+      auto& self = *static_cast<Derived*>(this);
+
       return self.m_metadata_inv;
     }
 
@@ -422,7 +448,9 @@ namespace sbio {
      *
      * @param[in] The metadata to provide the Broker with.
      */
-    SBIO_HD inline void set_metadata(this auto&& self, MetadataInventory& metadata) {
+    SBIO_HD inline void set_metadata(MetadataInventory& metadata) {
+      auto& self = *static_cast<Derived*>(this);
+
       self.m_metadata_inv = metadata;
     }
 

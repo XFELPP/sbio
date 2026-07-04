@@ -137,7 +137,9 @@ namespace sbio {
      * that role, without having to know the number, or to iterate them itself.
      */
     template <class Role, class CBType>
-    SBIO_HD void for_each_role(this auto&& self, CBType&& callback) {
+    SBIO_HD void for_each_role(CBType&& callback) {
+      auto& self = *this;
+
       // For the Roles pack, on expansion, if the individual Role matches the Role
       // provided to this function, run the callback. Otherwise, do nothing.
       ( (std::is_same_v<class Roles::role, Role> ? callback(self.template get<Roles>()) : void()), ... );
