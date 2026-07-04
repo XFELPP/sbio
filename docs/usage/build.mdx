@@ -1,0 +1,93 @@
+---
+title: Building from Source
+description: "Stream Broker IO: sbio"
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## General Information
+
+`sbio` uses `meson` as its build system. It will also require a relatively modern compiler for C++23 support. If building with GPU support it then also requires the CUDA toolkit.
+
+In general, the steps for building are:
+
+```bash
+meson setup $MY_BUILD_DIR # --prefix=$MY_INSTALL_DIR #-Dbuildtype=debug # (or release etc).
+meson compile -C $MY_BUILD_DIR
+meson install -C $MY_BUILD_DIR
+# For tests:
+meson test -C $MY_BUILD_DIR
+```
+
+### Requirements
+
+In addition to `meson` the following dependencies are needed:
+- `meson`
+- `ninja`
+- `meson-python`
+
+The remaining dependencies are vendored through the `meson` subprojects system. `ncarray` requires `Python >= 3.8`. The core dependencies are:
+
+- `ncarray` - the documentation is available [here](../../ncarray)
+- `XAlgosPP` - the documentation is available [here](../../xalgospp)
+
+Additionally, there are further dependencies that are optional given the build options. However, they are likely to be needed to get the most utility from the project:
+
+- `MPI` - [MPICH](https://www.mpich.org/) and [OpenMPI](https://www.open-mpi.org/) can both be used directly from the project and have been tested. Any suitable MPI implementation with a conforming specification and support for OSC/shared memory APIs will likely also work. This would need to be provided by your environment, however.
+- `CUDA` - CUDA Toolkit 12 or 13 would be recommended.
+
+## Compiler Matrix
+
+`sbio` requires at least `gcc >= 12` (although `gcc >= 13` is recommended, if permitted by CUDA version), `clang > 15`, or `msvc >= 19.30`. Other compilers may work but are not tested.
+
+If building with CUDA support then for CUDA Version:
+- `CUDA < 12.4` you must use `gcc > 12 && gcc < 13`, `clang > 16 && clang < 17`, `msvc >= 19.30 && msvc < 19.38 (VS 2022 < 17.8)`
+- `CUDA >= 12.4 && CUDA < 12.8` you must use `gcc > 12 && gcc < 14`, `clang > 16 && clang < 19`, `msvc >= 19.30 && msvc < 19.41 (VS 2022 < 17.11)`
+- `CUDA >= 12.8` you must use `gcc > 12 && gcc < 15`, `clang > 16 && clang < 20`, `msvc >= 19.30 && msvc < 19.50 (VS 2022 < 18.0)`
+
+## Buid Options and Setup
+
+There are a number of flags which can be provided when running the `meson setup`:
+
+- `build_core` : bool flag for whether to build the C++ libraries.
+- `sbio_data_formats` : string for the core data formats to be built. Currently `xtc1`, `xtc2`, or `all` (for both `xtc1` and `xtc2`) are supported
+- `build_mpi` : string for if and how to build MPI. Passing `none` will disable MPI support. `auto` will search for an existing MPI installation, then try MPICH and OpenMPI in that order. `mpich` or `ompi` can alternatively be provided to build either of those two options.
+- `build_python` : bool flag for whether to build the Python bindings.
+- `sbio_cuda_archs` : A string of architectures for building CUDA fat binaries, or, alternatively, the string `all`, in which case architectures `75,80,86,89` and `90` are built (with `compute_90` at the end for PTX forward compatibility).
+- `sbio_as_wheel` : bool flag for whether to build as the combined standard wheel. If not, it is expected that the wheel will built as `build_core=true build_python=false` in one phase, and `build_core=false build_python=true` in a second.
+  - NOTE: If passing `sbio_as_wheel`, `build_python` is necessary. If `build_python=false` is passed while `sbio_as_wheel=true` is passed, `build_python` will be set to `true`.
+- `build_examples` : bool flag for whether to build the example programs. These are small executables and in general are not needed. The tests are always built as part of `build_core`.
+
+Each of these flags is passed as an option during the `meson setup` stage using the `-D` prefix. E.g.
+
+```bash
+meson setup <builddir> -Dbuild_core=true -Dbuild_python=false -Dbuild_mpi=auto
+```
+
+You can use any build directory of your choosing for `<builddir>`
+
+## Compilation
+
+After running the `meson setup` command using the choice of options you prefer, compilation can be done using:
+
+```bash
+meson compile -C <builddir>
+```
+
+The number of parallel jobs can be controlled with `-j <jobs>` during this step. `-l <load>` can also be used to try and tweak load. By default as many jobs will be launched as independent processors are available.
+
+In general, it is not necessary to override the default for `sbio`. The most intensive compilation steps are if building a vendored MPI version; however, it will likely be fine to use the defaults, even in this case.
+
+## Building via `pip`
+
+You can also run `pip install .` directly after cloning the repo:
+
+```bash
+git clone git@github.com:XFELPP/sbio
+cd ncarray
+pip install . # --prefix=....
+```
+
+This will be moderately slow compared to parallel builds with meson directly.
