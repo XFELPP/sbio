@@ -742,4 +742,15 @@ if build_python_opt
         build_rpath: py_to_lib_install_rpath,
         # link_args: py_mod_link_args,
     )
+
+    py3.install_sources(
+        'src/sbio/__init__.py',
+        pure: false,
+        subdir: 'sbio',
+    )
+    py3.install_sources(
+        'src/sbio/core/__init__.py',
+        pure: false,
+        subdir: 'sbio/core',
+    )
 endif # build_python_opt
