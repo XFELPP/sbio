@@ -67,75 +67,6 @@ namespace sbio {
       return ncarray::DType::uint8;
     }
   }
-#endif
-
-#ifdef SBIO_HAS_XTC2
-  inline ncarray::DType to_ncarray_dtype(XTC2::DType type) {
-    switch (type) {
-    case XTC2::DType::UINT8:
-      return ncarray::DType::uint8;
-    case XTC2::DType::UINT16:
-      return ncarray::DType::uint16;
-    case XTC2::DType::UINT32:
-      return ncarray::DType::uint32;
-    case XTC2::DType::UINT64:
-      return ncarray::DType::uint64;
-    case XTC2::DType::INT8:
-      return ncarray::DType::int8;
-    case XTC2::DType::INT16:
-      return ncarray::DType::int16;
-    case XTC2::DType::INT32:
-      return ncarray::DType::int32;
-    case XTC2::DType::INT64:
-      return ncarray::DType::int64;
-    case XTC2::DType::FLOAT:
-      return ncarray::DType::float32;
-    case XTC2::DType::DOUBLE:
-      return ncarray::DType::float64;
-    default:
-      return ncarray::DType::uint8;
-    }
-  }
-#endif
-
-  template <typename MemTag = ncarray::HostTag>
-  ncarray::NCViewFor<MemTag> as_ncarray(const void** data,
-                                        const std::size_t n_segments,
-                                        const XTC2Traits::DataResult& res) {
-    std::vector<ssize_t> shape;
-
-    shape.push_back(n_segments); // First axis is pointer to segments
-    for (std::uint16_t i = 0; i < res.rank; ++i) {
-      auto dim_shape = res.shape[i];
-      if (dim_shape == 1) {
-        // We can "auto-squeeze" for convenience.
-        continue;
-      }
-      shape.push_back(dim_shape);
-    }
-
-    // NOTE: The rank is now 1 larger than the data panels (for segment axis)
-    std::size_t rank { shape.size() };
-    ncarray::DType dtype { to_ncarray_dtype(res.dtype) };
-
-    ssize_t cur { ncarray::itemsize(dtype) };
-    std::vector<ssize_t> strides(rank, cur); // Axis (rank - 1) has stride itemsize
-    strides[0] = 1; // Axis 0 has stride of 1 (1 pointer at a time)
-    // Calculate strides for axes 1...N in reverse
-    for (int i = rank - 1; i >= 0; --i) {
-      strides[i] = cur;
-      cur *= shape[i];
-    }
-
-    ssize_t ptr_axis { 0 };
-    return ncarray::NCViewFor<MemTag>(reinterpret_cast<void*>(const_cast<void**>(data)),
-                                      static_cast<ssize_t>(shape.size()),
-                                      shape.data(),
-                                      strides.data(),
-                                      dtype,
-                                      ptr_axis,
-                                      false);
-  }
 
   template <typename MemTag = ncarray::HostTag>
   ncarray::NCViewFor<MemTag> as_ncarray(const void** data,
@@ -175,6 +106,75 @@ namespace sbio {
                                       ptr_axis,
                                       false);
   }
+#endif // SBIO_HAS_XTC1
+
+#ifdef SBIO_HAS_XTC2
+  inline ncarray::DType to_ncarray_dtype(XTC2::DType type) {
+    switch (type) {
+    case XTC2::DType::UINT8:
+      return ncarray::DType::uint8;
+    case XTC2::DType::UINT16:
+      return ncarray::DType::uint16;
+    case XTC2::DType::UINT32:
+      return ncarray::DType::uint32;
+    case XTC2::DType::UINT64:
+      return ncarray::DType::uint64;
+    case XTC2::DType::INT8:
+      return ncarray::DType::int8;
+    case XTC2::DType::INT16:
+      return ncarray::DType::int16;
+    case XTC2::DType::INT32:
+      return ncarray::DType::int32;
+    case XTC2::DType::INT64:
+      return ncarray::DType::int64;
+    case XTC2::DType::FLOAT:
+      return ncarray::DType::float32;
+    case XTC2::DType::DOUBLE:
+      return ncarray::DType::float64;
+    default:
+      return ncarray::DType::uint8;
+    }
+  }
+
+  template <typename MemTag = ncarray::HostTag>
+  ncarray::NCViewFor<MemTag> as_ncarray(const void** data,
+                                        const std::size_t n_segments,
+                                        const XTC2Traits::DataResult& res) {
+    std::vector<ssize_t> shape;
+
+    shape.push_back(n_segments); // First axis is pointer to segments
+    for (std::uint16_t i = 0; i < res.rank; ++i) {
+      auto dim_shape = res.shape[i];
+      if (dim_shape == 1) {
+        // We can "auto-squeeze" for convenience.
+        continue;
+      }
+      shape.push_back(dim_shape);
+    }
+
+    // NOTE: The rank is now 1 larger than the data panels (for segment axis)
+    std::size_t rank { shape.size() };
+    ncarray::DType dtype { to_ncarray_dtype(res.dtype) };
+
+    ssize_t cur { ncarray::itemsize(dtype) };
+    std::vector<ssize_t> strides(rank, cur); // Axis (rank - 1) has stride itemsize
+    strides[0] = 1; // Axis 0 has stride of 1 (1 pointer at a time)
+    // Calculate strides for axes 1...N in reverse
+    for (int i = rank - 1; i >= 0; --i) {
+      strides[i] = cur;
+      cur *= shape[i];
+    }
+
+    ssize_t ptr_axis { 0 };
+    return ncarray::NCViewFor<MemTag>(reinterpret_cast<void*>(const_cast<void**>(data)),
+                                      static_cast<ssize_t>(shape.size()),
+                                      shape.data(),
+                                      strides.data(),
+                                      dtype,
+                                      ptr_axis,
+                                      false);
+  }
+#endif // SBIO_HAS_XTC2
 } // namespace sbio
 
 #endif // SBIO_CORE_UTILITY_HH
