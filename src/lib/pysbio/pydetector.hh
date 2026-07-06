@@ -107,10 +107,15 @@ namespace pysbio {
     {}
 
     void stage_calibration(const Calibrator::Params& params) {
-      auto adjusted_params = params;
-      adjusted_params.det_serial_no = this->serial_number;
-      calibrator = std::make_shared<Calibrator>(params);
-      calibrator.stage();
+      auto det_visitor = [&](auto& det) {
+        auto adjusted_params = params;
+        adjusted_params.det_serial_no = this->serial_number;
+        calibrator = std::make_shared<Calibrator>(adjusted_params);
+
+        det.prepare_group_algorithm(*calibrator);
+      };
+
+      std::visit(det_visitor, det);
     }
 
     const std::string& get_serial_number() const { return serial_number; }

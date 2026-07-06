@@ -138,7 +138,13 @@ namespace sbio {
      */
     template <FormatTraits FTraits>
     SBIO_HD static auto allocate_storage(AllocationRequest<FTraits>& request) {
-      return Derived::template allocate_storage_impl<FTraits>(request);
+      using Requirements = typename FTraits::BrokerBufferRequirements;
+      return Derived::template allocate_storage_impl<Requirements, FTraits>(request);
+    }
+
+    template <IsTypeList Requirements, FormatTraits FTraits>
+    SBIO_HD static auto allocate_storage(AllocationRequest<FTraits>& request) {
+      return Derived::template allocate_storage_impl<Requirements, FTraits>(request);
     }
 
     /**
@@ -269,6 +275,67 @@ namespace sbio {
       }
     }
 
+    /**
+     * Prepare buffers used by the BrokerGroup.
+     *
+     * The BrokerGroup must provide two callbacks, one for the staging of the
+     * buffers, and another for finalizing the commit to the buffer at the end.
+     * The former is required to return a size, in bytes, for the buffer.
+     *
+     * If there is no specialization by the derived execution policy, then the
+     * fallback serial routine will:
+     * 1. Run the staging callback.
+     * 2. Perform the allocation using the returned byte count.
+     * 3. Run the commit callback to finalize the buffer creation.
+     *
+     * @tparam Role The `Role` for the storage used by the BrokerGroup.
+     * @tparam FTraits The data format's format traits.
+     * @tparam StorageT The complete type of the BrokerGroup's storage.
+     * @tparam SyncT The type of any data to be synched.
+     * @tparam StageCB The type of a callback to run for staging the buffer.
+     * @tparam CommitCB The type of a callback to commit the buffer at the end.
+     * @param[in] storage The BrokerGroup's storage.
+     * @param[in] sync_vars The set of variables that must be synchronized for the
+     *            buffer preparation to work.
+     * @param[in] stage_cb The callback used to prepare the buffer. This is run on
+     *            rank 0 only, and it MUST return the number of bytes for the Window.
+     * @param[in] commit_cb The callback used after the Window is created to finalize
+     *            its preparation (e.g. moving data into the Window).
+     */
+    template <
+      typename Role,
+      typename FTraits,
+      typename StorageT,
+      typename SyncT,
+      typename StageCB,
+      typename CommitCB
+    >
+    static void prepare_group_buffers(StorageT& storage,
+                                      SyncT& sync_vars,
+                                      StageCB&& stage_cb,
+                                      CommitCB&& commit_cb) {
+      if constexpr (requires {
+          Derived::template prepare_group_buffers_impl<Role, FTraits>(storage,
+                                                                      sync_vars,
+                                                                      std::forward<StageCB>(stage_cb),
+                                                                      std::forward<CommitCB>(commit_cb));
+      }) {
+        Derived::template prepare_group_buffers_impl<Role, FTraits>(storage,
+                                                                    sync_vars,
+                                                                    std::forward<StageCB>(stage_cb),
+                                                                    std::forward<CommitCB>(commit_cb));
+      } else {
+        std::size_t size = stage_cb();
+
+        using Requirements = typename FTraits::GroupBufferRequirements;
+        AllocationRequest<FTraits> alloc_request;
+        alloc_request.size_requests[0] = size;
+        storage = Derived::template allocate_storage<Requirements, FTraits>(alloc_request);
+
+        commit_cb(storage.template get<Role>());
+      }
+    }
+
     // --- DataSource level policies --- //
     // --------------------------------- //
     template <FormatTraits FTraits, class IndexTrigger>
@@ -320,10 +387,8 @@ namespace sbio {
     // TODO: Consider moving into Storage/Buffer directly
     //       There may be a need for this...
     // TODO: MAKE SURE TO ALLOW PASSING IN THE REQUESTS FOR DIFFERENT ROLES!
-    template <FormatTraits FTraits>
+    template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
-      using Requirements = typename FTraits::BufferRequirements;
-
       // Requirements is a TypeList<T1, T2, ...>
       return allocate_impl_helper(Requirements{}, request);
     }

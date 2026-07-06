@@ -96,12 +96,16 @@ namespace sbio {
      * The execution policy will determine how to fulfill allocation and synchronization
      * of these requested buffers.
      */
-    using BufferRequirements = TypeList <
+    using BrokerBufferRequirements = TypeList <
       BufferDescriptor<MetadataRole, 0, sizeof(XTC2::Dgram)>,  /* Buffer for transition */
       BufferDescriptor<MetadataRole, 1, sizeof(XTC2::Dgram)>,  /* Scratch buffer for SMD */
       BufferDescriptor<DataRole, 0, sizeof(XTC2::Dgram)>,      /* Buffer for events */
       BufferDescriptor<IndexRole, 0, sizeof(EventOffset)>,     /* EventOffsets buffer */
       BufferDescriptor<IndexRole, 1, sizeof(TransitionOffset)> /* TransitionOffsets buffer */
+    >;
+
+    using GroupBufferRequirements = TypeList<
+      BufferDescriptor<GroupRole, 0, sizeof(XTC2::Dgram), Shareable> /* Buffer for constants */
     >;
 
     /**

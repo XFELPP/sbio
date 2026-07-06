@@ -23,6 +23,7 @@
 #include "sbio/core/broker.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/sync.hh"
 #include "sbio/core/utility.hh"
 #include "sbio/formats/format_traits.hh"
 
@@ -34,14 +35,6 @@
 #include <cstring>
 #include <utility>
 
-#ifndef SBIO_HD
-#ifdef __CUDACC__
-#define SBIO_HD __host__ __device__
-#else
-#define SBIO_HD
-#endif
-#endif
-
 namespace sbio {
   template <
     class BrokerType,
@@ -50,6 +43,8 @@ namespace sbio {
   >
   class BrokerGroup {
   public:
+    using EPolicy = typename BrokerType::ExecutionPolicy;
+    using StorageT = Storage<typename FTraits::GroupBufferRequirements, EPolicy>;
     using DataAccessPtn = typename FTraits::DataAccessPtn;
     using DataResult = typename FTraits::DataResult;
     using DataRequest = typename FTraits::DataRequest;
@@ -68,15 +63,15 @@ namespace sbio {
     };
 
     // Default constructor for DataSource abstraction
-    SBIO_HD BrokerGroup() {
+    BrokerGroup() {
       m_name[0] = '\0';
       m_type[0] = '\0';
     }
 
-    SBIO_HD BrokerGroup(const char* name,
-                        const char* type,
-                        std::size_t num_segments,
-                        DataSegmentRef* segments) {
+    BrokerGroup(const char* name,
+                const char* type,
+                std::size_t num_segments,
+                DataSegmentRef* segments) {
       m_num_segments = num_segments;
 
       std::size_t i { 0 };
@@ -112,20 +107,17 @@ namespace sbio {
       }
     }
 
-    SBIO_HD const char* group_name() const { return m_name; }
-    SBIO_HD const char* group_type() const { return m_type; }
+    const char* group_name() const { return m_name; }
+    const char* group_type() const { return m_type; }
 
-    SBIO_HD inline std::size_t num_segments() const { return m_num_segments; }
-    SBIO_HD inline const DataSegmentRef* segments() const { return m_segments; }
-    SBIO_HD inline const DataSegmentRef& segment(std::size_t i) const {
-      return m_segments[i];
-    }
+    inline std::size_t num_segments() const { return m_num_segments; }
+    inline const DataSegmentRef* segments() const { return m_segments; }
+    inline const DataSegmentRef& segment(std::size_t i) const { return m_segments[i]; }
 
-    SBIO_HD inline BrokerType** stream_brokers() { return m_stream_brokers; }
-    SBIO_HD inline std::size_t num_stream_brokers() const { return m_num_brokers; }
+    inline BrokerType** stream_brokers() { return m_stream_brokers; }
+    inline std::size_t num_stream_brokers() const { return m_num_brokers; }
 
-    SBIO_HD inline IOStatus fetch_next_for(StepIdxType& step_idx,
-                                           std::size_t broker_no) const {
+    inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
       auto* stream_broker = m_stream_brokers[broker_no];
       auto& access_ptn = m_access_ptns[broker_no];
 
@@ -133,21 +125,25 @@ namespace sbio {
     }
 
     template <class CBType>
-    SBIO_HD inline DataResult get_data_for(DataRequest& req,
-                                           std::size_t segment_no,
-                                           CBType&& callback) const {
+    inline DataResult get_data_for(DataRequest& req,
+                                   std::size_t segment_no,
+                                   CBType&& callback) const {
       req.segment_number = m_segments[segment_no].segment_no;
 
       auto* stream_broker = m_segments[segment_no].broker;
       auto& access_ptn = m_segments[segment_no].access_ptn;
 
       auto res = stream_broker->get_data_in_buffer(req, access_ptn);
-      callback(res);
+
+      if constexpr (requires { callback(res, segment_no); }) {
+        callback(res, segment_no);
+      } else if constexpr (requires { callback(res); }) {
+        callback(res);
+      }
       return res;
     }
 
-    SBIO_HD inline DataResult get_data_for(DataRequest& req,
-                                           std::size_t segment_no) const {
+    inline DataResult get_data_for(DataRequest& req, std::size_t segment_no) const {
       req.segment_number = m_segments[segment_no].segment_no;
 
       auto* stream_broker = m_segments[segment_no].broker;
@@ -181,9 +177,9 @@ namespace sbio {
      */
     template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
     requires std::invocable<CBType, DataResult>
-    SBIO_HD inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
-                                                       CBType&& callback,
-                                                       Args&&... args) const {
+    inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
+                                               CBType&& callback,
+                                               Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
       // Save a result reference to capture the data in the lambdas
@@ -249,11 +245,11 @@ namespace sbio {
         num_segments = 1;
       }
 
-      BrokerType::ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                              read_cb,
-                                                              num_brokers,
-                                                              get_data_cb,
-                                                              num_segments);
+      EPolicy::template get_data<FTraits>(step_idx,
+                                          read_cb,
+                                          num_brokers,
+                                          get_data_cb,
+                                          num_segments);
 
       return as_ncarray<MemTag>(m_ptrs, num_segments, ref_res);
     }
@@ -275,8 +271,8 @@ namespace sbio {
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <typename MemTag = ncarray::HostTag, typename... Args>
-    SBIO_HD inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
-                                                       Args&&... args) const {
+    inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
+                                               Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
       // Save a result reference to capture the data in the lambdas
@@ -338,13 +334,42 @@ namespace sbio {
         num_segments = 1;
       }
 
-      BrokerType::ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                              read_cb,
-                                                              num_brokers,
-                                                              get_data_cb,
-                                                              num_segments);
+      EPolicy::template get_data<FTraits>(step_idx,
+                                          read_cb,
+                                          num_brokers,
+                                          get_data_cb,
+                                          num_segments);
 
       return as_ncarray<MemTag>(m_ptrs, num_segments, ref_res);
+    }
+
+    template <class Algo>
+    void prepare_group_algorithm(Algo& algo) {
+      std::size_t bytes_for_algo { 0 };
+      auto stage_cb = [&]() {
+        algo.stage();
+        bytes_for_algo = algo.staged_data_size();
+
+        return bytes_for_algo;
+      };
+
+      auto sg = make_sync_group(bytes_for_algo);
+
+      auto commit_cb = [&](auto& buf) {
+        // TODO: Consider later device code implications if needing to make device
+        //       compatible. That seems unlikely though.
+        std::memcpy(buf.ptr(), algo.get_staged_data(), algo.staged_data_size());
+      };
+
+
+      EPolicy::template prepare_group_buffers<GroupRole, FTraits>(this->m_storage,
+                                                                  sg,
+                                                                  stage_cb,
+                                                                  commit_cb);
+
+      // Reset the staged data for all instances of the Algorithm
+      auto algo_buf = this->m_storage.template get<GroupRole, 0>();
+      algo.set_staged_data(reinterpret_cast<std::uint8_t*>(algo_buf.ptr()), bytes_for_algo);
     }
 
   private:
@@ -358,6 +383,8 @@ namespace sbio {
     mutable std::size_t m_num_brokers { 0 };
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
+
+    StorageT m_storage;
   };
 } // namespace sbio
 

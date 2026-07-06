@@ -106,7 +106,7 @@ namespace sbio {
   >
   class IStreamBroker {
   public:
-    using StorageT = Storage<typename FTraits::BufferRequirements, EPolicy>;
+    using StorageT = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
     using Config = typename FTraits::StreamParameters;
     using DiscoveryState = typename FTraits::DiscoveryState;
     using MetadataInventory = typename FTraits::MetadataInventory;

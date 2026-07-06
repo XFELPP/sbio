@@ -47,7 +47,7 @@ namespace sbio {
     : public IStreamBroker<XTC2StreamBroker<IO, EPolicy>, IO, EPolicy, XTC2Traits> {
   public:
     using Base = IStreamBroker<XTC2StreamBroker<IO, EPolicy>, IO, EPolicy, XTC2Traits>;
-    using StorageT = Storage<typename XTC2Traits::BufferRequirements, EPolicy>;
+    using StorageT = Storage<typename XTC2Traits::BrokerBufferRequirements, EPolicy>;
     using Config = typename XTC2Traits::StreamParameters;
     using DiscoveryState = typename XTC2Traits::DiscoveryState;
     using MetadataInventory = typename XTC2Traits::MetadataInventory;

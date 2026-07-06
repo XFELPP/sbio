@@ -99,23 +99,27 @@ namespace sbio {
      * Map IndexRole to MpiSharedBuffer and all other roles to HostBuffer.
      */
     template <typename Descriptor>
-    using BufferTypeFor =
-      std::conditional_t<std::is_same_v<typename Descriptor::role, IndexRole>,
-                         MpiSharedBuffer,
-                         HostBuffer>;
+    using BufferTypeFor = std::conditional_t<
+      std::is_same_v<typename Descriptor::role, IndexRole> ||
+      std::is_same_v<typename Descriptor::role, GroupRole> ||
+      std::is_same_v<typename Descriptor::hint, Shareable>,
+      MpiSharedBuffer,
+      HostBuffer
+    >;
 
-    template <FormatTraits FTraits>
+    template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
-      MPI_Comm_rank(MPI_COMM_WORLD, &MPIExecution::m_rank);
-      MPI_Comm_size(MPI_COMM_WORLD, &MPIExecution::m_size);
+      if (MPIExecution::m_node_comm == MPI_COMM_NULL) {
+        MPI_Comm_rank(MPI_COMM_WORLD, &MPIExecution::m_rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &MPIExecution::m_size);
 
-      MPI_Comm_split_type(MPI_COMM_WORLD,
-                          MPI_COMM_TYPE_SHARED,
-                          0,
-                          MPI_INFO_NULL,
-                          &MPIExecution::m_node_comm);
+        MPI_Comm_split_type(MPI_COMM_WORLD,
+                            MPI_COMM_TYPE_SHARED,
+                            0,
+                            MPI_INFO_NULL,
+                            &MPIExecution::m_node_comm);
+      }
 
-      using Requirements = typename FTraits::BufferRequirements;
       return allocate_impl_helper(Requirements{}, request);
     }
 
@@ -135,7 +139,10 @@ namespace sbio {
         auto& buf { s.template get<Descriptor>() };
 
         using BufRole = typename Descriptor::role;
-        if constexpr (std::is_same_v<BufRole, IndexRole>) {
+        using BufHint = typename Descriptor::hint;
+        if constexpr (std::is_same_v<BufRole, IndexRole> ||
+                      std::is_same_v<BufRole, GroupRole> ||
+                      std::is_same_v<BufHint, Shareable>) {
           // For IndexRole buffers, make them shared
           MPI_Win win;
           MPI_Aint sz_out;
@@ -171,8 +178,16 @@ namespace sbio {
      */
     template <class Role, class StorageT>
     static void pre_update_impl(StorageT& storage) {
-      // Check if Windows need synchronization - only for IndexRole buffers
-      if constexpr (std::is_same_v<Role, IndexRole>) {
+      using List = ExtractDescriptorsListT<StorageT>;
+
+      using Descriptor = typename FindDescriptor<Role, 0, List>::type;
+
+      using Hint = typename GetHint<Descriptor>::type;
+
+      // Check if Windows need synchronization
+      if constexpr (std::is_same_v<Role, IndexRole> ||
+                    std::is_same_v<Role, GroupRole> ||
+                    std::is_same_v<Hint, Shareable>) {
         auto fence_win = [](auto& buf) {
           // Check if the buffer type is of one supporting a Window.
           if constexpr (requires { buf.window(); }) {
@@ -183,7 +198,7 @@ namespace sbio {
           }
         };
 
-        storage.template for_each_role<IndexRole>(fence_win);
+        storage.template for_each_role<Role>(fence_win);
       }
     }
 
@@ -202,8 +217,16 @@ namespace sbio {
      */
     template <class Role, class StorageT, class SyncT>
     static void post_update_impl(StorageT& storage, SyncT&& sync_vars, IOStatus status) {
-      // Check if Windows need synchronization - only for IndexRole buffers
-      if constexpr (std::is_same_v<Role, IndexRole>) {
+      using List = ExtractDescriptorsListT<StorageT>;
+
+      using Descriptor = typename FindDescriptor<Role, 0, List>::type;
+
+      using Hint = typename GetHint<Descriptor>::type;
+
+      // Check if Windows need synchronization
+      if constexpr (std::is_same_v<Role, IndexRole> ||
+                    std::is_same_v<Role, GroupRole> ||
+                    std::is_same_v<Hint, Shareable>) {
         // Only the IndexRole buffers use a Window
         auto fence_win = [](auto& buf) {
           // Check if the buffer type is of one supporting a Window.
@@ -215,7 +238,7 @@ namespace sbio {
           }
         };
 
-        storage.template for_each_role<IndexRole>(fence_win);
+        storage.template for_each_role<Role>(fence_win);
       }
 
       // Broadcast all requested sync_vars
@@ -246,6 +269,78 @@ namespace sbio {
         return true;
       }
       return false;
+    }
+
+    /**
+     * Prepare buffers used by the BrokerGroup.
+     *
+     * This policy uses shared buffers for the BrokerGroup (if applicable). When
+     * requested, therefore, it will fence and build the buffers over an MPI
+     * Window. In general, the BrokerGroup will use these buffers for shareable
+     * metadata used in processing (constants and the like) - there is no
+     * requirement for that, however.
+     *
+     * This routine relies on the BrokerGroup providing a set of lambda's to run
+     * before and after the creation of the shared buffer.
+     * 1. First, the `stage_cb` will run for rank 0.
+     * 2. Any synchronization will then occur for a first time.
+     * 3. The stage_cb must return a byte count for allocation, this is now used for
+     *    creating an allocation for an MPI Window (if this is possible).
+     * 4. The newly created Window is synchronized.
+     * 5. The commit_cb is run.
+     * 6. The newly created Window is resynchronized, completing the commit.
+     *
+     * @note It may be a common pattern that sync_vars includes the size, which is
+     *       also broadcast internally. This may seem redundant; however, it allows
+     *       returning this information to the caller as well. Furthermore, there
+     *       is no restriction on sync_vars, which may also contain additional data.
+     *
+     * @tparam Role The `Role` for the storage used by the BrokerGroup.
+     * @tparam FTraits The data format's format traits.
+     * @tparam StorageT The complete type of the BrokerGroup's storage.
+     * @tparam SyncT The type of any data to be synched.
+     * @tparam StageCB The type of a callback to run for staging the buffer.
+     * @tparam CommitCB The type of a callback to commit the buffer at the end.
+     * @param[in] storage The BrokerGroup's storage.
+     * @param[in] sync_vars The set of variables that must be synchronized for the
+     *            buffer preparation to work.
+     * @param[in] stage_cb The callback used to prepare the buffer. This is run on
+     *            rank 0 only, and it MUST return the number of bytes for the Window.
+     * @param[in] commit_cb The callback used after the Window is created to finalize
+     *            its preparation (e.g. moving data into the Window).
+     */
+    template <
+      typename Role,
+      typename FTraits,
+      typename StorageT,
+      typename SyncT,
+      typename StageCB,
+      typename CommitCB
+    >
+    static void prepare_group_buffers_impl(StorageT& storage,
+                                           SyncT& sync_vars,
+                                           StageCB&& stage_cb,
+                                           CommitCB&& commit_cb) {
+      std::size_t size { 0 };
+      if (should_index()) {
+        size = stage_cb();
+      }
+
+      auto mpi_type { mpi_type_for<decltype(size)>() };
+
+      MPI_Bcast(&size, 1, mpi_type, 0, MPI_COMM_WORLD);
+
+      using Requirements = typename FTraits::GroupBufferRequirements;
+      AllocationRequest<FTraits> alloc_request;
+      alloc_request.size_requests[0] = size;
+      storage = MPIExecution::template allocate_storage<Requirements, FTraits>(alloc_request);
+
+      pre_update_impl<Role>(storage);
+      if (should_index()) {
+        commit_cb(storage.template get<Role>());
+      }
+
+      post_update_impl<Role>(storage, std::forward<SyncT>(sync_vars), IOStatus::Success);
     }
 
     /**

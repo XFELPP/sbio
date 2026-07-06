@@ -20,11 +20,24 @@ namespace sbio {
     static constexpr std::size_t size = sizeof...(Ts);
   };
 
+  template <typename T>
+  struct is_type_list : std::false_type {};
+
+  template <typename... Ts>
+  struct is_type_list<TypeList<Ts...>> : std::true_type {};
+
+  template <typename T>
+  static constexpr bool is_type_list_v = is_type_list<T>::value;
+
+  template <typename List>
+  concept IsTypeList = is_type_list_v<List>;
+
   // --- Tags for roles that a buffer may play. --- //
   struct MetadataRole {};
   struct DataRole {};
   struct IndexRole {};
   struct CalibrationRole {};
+  struct GroupRole {};
 
   // --- Tags for additional semantic hints as to what a buffer can do --- //
   struct Shareable {};      // Optimization: E.g., visible to MPI peers
@@ -33,8 +46,8 @@ namespace sbio {
 
   template <typename FTraits>
   struct AllocationRequest {
-    // One entry for every descriptor in the BufferRequirements TypeList
-    std::size_t size_requests[FTraits::BufferRequirements::size] { 0 };
+    // One entry for every descriptor in the BrokerBufferRequirements TypeList
+    std::size_t size_requests[FTraits::BrokerBufferRequirements::size] { 0 };
   };
 
   template <typename Role, typename BufferT>
@@ -50,6 +63,7 @@ namespace sbio {
   > // Pass a tag above
   struct BufferDescriptor {
     using role = Role;
+    using hint = Hint;
     static constexpr std::size_t id = Id;
     static constexpr std::size_t min_size = MinSize;
   };
@@ -108,6 +122,16 @@ namespace sbio {
     using type = void;
   };
 
+  template <typename T>
+  struct GetHint {
+    using type = void;
+  };
+
+  template <typename Role, std::size_t Id, std::size_t MinSize, typename Hint>
+  struct GetHint<BufferDescriptor<Role, Id, MinSize, Hint>> {
+    using type = Hint;
+  };
+
   template <typename List, typename Policy>
   struct Storage;
 
@@ -145,5 +169,17 @@ namespace sbio {
       ( (std::is_same_v<class Roles::role, Role> ? callback(self.template get<Roles>()) : void()), ... );
     }
   };
+
+  template <typename T>
+  struct ExtractDescriptorsList;
+
+  template <typename List, typename Policy>
+  struct ExtractDescriptorsList<Storage<List, Policy>> {
+    using type = List;
+  };
+
+  template <typename T>
+  using ExtractDescriptorsListT = typename ExtractDescriptorsList<T>::type;
+
 } // namespace sbio
 #endif // SBIO_CORE_STORAGE_HH

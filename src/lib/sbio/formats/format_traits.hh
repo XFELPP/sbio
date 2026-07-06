@@ -79,7 +79,8 @@ namespace sbio {
     using StepIdxType = std::size_t; // Unit type for indexing and selecting data units ("events")
     static constexpr StepIdxType ExhaustedSentinel { static_cast<StepIdxType>(-1) }; // Indicator all units read
 
-    using BufferRequirements = TypeList<>;
+    using BrokerBufferRequirements = TypeList<>;
+    using GroupBufferRequirements = TypeList<>;
 
     struct StreamParameters {};
 
