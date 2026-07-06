@@ -56,7 +56,7 @@ namespace pysbio {
 #ifdef SBIO_HAS_MPI
   using MPIDataSource1 = sbio::IDataSource<
     sbio::SyncPOSIXIO,
-    sbio::SerialExecution,
+    sbio::MPIExecution,
     sbio::XTC1Traits,
     sbio::XTC1StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution>
   >;

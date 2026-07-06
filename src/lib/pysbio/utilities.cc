@@ -81,14 +81,14 @@ namespace pysbio {
       }
 
       // If there are segment serial numbers, convert to the final LCLS form
-      // The formatted serial number is: <detector_type>_<seg1>-<seg2>-...<segN>
+      // The formatted serial number is: <detector_type>_<seg1>_<seg2>_...<segN>
       if (!segment_serial_nos.empty()) {
         serial_number_out = detector_type + "_";
         bool first { true };
 
         for (const auto& [seg, ser] : segment_serial_nos) {
           if (!first) {
-            serial_number_out += "-";
+            serial_number_out += "_";
           }
 
           serial_number_out += ser;
