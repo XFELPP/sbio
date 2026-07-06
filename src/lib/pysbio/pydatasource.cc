@@ -21,18 +21,24 @@
 
 #include "pysbio/pydetector.hh"
 
+#include <pybind11/pybind11.h>
+#include <xalgospp/detector/calibration.hh>
+
 #include <string>
 #include <variant>
 
 namespace py = pybind11;
 
 namespace pysbio {
-  PyDataSource::PyDataSource(std::string type,
-                             std::string exp,
+  PyDataSource::PyDataSource(std::string exp,
                              unsigned run,
                              int evt_per_read,
                              int dgram_size,
-                             unsigned xtc_ver) {
+                             unsigned xtc_ver,
+                             std::string type)
+    : m_exp(exp)
+    , m_run(run)
+  {
     if (xtc_ver == 1) {
 #ifdef SBIO_HAS_XTC1
       sbio::XTC1Traits::StreamParameters base_cfg;
@@ -90,10 +96,32 @@ namespace pysbio {
   }
 
   py::object PyDataSource::detector(py::module& m, const char* name) {
+    using Calibrator = xalgospp::det::Calibration<xalgospp::det::RuntimeCalibPolicy>;
+    using Params = Calibrator::Params;
+
+    // TODO: This is quite kludgy because it goes back and forth between sbio det,
+    //       the C++ DetectorWrapper, and full Python det for various metadata.
+    //       Should normalize this....
     auto det_maker = [&](auto& ds) -> py::object {
       auto det = ds.get_stream_group(name);
 
-      return wrap_detector(m, det);
+      // The wrapper routine will also construct a serial number from pieces
+      auto py_det = wrap_detector(m, det);
+
+      std::shared_ptr<DetectorWrapper> det_wrapper =
+          py_det.template cast<std::shared_ptr<DetectorWrapper>>();
+
+      Params calib_params;
+      // TODO: Get this URL from some place smarter...
+      calib_params.base_url = "https://pswww.slac.stanford.edu";
+      calib_params.experiment = m_exp;
+      calib_params.run = m_run;
+      calib_params.det_type = det.group_type();
+      calib_params.det_serial_no = det_wrapper->get_serial_number();
+
+      det_wrapper->stage_calibration(calib_params);
+
+      return py_det;
     };
 
     return std::visit(det_maker, m_ds);

@@ -118,9 +118,11 @@ namespace pysbio {
       std::visit(det_visitor, det);
     }
 
+    const std::string& get_detector_type() const { return detector_type; }
     const std::string& get_serial_number() const { return serial_number; }
 
     DetectorV det;
+    std::string detector_type;
     std::string serial_number;
     std::shared_ptr<Calibrator> calibrator;
     std::shared_ptr<ncarray::NCArray> calib_buffer;

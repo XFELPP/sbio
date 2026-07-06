@@ -32,6 +32,23 @@ namespace py = pybind11;
 
 using namespace pysbio;
 
+namespace {
+  static constexpr const char* ds_doc = R"a(Create a datasource for reading XTC1 or XTC2 data.
+
+Args:
+    exp (str): The LCLS experiment.
+
+    run (int): The run number for the experiment.
+
+    events_per_read (int): The number of event offsets to index on each attempt.
+
+    max_dgram_size (int): The maximum size of a Datagram to accept.
+
+    xtc_ver (int): The version of XTC data (1 or 2).
+
+    ds_type (str): The desired DataSource type - currently supported are `serial` and `mpi`.)a";
+} // anonymous namespace
+
 PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   // NOTE: This must be in PYTHONPATH (or generally accessible!) or init will fail
   py::module_::import("ncarray");
@@ -40,6 +57,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   // TODO: Try to rework these wrappers to remove dynamic_attr
   //       Instead, create the *classes* dynamically and attach the methods
   py::classh<DetectorWrapper>(pysbio_module, "DetectorWrapper", py::dynamic_attr())
+    .def_property_readonly("detector_type", &DetectorWrapper::get_detector_type)
     .def_property_readonly("serial_number", &DetectorWrapper::get_serial_number)
     .def("fetch_calib_constants",
          &DetectorWrapper::stage_calibration,
@@ -47,13 +65,14 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
 
   py::classh<PyDataSource>(pysbio_module, "DataSource")
-    .def(py::init<std::string, std::string, unsigned, int, int, unsigned>(),
-         py::arg("ds_type"),
+    .def(py::init<std::string, unsigned, int, int, unsigned, std::string>(),
          py::arg("exp"),
          py::arg("run"),
-         py::arg("events_per_read"),
-         py::arg("max_dgram_size"),
-         py::arg("xtc_ver"))
+         py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_dgram_size") = 0x4000000, // ~67 MB
+         py::arg("xtc_ver") = 2,
+         py::arg("ds_type") = "mpi",
+         ds_doc)
     .def("detector", [&](PyDataSource& self, const char* name) {
       return self.detector(pysbio_module, name);
     },

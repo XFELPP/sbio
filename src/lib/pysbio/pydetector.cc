@@ -53,6 +53,7 @@ namespace pysbio {
                      det.num_stream_brokers(),
                      det_serial_number);
 
+      cpp_det->detector_type = det.group_type();
       cpp_det->serial_number = det_serial_number;
 
       for (auto const& [alg, fields] : alg_and_fields) {

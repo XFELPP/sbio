@@ -111,12 +111,12 @@ namespace pysbio {
 
   class PyDataSource {
   public:
-    PyDataSource(std::string type,
-                 std::string exp,
+    PyDataSource(std::string exp,
                  unsigned run,
                  int evt_per_read,
                  int dgram_size,
-                 unsigned xtc_ver = 2);
+                 unsigned xtc_ver = 2,
+                 std::string type = "mpi");
 
     py::object detector(py::module& m, const char* name);
 
@@ -128,6 +128,9 @@ namespace pysbio {
 
   private:
     DataSourceV m_ds;
+
+    std::string m_exp;
+    unsigned m_run;
   };
 
 } // namespace pysbio
