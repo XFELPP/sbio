@@ -169,7 +169,7 @@ namespace sbio {
 
         m_steps_capacity += total_capacity;
 
-        return true;
+        return total_capacity > 0;
       };
 
       return EPolicy::template next<FTraits>(m_steps_capacity, trigger_reindexing);

@@ -96,20 +96,20 @@ namespace sbio {
   class MPIExecution : public IExecution<MPIExecution> {
   public:
     /**
-     * Map IndexRole to MpiSharedBuffer and all other roles to HostBuffer.
+     * Map IndexRole to MPISharedBuffer and all other roles to HostBuffer.
      */
     template <typename Descriptor>
     using BufferTypeFor = std::conditional_t<
       std::is_same_v<typename Descriptor::role, IndexRole> ||
       std::is_same_v<typename Descriptor::role, GroupRole> ||
       std::is_same_v<typename Descriptor::hint, Shareable>,
-      MpiSharedBuffer,
+      MPISharedBuffer,
       HostBuffer
     >;
 
     template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
-      if (MPIExecution::m_node_comm == MPI_COMM_NULL) {
+      if (MPIExecution::m_shmem_comm == MPI_COMM_NULL) {
         MPI_Comm_rank(MPI_COMM_WORLD, &MPIExecution::m_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &MPIExecution::m_size);
 
@@ -117,7 +117,7 @@ namespace sbio {
                             MPI_COMM_TYPE_SHARED,
                             0,
                             MPI_INFO_NULL,
-                            &MPIExecution::m_node_comm);
+                            &MPIExecution::m_shmem_comm);
       }
 
       return allocate_impl_helper(Requirements{}, request);
@@ -143,19 +143,7 @@ namespace sbio {
         if constexpr (std::is_same_v<BufRole, IndexRole> ||
                       std::is_same_v<BufRole, GroupRole> ||
                       std::is_same_v<BufHint, Shareable>) {
-          // For IndexRole buffers, make them shared
-          MPI_Win win;
-          MPI_Aint sz_out;
-          int disp;
-          void* baseptr;
-
-          MPI_Win_allocate_shared(sz, 1, MPI_INFO_NULL, m_node_comm, &baseptr, &win);
-          MPI_Win_shared_query(win, 0, &sz_out, &disp, &baseptr);
-
-          // Now make the storage buffer point to window memory.
-          // TODO: Error checks, size checks and so on...
-          buf.set_memory(baseptr, sz);
-          buf.set_window(win);
+          buf.allocate(m_shmem_comm, sz);
         } else {
           // Otherwise, just use a standard host buffer.
           buf.set_memory(new char[sz], sz);
@@ -380,7 +368,7 @@ namespace sbio {
     }
 
   private:
-    static inline MPI_Comm m_node_comm { MPI_COMM_NULL };
+    static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 };
     static inline int m_size { -1 };
   };
