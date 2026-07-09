@@ -20,8 +20,10 @@
 #include "pysbio/pydatasource.hh"
 #include "pysbio/pydetector.hh"
 
-#include "ncarray/ncarrays.hh"
-
+#include <ncarray/ncarrays.hh>
+#ifdef SBIO_HAS_MPI
+#include <mpi.h>
+#endif
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -98,4 +100,20 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       return std::visit(iterator_maker, self.ds());
     },
       py::keep_alive<0, 1>());
+
+#ifdef SBIO_HAS_MPI
+  auto atexit = py::module_::import("atexit");
+  atexit.attr("register")(py::cpp_function([]() {
+    int initialized  { 0 };
+    MPI_Initialized(&initialized);
+
+    int finalized { 0 };
+    if (initialized && !finalized) {
+      // At exit, the atexit handler may be called before the GC has collected
+      // remaining objects - we make sure to wait here, so any shared MPI resources
+      // are valid for other ranks by registering our own handler with a Barrier
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
+  }));
+#endif
 } // pysbio_module

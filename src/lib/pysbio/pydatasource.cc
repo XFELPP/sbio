@@ -21,6 +21,9 @@
 
 #include "pysbio/pydetector.hh"
 
+#ifdef SBIO_HAS_MPI
+#include <mpi.h>
+#endif
 #include <pybind11/pybind11.h>
 #include <xalgospp/detector/calibration.hh>
 
@@ -51,6 +54,16 @@ namespace pysbio {
         m_ds = std::move(ds);
       } else if (type == "mpi") {
 #ifdef SBIO_HAS_MPI
+        // If MPI hasn't been initialized, we'll do it for the user here
+        int initialized { 0 };
+        MPI_Initialized(&initialized);
+
+        if (!initialized) {
+          int argc { 0 };
+          char** argv { nullptr };
+          MPI_Init(&argc, &argv);
+        }
+
         MPIDataSource1 ds;
         ds.load_run(exp.c_str(), run, base_cfg);
         ds.discover_metadata();
@@ -77,6 +90,16 @@ namespace pysbio {
         m_ds = std::move(ds);
       } else if (type == "mpi") {
 #ifdef SBIO_HAS_MPI
+        // If MPI hasn't been initialized, we'll do it for the user here
+        int initialized { 0 };
+        MPI_Initialized(&initialized);
+
+        if (!initialized) {
+          int argc { 0 };
+          char** argv { nullptr };
+          MPI_Init(&argc, &argv);
+        }
+
         MPIDataSource2 ds;
         ds.load_run(exp.c_str(), run, base_cfg);
         ds.discover_metadata();
