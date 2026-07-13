@@ -5,8 +5,10 @@
 #include "sbio/core/storage.hh"
 #include "sbio/formats/format_traits.hh"
 
+#include <atomic>
 #include <concepts>
 #include <iostream>
+#include <mutex>
 #include <type_traits>
 
 #ifndef SBIO_HD
@@ -235,6 +237,24 @@ namespace sbio {
       return Derived::execute_read();
     }
 
+    template <typename Buffer>
+    SBIO_HD static void* acquire_broker_view(Buffer& buf) {
+      if constexpr (requires { Derived::acquire_broker_view_impl(buf); }) {
+        return Derived::acquire_broker_view_impl(buf);
+      } else {
+        return buf.ptr();
+      }
+    }
+
+    template <typename Buffer, typename Result>
+    SBIO_HD static Result release_broker_view(Buffer& buf, void* broker_view, Result res) {
+      if constexpr (requires { Derived::release_broker_view_impl(buf, broker_view, res); }) {
+        return Derived::release_broker_view_impl(buf, broker_view, res);
+      } else {
+        return res;
+      }
+    }
+
     // --- `Detector` level policies --- //
     // --------------------------------- //
     template <class FTraits, class FetchCBType, class GetCBType>
@@ -398,15 +418,18 @@ namespace sbio {
                                      const AllocationRequest<FTraits>& request) {
       Storage<TypeList<Descriptors...>, SerialExecution> s;
 
-      std::size_t i = 0;
+      std::size_t i { 0 };
 
-      // This default policy will just take the request and satisfy it.
-      (([&]() {
-        std::size_t final_size = std::max(Descriptors::min_size, request.size_requests[i++]);
-        s.template get<Descriptors>()
-          .set_memory(new char[final_size], final_size);
-      }()),
-        ...);
+      auto make_host_buffers = [&](auto DescTag) {
+        using Descriptor = typename decltype(DescTag)::type;
+
+        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
+        auto& buf { s.template get<Descriptor>() };
+
+        buf.set_memory(new char[final_sz], final_sz);
+      };
+      ( (make_host_buffers(std::type_identity<Descriptors>{})), ... );
+
       return s;
     }
 
@@ -444,6 +467,109 @@ namespace sbio {
     template <typename Descriptor>
     using BufferTypeFor = HostBuffer;
   };
+
+  class ThreadedExecution : public IExecution<ThreadedExecution> {
+  public:
+    template <typename Descriptor>
+    using BufferTypeFor = std::conditional_t<
+      std::is_same_v<typename Descriptor::role, DataRole>,
+      ThreadLocalBuffer,
+      HostBuffer
+    >;
+
+    template <IsTypeList Requirements, FormatTraits FTraits>
+    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+      return allocate_impl_helper(Requirements{}, request);
+    }
+
+    template <typename... Descriptors, FormatTraits FTraits>
+    static auto allocate_impl_helper(TypeList<Descriptors...>,
+                                     const AllocationRequest<FTraits>& request) {
+      Storage<TypeList<Descriptors...>, ThreadedExecution> s;
+
+      std::size_t i { 0 };
+
+      auto make_thread_local_data = [&](auto DescTag) {
+        using Descriptor = typename decltype(DescTag)::type;
+
+        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
+        auto& buf { s.template get<Descriptor>() };
+
+        using BufRole = typename Descriptor::role;
+        if constexpr (std::is_same_v<BufRole, DataRole>) {
+          buf.set_memory(nullptr, final_sz);
+        } else {
+          buf.set_memory(new char[final_sz], final_sz);
+        }
+      };
+      ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
+
+      return s;
+    }
+
+    template <class FTraits, class FetchCBType, class GetCBType>
+    static IOStatus get_data_impl(typename FTraits::StepIdxType step_idx,
+                                  FetchCBType&& unit_fetcher,
+                                  std::size_t num_fetches,
+                                  GetCBType&& unit_get_data,
+                                  std::size_t num_accesses) {
+      std::lock_guard<std::mutex> lock(m_io_mutex);
+      IOStatus status { IOStatus::Success };
+
+      for (std::size_t i = 0; i < num_fetches; ++i) {
+        if (auto s = unit_fetcher(i); s != IOStatus::Success) {
+          status = s;
+          break;
+        }
+      }
+
+      if (status == IOStatus::Success) {
+        for (std::size_t i = 0; i < num_accesses; ++i) {
+          unit_get_data(i);
+        }
+      }
+
+      return status;
+    }
+
+    template <FormatTraits FTraits, class IndexTrigger>
+    SBIO_HD static typename FTraits::StepIdxType
+    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
+      static std::atomic<typename FTraits::StepIdxType> event_idx { 0 };
+
+      static std::mutex trigger_mutex;
+      typename FTraits::StepIdxType current { event_idx.load(std::memory_order_acquire) };
+
+      if (current >= max_capacity) {
+        std::lock_guard<std::mutex> lock(trigger_mutex);
+
+        current = event_idx.load(std::memory_order_acquire);
+
+        if (current >= max_capacity) {
+          if (!trigger()) {
+            return FTraits::ExhaustedSentinel;
+          }
+
+          if (current >= max_capacity) {
+            return FTraits::ExhaustedSentinel;
+          }
+        }
+      }
+
+      while (current < max_capacity) {
+        if (event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
+          return current;
+        }
+      }
+
+      // TODO: Not convinced that this is thread-safe yet....
+      return FTraits::ExhaustedSentinel;
+    }
+
+  private:
+    inline static std::mutex m_io_mutex;
+  };
+
 } // namespace sbio
 
 #endif // SBIO_CORE_EXECUTION_HH
