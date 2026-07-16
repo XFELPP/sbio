@@ -20,15 +20,18 @@
 #ifndef PYSBIO_UTILITIES_HH
 #define PYSBIO_UTILITIES_HH
 
+#include "sbio/execution/serial.hh"
 #ifdef SBIO_HAS_MPI
-#include "sbio/mpi/execution.hh"
+#include "sbio/execution/mpi.hh"
 #endif
-#include "sbio/posix_io.hh"
+#include "sbio/io/posix.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/xtc1_broker.hh"
+#include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
 #ifdef SBIO_HAS_XTC2
 #include "sbio/xtc2_broker.hh"
+#include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
 #include <pybind11/numpy.h>

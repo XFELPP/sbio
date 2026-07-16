@@ -27,6 +27,9 @@
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/core/sync.hh"
+#ifdef SBIO_HAS_CUDA
+#include "sbio/cuda/storage.hh"
+#endif
 #include "sbio/formats/xtc2/xtc2.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 
@@ -44,9 +47,9 @@ namespace sbio {
    */
   template <IOTraits IO, class EPolicy>
   class XTC2StreamBroker
-    : public IStreamBroker<XTC2StreamBroker<IO, EPolicy>, IO, EPolicy, XTC2Traits> {
+    : public StreamBroker<XTC2StreamBroker<IO, EPolicy>, IO, EPolicy, XTC2Traits> {
   public:
-    using Base = IStreamBroker<XTC2StreamBroker<IO, EPolicy>, IO, EPolicy, XTC2Traits>;
+    using Base = StreamBroker<XTC2StreamBroker<IO, EPolicy>, IO, EPolicy, XTC2Traits>;
     using StorageT = Storage<typename XTC2Traits::BrokerBufferRequirements, EPolicy>;
     using Config = typename XTC2Traits::StreamParameters;
     using DiscoveryState = typename XTC2Traits::DiscoveryState;
@@ -122,7 +125,7 @@ namespace sbio {
       }
 
       // Read a lot into a scratch buffer
-      auto smd_buf = this->m_storage.template get<MetadataRole, 1>();
+      auto& smd_buf = this->m_storage.template get<MetadataRole, 1>();
       IOStatus status = m_smd_stream.read_batch(smd_buf.ptr(), read_size, missing_chunk);
 
       if (status == IOStatus::ZeroBytesRead) {
@@ -235,6 +238,48 @@ namespace sbio {
                                          const DataAccessPtn ptn) {
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         // "Normal" detector resolution.
+        auto& bd_buf { this->m_storage.template get<DataRole>() };
+
+        auto broker_view = EPolicy::acquire_broker_view(bd_buf);
+        XTC2::DataResult broker_res = XTC2Traits::resolve_data(broker_view, this->metadata(), req);
+        XTC2::DataResult user_res = EPolicy::release_broker_view(bd_buf, broker_view, broker_res);
+
+        return user_res;
+        if constexpr (requires { bd_buf.host_ptr(); }) {
+#ifdef SBIO_HAS_CUDA
+          if (bd_buf.has_cached_offset()) {
+            XTC2::DataResult res;
+            res.data =
+              reinterpret_cast<const char*>(bd_buf.device_ptr()) + bd_buf.cached_offset();
+
+            const auto& cache { bd_buf.cached_result() };
+            res.size = cache.size;
+            res.rank = cache.rank;
+            std::memcpy(res.shape, cache.shape, sizeof(res.shape));
+            res.dtype = static_cast<XTC2::DType>(cache.dtype);
+
+            return res;
+          } else {
+            // Traverse the host-mirrored metadata header
+            XTC2::DataResult res =
+              XTC2Traits::resolve_data(bd_buf.host_ptr(), this->metadata(), req);
+            std::size_t offset =
+              reinterpret_cast<const char*>(res.data) - reinterpret_cast<const char*>(bd_buf.host_ptr());
+            bd_buf.set_cached_offset(offset);
+
+            CudaDeviceBuffer::CachedResult cache;
+            cache.size = res.size;
+            cache.rank = res.rank;
+            std::memcpy(cache.shape, res.shape, sizeof(cache.shape));
+            cache.dtype = static_cast<int>(res.dtype);
+            bd_buf.set_cached_result(cache);
+            res.data = reinterpret_cast<const char*>(bd_buf.device_ptr()) + offset;
+
+            return res;
+          }
+#endif
+        }
+
         return XTC2Traits::resolve_data(this->current_buffer(), this->metadata(), req);
       } else if (ptn == XTC2Traits::DataAccessPtn::SlowUpdate) {
         // Semantic Mapping: Requested name is actually a PV field in "epics"
@@ -324,11 +369,25 @@ namespace sbio {
       std::size_t file_offset { offset.offset };
       std::size_t read_size { offset.size };
 
-      auto bd_buf = this->m_storage.template get<DataRole>();
+      auto& bd_buf = this->m_storage.template get<DataRole>();
       IOStatus status = m_bd_stream.read_at(bd_buf.ptr(), file_offset, read_size);
 
       if (status != IOStatus::Success) {
         return status;
+      }
+
+      bd_buf.set_dirty(true);
+
+      if constexpr (requires { bd_buf.host_ptr(); }) {
+        if (!bd_buf.has_cached_offset()) {
+          std::size_t copy_size { std::min(read_size, static_cast<std::size_t>(4096)) };
+#ifdef SBIO_HAS_CUDA
+          cudaMemcpy(bd_buf.host_ptr(),
+                     bd_buf.device_ptr(),
+                     copy_size,
+                     cudaMemcpyDeviceToHost);
+#endif
+        }
       }
 
       std::size_t read_count = m_bd_stream.read_count();
@@ -380,7 +439,7 @@ namespace sbio {
         }
       }
 
-      auto bd_buf = this->m_storage.template get<MetadataRole, 0>();
+      auto& bd_buf = this->m_storage.template get<MetadataRole, 0>();
       IOStatus status = m_bd_stream.read_at(bd_buf.ptr(), file_offset, read_size);
 
       if (status != IOStatus::Success) {
@@ -408,7 +467,7 @@ namespace sbio {
     }
 
     IOStatus read_xtc_metadata() {
-      auto smd_buf = this->m_storage.template get<MetadataRole>();
+      auto& smd_buf = this->m_storage.template get<MetadataRole>();
       IOStatus status = m_smd_stream.read_one(smd_buf.ptr(), smd_buf.size());
 
       if (status != IOStatus::Success) {

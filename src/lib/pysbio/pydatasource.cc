@@ -21,6 +21,14 @@
 
 #include "pysbio/pydetector.hh"
 
+#ifdef SBIO_HAS_XTC1
+#include "sbio/formats/xtc1/xtc1_traits.hh"
+#endif
+
+#ifdef SBIO_HAS_XTC2
+#include "sbio/formats/xtc2/xtc2_traits.hh"
+#endif
+
 #ifdef SBIO_HAS_MPI
 #include <mpi.h>
 #endif

@@ -1,7 +1,7 @@
 installed_storage_headers = [
     'host_buffer.hh',
     'mpi_shared.hh',
-    'threaded_local_buffer.hh',
+    'thread_local_buffer.hh',
 ]
 
 if not sbio_as_wheel_opt and build_core_opt

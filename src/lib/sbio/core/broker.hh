@@ -104,7 +104,7 @@ namespace sbio {
     class EPolicy,
     FormatTraits FTraits
   >
-  class IStreamBroker {
+  class StreamBroker {
   public:
     using StorageT = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
     using Config = typename FTraits::StreamParameters;
@@ -125,7 +125,7 @@ namespace sbio {
      * The Broker will remain in the INIT state until explicitly configured, if
      * using this constructor.
      */
-    IStreamBroker()
+    StreamBroker()
       : m_broker_state(BrokerState::INIT)
     {}
 
@@ -134,7 +134,7 @@ namespace sbio {
      *
      * @param[in] cfg The data-format-dependent configuration parameters.
      */
-    IStreamBroker(const Config& cfg)
+    StreamBroker(const Config& cfg)
       : m_config(cfg)
       , m_broker_state(BrokerState::INIT)
     {}
@@ -455,7 +455,7 @@ namespace sbio {
     }
 
   protected:
-    ~IStreamBroker() = default;
+    ~StreamBroker() = default;
 
     Config m_config;
     BrokerState m_broker_state;

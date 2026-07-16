@@ -20,56 +20,25 @@
 #endif
 
 namespace sbio {
-
-  template <class FTraits, class DataSource>
-  struct ExecutionContext {
-  public:
-    using StepIdx = typename FTraits::StepIdxType;
-
-    ExecutionContext(DataSource& ds)
-      : m_ds(ds)
-    {}
-
-    SBIO_HD IOStatus prepare() { return m_ds.discover_metadata(); }
-
-    SBIO_HD bool next() {
-      m_current_step = m_ds.next();
-
-      return m_current_step != FTraits::ExhaustedSentinel;
-    }
-
-    template <class DetType, class StepIdx>
-    SBIO_HD auto read(DetType& det,
-                      const char* alg_name,
-                      const char* field_name,
-                      StepIdx& idx) {
-      return make_source([&det, &idx, alg_name, field_name]() {
-        return det.get_data(idx, alg_name, field_name);
-      });
-    }
-
-    SBIO_HD StepIdx& current_step() {
-      return m_current_step;
-    }
-
-  private:
-    DataSource& m_ds;
-    StepIdx m_current_step;
-  };
-
   /**
-   * The execution model provides hooks for managing a data broker's state machine
-   * or lifecycle stages. It also provides two entry points for management of the
+   * The execution model is the central control point for the management of Broker
+   * life-cycle (transitioning through state machines), as well as coordination of
    * higher level abstractions.
    *
-   * In general, the stages for a data stream are:
+   * The model provides hooks that control the movement between various states, as
+   * well as providing the means to allocate storage solutions appropriate to the
+   * model, and the mechanisms to synchronize concurrently running instances.
+   *
+   * The model provides control over Brokers, BrokerGroups, and DataSources.
+   *
+   * In general, the stages requiring management at the Broker level are:
    * 1. Resource allocation
    * 2. Connection
    * 3. Metadata discovery
    * 4. Indexing (if applicable) - to make traversal faster
    * 5. Data streaming and retrieval
    *
-   * The IExecution defines a model that allows for abstracting the control of these
+   * The Execution defines a model that allows for abstracting the control of these
    * stages out of the stream broker itself. It also provides hooks which can be used
    * to synchronize resources before and after state transitions.
    *
@@ -87,8 +56,8 @@ namespace sbio {
    *    -> A pre state transition hook. I.e. control what happens before metadata
    *    -> A post state transition hook. I.e. control what happens immediately
    *       after the metadata discovery step.
-   * 4. Indexing stage contains 1 hook: A switch to control whether the broker
-   *    should index at all.
+   * 4. Indexing stage contains 1 explicit hook: A switch to control whether the broker
+   *    should index at all. The synchronizations hooks below will also be used.
    * 5. For data access the policy defines 1 hook that controls whether the
    *    broker should proceed with retrieval (like stage 4 indexing above).
    *
@@ -105,31 +74,31 @@ namespace sbio {
    * Note: Hooks are optional (with the exception of storage allocation). They are
    * called via compile time constexpr checks - so a no-op is just a no-op.
    *
-   * Beyond the raw data stream broker, the model controls two features for the
-   * higher level abstractions provided by sbio.
-   * 1. For the `Detector` abstraction:
-   * - The `get_data` hook determines how a Detector will distribute read and
-   *   retrieval operations among potentially multiple brokers. A Detector may
-   *   be gathering data together from multiple streams. This hook can control
-   *   whether you read from all first, and then inspect for data, or proceed
-   *   in order reading and inspecting, as an example.
+   * At the level of the BrokerGroup, the model provides control mechanisms for:
+   * 1. Allocation of BrokerGroup memory - principally, tables required for the
+   *    management of the various Brokers under the umbrella of the Group.
+   * 2. The `get_data` hook determines how a Detector will distribute read and
+   *    retrieval operations among potentially multiple brokers. A Detector may
+   *    be gathering data together from multiple streams. This hook can control
+   *    whether you read from all first, and then inspect for data, or proceed
+   *    in order reading and inspecting, as an example.
    *
-   * 2. For the `DataSource` abstraction: Finally, at the top of the abstraciton
-   *    hiearachy, the execution model can determine how a DataSource distributes
+   * Finally, at the level of the DataSource, the following control points exist:
+   * 1. The execution model can determine how a DataSource distributes
    *    event/step indexing among parallel resources. (In whatever unit makes sense
    *    for the file format).
    */
   template <typename Derived>
-  class IExecution {
+  class Execution {
   public:
     /**
-     * The default storage buffers for all roles will be simple host buffers.
+     * Sub-classes must define the used buffer types.
      */
     template <typename Descriptor>
-    using BufferTypeFor = HostBuffer;
+    using BufferTypeFor = void;
 
-    // --- Data broker level policies --- //
-    // ---------------------------------- //
+    // --- StreamBroker level policies --- //
+    // ----------------------------------- //
 
     /**
      * Controls the allocation of storage.
@@ -255,8 +224,25 @@ namespace sbio {
       }
     }
 
-    // --- `Detector` level policies --- //
-    // --------------------------------- //
+    // --- BrokerGroup level policies --- //
+    // ---------------------------------- //
+    template <FormatTraits FTraits>
+    SBIO_HD static auto allocate_group_storage(std::size_t num_segments) {
+      using PtrTableRequirements =
+          TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
+          //TypeList<BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>>;
+      if constexpr (requires {
+          Derived::template allocate_group_storage_impl<PtrTableRequirements, FTraits>(num_segments);
+      }) {
+        return Derived::template allocate_group_storage_impl<PtrTableRequirements, FTraits>(num_segments);
+      } else {
+        AllocationRequest<FTraits> alloc_request;
+        alloc_request.size_requests[0] = sizeof(void*) * num_segments;
+
+        return Derived::template allocate_storage<PtrTableRequirements, FTraits>(alloc_request);
+      }
+    }
+
     template <class FTraits, class FetchCBType, class GetCBType>
     SBIO_HD static IOStatus get_data(typename FTraits::StepIdxType step_idx,
                                      FetchCBType&& unit_fetcher,
@@ -323,12 +309,12 @@ namespace sbio {
      *            its preparation (e.g. moving data into the Window).
      */
     template <
-      typename Role,
-      typename FTraits,
-      typename StorageT,
-      typename SyncT,
-      typename StageCB,
-      typename CommitCB
+      class Role,
+      class FTraits,
+      class StorageT,
+      class SyncT,
+      class StageCB,
+      class CommitCB
     >
     static void prepare_group_buffers(StorageT& storage,
                                       SyncT& sync_vars,
@@ -370,206 +356,7 @@ namespace sbio {
                                                std::forward<IndexTrigger>(trigger));
       }
     }
-
-    // --- Pipeline level coordination --- //
-    // ----------------------------------- //
-    template <FormatTraits FTraits, class DataSource, class PipelineDef>
-    SBIO_HD static auto dispatch(DataSource& ds, PipelineDef&& def) {
-      ExecutionContext<FTraits, DataSource> ctx(ds);
-      if (ctx.prepare() != IOStatus::Success) {
-        return;
-      }
-
-      auto pipeline = def(ctx);
-
-      return Derived::run(ctx, pipeline);
-    }
-
-    template <class Task>
-    SBIO_HD static auto run_pipeline(Task&& task) {
-      return task.execute();
-    }
-
-    template <class Context, class Pipeline>
-    SBIO_HD static void run(Context& ctx, Pipeline& pipeline) {
-      while (ctx.next()) {
-        //Derived::pre_update(ctx);
-
-        pipeline.transform(ctx);
-
-        //Derived::post_update(ctx);
-      }
-    }
   };
-
-  class SerialExecution : public IExecution<SerialExecution> {
-  public:
-    // TODO: Consider moving into Storage/Buffer directly
-    //       There may be a need for this...
-    // TODO: MAKE SURE TO ALLOW PASSING IN THE REQUESTS FOR DIFFERENT ROLES!
-    template <IsTypeList Requirements, FormatTraits FTraits>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
-      // Requirements is a TypeList<T1, T2, ...>
-      return allocate_impl_helper(Requirements{}, request);
-    }
-
-    template <typename... Descriptors, FormatTraits FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
-      Storage<TypeList<Descriptors...>, SerialExecution> s;
-
-      std::size_t i { 0 };
-
-      auto make_host_buffers = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-
-        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
-
-        buf.set_memory(new char[final_sz], final_sz);
-      };
-      ( (make_host_buffers(std::type_identity<Descriptors>{})), ... );
-
-      return s;
-    }
-
-    template <class BrokerType, FormatTraits FTraits>
-    SBIO_HD static void on_discovery_impl(BrokerType& broker,
-                                          typename FTraits::MetadataInventory& inv,
-                                          IOStatus status) {
-      std::cout << "[Serial] Commiting metadata" << std::endl;
-    }
-
-    template <FormatTraits FTraits>
-    SBIO_HD static bool should_process_impl(typename FTraits::StepIdxType& step_idx) {
-      // Always process
-      return true;
-    }
-
-    template <FormatTraits FTraits, class IndexTrigger>
-    SBIO_HD static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static typename FTraits::StepIdxType event_idx { 0 };
-
-      if (event_idx >= max_capacity) {
-        if (!trigger()) {
-          return FTraits::ExhaustedSentinel;
-        }
-
-        if (event_idx >= max_capacity) {
-          return FTraits::ExhaustedSentinel;
-        }
-      }
-
-      return event_idx++;
-    }
-
-    template <typename Descriptor>
-    using BufferTypeFor = HostBuffer;
-  };
-
-  class ThreadedExecution : public IExecution<ThreadedExecution> {
-  public:
-    template <typename Descriptor>
-    using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, DataRole>,
-      ThreadLocalBuffer,
-      HostBuffer
-    >;
-
-    template <IsTypeList Requirements, FormatTraits FTraits>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
-      return allocate_impl_helper(Requirements{}, request);
-    }
-
-    template <typename... Descriptors, FormatTraits FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
-      Storage<TypeList<Descriptors...>, ThreadedExecution> s;
-
-      std::size_t i { 0 };
-
-      auto make_thread_local_data = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-
-        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
-
-        using BufRole = typename Descriptor::role;
-        if constexpr (std::is_same_v<BufRole, DataRole>) {
-          buf.set_memory(nullptr, final_sz);
-        } else {
-          buf.set_memory(new char[final_sz], final_sz);
-        }
-      };
-      ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
-
-      return s;
-    }
-
-    template <class FTraits, class FetchCBType, class GetCBType>
-    static IOStatus get_data_impl(typename FTraits::StepIdxType step_idx,
-                                  FetchCBType&& unit_fetcher,
-                                  std::size_t num_fetches,
-                                  GetCBType&& unit_get_data,
-                                  std::size_t num_accesses) {
-      std::lock_guard<std::mutex> lock(m_io_mutex);
-      IOStatus status { IOStatus::Success };
-
-      for (std::size_t i = 0; i < num_fetches; ++i) {
-        if (auto s = unit_fetcher(i); s != IOStatus::Success) {
-          status = s;
-          break;
-        }
-      }
-
-      if (status == IOStatus::Success) {
-        for (std::size_t i = 0; i < num_accesses; ++i) {
-          unit_get_data(i);
-        }
-      }
-
-      return status;
-    }
-
-    template <FormatTraits FTraits, class IndexTrigger>
-    SBIO_HD static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static std::atomic<typename FTraits::StepIdxType> event_idx { 0 };
-
-      static std::mutex trigger_mutex;
-      typename FTraits::StepIdxType current { event_idx.load(std::memory_order_acquire) };
-
-      if (current >= max_capacity) {
-        std::lock_guard<std::mutex> lock(trigger_mutex);
-
-        current = event_idx.load(std::memory_order_acquire);
-
-        if (current >= max_capacity) {
-          if (!trigger()) {
-            return FTraits::ExhaustedSentinel;
-          }
-
-          if (current >= max_capacity) {
-            return FTraits::ExhaustedSentinel;
-          }
-        }
-      }
-
-      while (current < max_capacity) {
-        if (event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
-          return current;
-        }
-      }
-
-      // TODO: Not convinced that this is thread-safe yet....
-      return FTraits::ExhaustedSentinel;
-    }
-
-  private:
-    inline static std::mutex m_io_mutex;
-  };
-
 } // namespace sbio
 
 #endif // SBIO_CORE_EXECUTION_HH

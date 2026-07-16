@@ -21,15 +21,18 @@
 #define PYSBIO_PYDATASOURCE_HH
 
 #include "sbio/core/datasource.hh"
+#include "sbio/execution/serial.hh"
 #ifdef SBIO_HAS_MPI
-#include "sbio/mpi/execution.hh"
+#include "sbio/execution/mpi.hh"
 #endif
-#include "sbio/posix_io.hh"
+#include "sbio/io/posix.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/xtc1_broker.hh"
+#include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
 #ifdef SBIO_HAS_XTC2
 #include "sbio/xtc2_broker.hh"
+#include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
 #include <ncarray/ncarrays.hh>
@@ -46,7 +49,7 @@ namespace py = pybind11;
 
 namespace pysbio {
 #ifdef SBIO_HAS_XTC1
-  using SerialDataSource1 = sbio::IDataSource<
+  using SerialDataSource1 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::SerialExecution,
     sbio::XTC1Traits,
@@ -54,7 +57,7 @@ namespace pysbio {
   >;
 
 #ifdef SBIO_HAS_MPI
-  using MPIDataSource1 = sbio::IDataSource<
+  using MPIDataSource1 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::MPIExecution,
     sbio::XTC1Traits,
@@ -64,7 +67,7 @@ namespace pysbio {
 #endif
 
 #ifdef SBIO_HAS_XTC2
-  using SerialDataSource2 = sbio::IDataSource<
+  using SerialDataSource2 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::SerialExecution,
     sbio::XTC2Traits,
@@ -72,7 +75,7 @@ namespace pysbio {
   >;
 
 #ifdef SBIO_HAS_MPI
-  using MPIDataSource2 = sbio::IDataSource<
+  using MPIDataSource2 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::MPIExecution,
     sbio::XTC2Traits,
@@ -123,7 +126,7 @@ namespace pysbio {
     std::size_t next();
 
     // TODO: Switch to making this const after the ConstIterator works when
-    //       IDataSource::next is properly restructured to support it.
+    //       DataSource::next is properly restructured to support it.
     DataSourceV& ds() { return m_ds; }
 
   private:

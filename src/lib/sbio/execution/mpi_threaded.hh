@@ -52,7 +52,7 @@ namespace sbio {
    * - Allocations for the types of `DataRole` and `TableRole` use ThreadLocalBuffer
    *   to allow a single rank to parallelize data across multiple threads.
    */
-  class MPIThreadedExecution : public IExecution<MPIThreadedExecution> {
+  class MPIThreadedExecution : public Execution<MPIThreadedExecution> {
   public:
     template <typename Descriptor>
     using BufferTypeFor = std::conditional_t<

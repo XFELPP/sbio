@@ -44,7 +44,7 @@ namespace sbio {
    * roles are intentionally shared using a simpler HostBuffer which makes them
    * available process wide.
    */
-  class ThreadedExecution : public IExecution<ThreadedExecution> {
+  class ThreadedExecution : public Execution<ThreadedExecution> {
   public:
     template <typename Descriptor>
     using BufferTypeFor = std::conditional_t<

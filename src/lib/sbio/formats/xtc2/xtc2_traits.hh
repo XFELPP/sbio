@@ -105,6 +105,8 @@ namespace sbio {
     >;
 
     using GroupBufferRequirements = TypeList<
+      //BufferDescriptor<TableRole, 0, sizeof(void*)>,                 /* Buffer for pointers to segments */
+      //BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>,      /* Buffer for pointers to segments */
       BufferDescriptor<GroupRole, 0, sizeof(XTC2::Dgram), Shareable> /* Buffer for constants */
     >;
 

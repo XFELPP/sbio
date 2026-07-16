@@ -54,11 +54,11 @@ namespace sbio {
     class BrokerType,
     std::size_t MaxDataStreams = 128
   >
-  class IDataSource {
+  class DataSource {
   public:
     using Config = typename FTraits::StreamParameters;
 
-    IDataSource() = default;
+    DataSource() = default;
 
     SBIO_HD inline bool add_data_stream(const Config& cfg) {
       if (m_num_data_streams >= MaxDataStreams) {
@@ -319,7 +319,7 @@ namespace sbio {
       }
 
       friend bool operator==(const IteratorImpl& a, const IteratorImpl& b) {
-        // Need to figure out best way to compare IDataSource
+        // Need to figure out best way to compare DataSource
         // For now, just punt and return comparison of indices...
         return (a.m_idx == b.m_idx);
       }
@@ -333,13 +333,13 @@ namespace sbio {
       typename FTraits::StepIdxType m_idx;
     };
 
-    using Iterator = IteratorImpl<IDataSource>;
-    using ConstIterator = IteratorImpl<const IDataSource>;
+    using Iterator = IteratorImpl<DataSource>;
+    using ConstIterator = IteratorImpl<const DataSource>;
 
     Iterator begin() { return Iterator(*this, 0); }
     Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
 
-    // ConstIterator needs some rework on the IDataSource::next function to properly work
+    // ConstIterator needs some rework on the DataSource::next function to properly work
     // ConstIterator begin() const { return ConstIterator(*this, 0); }
     // ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 

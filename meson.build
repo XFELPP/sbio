@@ -202,15 +202,23 @@ else
     endforeach
 endif
 
+# Export a list of the enabled data formats for downstream projects to link properly
+enabled_formats = []
+
 if sbio_build_xtc1
     add_project_arguments('-DSBIO_HAS_XTC1', language: ['cpp', 'cuda'])
     message('Will build XTC1 data format support.')
+    enabled_formats += ['xtc1']
 endif
 if sbio_build_xtc2
     add_project_arguments('-DSBIO_HAS_XTC2', language: ['cpp', 'cuda'])
     message('Will build XTC2 data format support.')
+    enabled_formats += ['xtc2']
 endif
 
+sbio_enabled_formats = {
+    'formats': enabled_formats,
+}
 #### Main Python Setup ####
 ###########################
 

@@ -37,7 +37,7 @@ namespace sbio {
    * This execution policy provides purely synchronous behaviour for use with a
    * single buffer in a host-only pipeline. No synchronization is necessary.
    */
-  class SerialExecution : public IExecution<SerialExecution> {
+  class SerialExecution : public Execution<SerialExecution> {
   public:
     /**
      * SerialExecution's buffer selector always points to HostBuffer.

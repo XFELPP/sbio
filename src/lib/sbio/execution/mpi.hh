@@ -48,7 +48,7 @@ namespace sbio {
    * - Exhaustion of available indexed capacity automatically retriggers INDEXING
    *   if applicable for the Brokers.
    */
-  class MPIExecution : public IExecution<MPIExecution> {
+  class MPIExecution : public Execution<MPIExecution> {
   public:
     /**
      * Map IndexRole to MPISharedBuffer and all other roles to HostBuffer.

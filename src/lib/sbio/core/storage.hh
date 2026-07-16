@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <type_traits>
+#include <vector>
 
 namespace sbio {
   // --- TypeList helper: Used by FormatTraits to specify buffer requirements --- //
@@ -58,6 +59,7 @@ namespace sbio {
   struct IndexRole {};
   struct CalibrationRole {};
   struct GroupRole {};
+  struct TableRole {};
 
   // --- Tags for additional semantic hints as to what a buffer can do --- //
   struct Shareable {};      // Optimization: E.g., visible to MPI peers
@@ -86,76 +88,6 @@ namespace sbio {
     using hint = Hint;
     static constexpr std::size_t id = Id;
     static constexpr std::size_t min_size = MinSize;
-  };
-
-  // --- Specific types of buffers --- //
-
-  struct HostBuffer {
-    SBIO_HD inline void* ptr() const {
-      return m_ptr;
-    }
-
-    SBIO_HD std::size_t size() const {
-      return m_size;
-    }
-
-    SBIO_HD inline void set_memory(void* ptr, std::size_t size) {
-      m_ptr = ptr;
-      m_size = size;
-    }
-
-    inline bool is_dirty() const {
-      return false;
-    }
-    inline void set_dirty(bool) {
-    }
-
-  private:
-    void* m_ptr;
-    std::size_t m_size;
-  };
-
-  struct ThreadLocalBuffer {
-    inline void* ptr() const {
-      thread_local void* local_ptr { nullptr };
-
-      if (local_ptr == nullptr && m_size > 0) {
-        local_ptr = std::malloc(m_size);
-      }
-
-      return local_ptr;
-    }
-
-    std::size_t size() const {
-      return m_size;
-    }
-
-    /**
-     * The ThreadLocalBuffer sets memory in a delayed fashion, only storing size here.
-     *
-     * The actual memory allocation occurs on the first retrieval of the underlying
-     * buffer pointer. This allows each thread to maintain its own buffer.
-     *
-     * @param[in] ptr Location to allocate memory over. Ignored.
-     * @param[in] size The size of the buffer required.
-     */
-    inline void set_memory(void* ptr, std::size_t size) {
-      m_size = size;
-    }
-
-    inline bool is_dirty() const {
-      return false;
-    }
-
-    inline void set_dirty(bool) {
-    }
-
-    ~ThreadLocalBuffer() {
-      // TODO: Implement this!
-    }
-
-  private:
-    mutable std::size_t m_size { 0 };
   };
 
   template <typename T>

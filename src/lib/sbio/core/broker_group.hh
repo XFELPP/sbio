@@ -27,7 +27,10 @@
 #include "sbio/core/utility.hh"
 #include "sbio/formats/format_traits.hh"
 
-#include "ncarray/ncarrays.hh"
+#ifdef SBIO_HAS_CUDA
+#include <cuda_runtime.h>
+#endif
+#include <ncarray/ncarrays.hh>
 
 #include <concepts>
 #include <cstddef>
@@ -44,6 +47,10 @@ namespace sbio {
   class BrokerGroup {
   public:
     using EPolicy = typename BrokerType::ExecutionPolicy;
+    using PtrTableRequirements =
+      TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
+      //TypeList<BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>>;
+    using PtrStorageT = Storage<PtrTableRequirements, EPolicy>;
     using StorageT = Storage<typename FTraits::GroupBufferRequirements, EPolicy>;
     using DataAccessPtn = typename FTraits::DataAccessPtn;
     using DataResult = typename FTraits::DataResult;
@@ -66,12 +73,27 @@ namespace sbio {
     BrokerGroup() {
       m_name[0] = '\0';
       m_type[0] = '\0';
+#ifdef SBIO_HAS_CUDA
+      cudaMalloc(&m_dev_ptrs, MaxSegments * sizeof(void*));
+#endif
     }
+
+#ifdef SBIO_HAS_CUDA
+    ~BrokerGroup() {
+      if (m_dev_ptrs) {
+        cudaFree(m_dev_ptrs);
+      }
+    }
+#endif
 
     BrokerGroup(const char* name,
                 const char* type,
                 std::size_t num_segments,
                 DataSegmentRef* segments) {
+#ifdef SBIO_HAS_CUDA
+      cudaMalloc(&m_dev_ptrs, MaxSegments * sizeof(void*));
+#endif
+
       m_num_segments = num_segments;
 
       std::size_t i { 0 };
@@ -105,6 +127,8 @@ namespace sbio {
           m_num_brokers++;
         }
       }
+
+      m_ptr_storage = EPolicy::template allocate_group_storage<FTraits>(m_num_segments);
     }
 
     const char* group_name() const { return m_name; }
@@ -185,6 +209,9 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           auto active_stream_idx { step_idx % m_num_segments };
@@ -205,7 +232,8 @@ namespace sbio {
                                   active_stream_idx,
                                   std::forward<CBType>(callback));
 
-          m_ptrs[0] = const_cast<void*>(res.data);
+          //m_ptrs[0] = const_cast<void*>(res.data);
+          ptr_tbl[0] = const_cast<void*>(res.data);
           // This assumes all segments are same shape...
           ref_res.data = res.data;
           ref_res.size = res.size;
@@ -222,7 +250,8 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          // m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
@@ -251,7 +280,16 @@ namespace sbio {
                                           get_data_cb,
                                           num_segments);
 
-      return as_ncarray<MemTag>(m_ptrs, num_segments, ref_res);
+      //const void** ptr_table { m_ptrs };
+      const void** ptr_table { const_cast<const void**>(ptr_tbl) };
+      if constexpr (std::is_same_v<MemTag, ncarray::DevTag>) {
+#ifdef SBIO_HAS_CUDA
+        cudaMemcpy(m_dev_ptrs, ptr_tbl, num_segments * sizeof(void*), cudaMemcpyHostToDevice);
+        ptr_table = const_cast<const void**>(reinterpret_cast<void**>(m_dev_ptrs));
+#endif
+      }
+
+      return as_ncarray<MemTag>(ptr_table, num_segments, ref_res);
     }
 
     /**
@@ -278,6 +316,9 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           auto active_stream_idx { step_idx % m_num_segments };
@@ -296,8 +337,9 @@ namespace sbio {
           auto active_stream_idx { step_idx % m_num_segments };
           auto res = get_data_for(req, active_stream_idx);
 
-          m_ptrs[0] = const_cast<void*>(res.data);
-          // This assumes all segments are same shape...
+          // m_ptrs[0] = const_cast<void*>(res.data);
+          ptr_tbl[0] = const_cast<void*>(res.data);
+          //  This assumes all segments are same shape...
           ref_res.data = res.data;
           ref_res.size = res.size;
           ref_res.rank = res.rank;
@@ -311,7 +353,8 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          //m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
@@ -340,7 +383,7 @@ namespace sbio {
                                           get_data_cb,
                                           num_segments);
 
-      return as_ncarray<MemTag>(m_ptrs, num_segments, ref_res);
+      return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res);
     }
 
     template <class Algo>
@@ -368,7 +411,7 @@ namespace sbio {
                                                                   commit_cb);
 
       // Reset the staged data for all instances of the Algorithm
-      auto algo_buf = this->m_storage.template get<GroupRole, 0>();
+      auto& algo_buf = this->m_storage.template get<GroupRole, 0>();
       algo.set_staged_data(reinterpret_cast<std::uint8_t*>(algo_buf.ptr()), bytes_for_algo);
     }
 
@@ -384,7 +427,12 @@ namespace sbio {
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
 
+#ifdef SBIO_HAS_CUDA
+    mutable const void** m_dev_ptrs { nullptr };
+#endif
+
     StorageT m_storage;
+    mutable PtrStorageT m_ptr_storage;
   };
 } // namespace sbio
 
