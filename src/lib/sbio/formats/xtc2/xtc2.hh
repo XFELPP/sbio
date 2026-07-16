@@ -247,7 +247,7 @@ namespace sbio {
     // in the original XtcData classes
     struct Dgram {
     public: // Added in TransitionBase
-      enum Type { Event = 0, Ocurrence = 1, Marker = 2 };
+      enum Type { Event = 0, Occurrence = 1, Marker = 2 };
       enum { NumberOfTypes = 3 };
 
       SBIO_HD inline std::uint16_t readoutGroups() const { return env & 0xFFFF; }

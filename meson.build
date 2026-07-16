@@ -232,6 +232,13 @@ python_site_packages = 'lib' / 'python' + py_ver / 'site-packages'
 ###########################
 deps_for_sbio = []
 
+#### CUDA setup
+if sbio_has_cuda
+    # CUDA driver and nvrtc are both for JIT
+    cuda_dep = dependency('cuda', modules: ['cuda', 'cufile', 'cudart'])
+    deps_for_sbio += cuda_dep
+endif
+
 #### ncarray
 libncarray = cpp.find_library('ncarray', required: false)
 if libncarray.found()
@@ -427,6 +434,7 @@ deps_for_sbio += spdlog_dep
 py_install_dir = py3.get_install_dir(pure: false)
 
 pysbio_install_dir = py_install_dir / 'sbio/core'
+pysbio_fmts_install_dir = py_install_dir / 'sbio/formats'
 
 if sbio_as_wheel_opt
     # Install C++ libraries inside the wheel structure
@@ -482,7 +490,10 @@ endif
 #### SBIO ####
 ###############
 
-installed_headers = []
+installed_headers = [
+    'src/lib/sbio/cufile_io.hh',
+    'src/lib/sbio/posix_io.hh',
+]
 
 installed_core_headers = [
     'src/lib/sbio/core/access_style.hh',
@@ -498,10 +509,10 @@ installed_core_headers = [
     'src/lib/sbio/core/utility.hh',
 ]
 
-# installed_cuda_headers = [
-#     'src/lib/sbio/cuda/execution.hh',
-#     'src/lib/sbio/cuda/storage.hh',
-# ]
+installed_cuda_headers = [
+    'src/lib/sbio/cuda/execution.hh',
+    'src/lib/sbio/cuda/storage.hh',
+]
 
 installed_formats_headers = [
     'src/lib/sbio/formats/format_traits.hh',
@@ -540,6 +551,9 @@ sbio_headers = include_directories('src/lib')
 
 if build_core_opt
     core_sources = ['src/lib/sbio/posix_io.cc']
+    if sbio_has_cuda
+        core_sources += ['src/lib/sbio/cufile_io.cc']
+    endif
 
     if sbio_build_xtc1
         libxtc1slim = shared_library(
@@ -622,10 +636,10 @@ if build_core_opt
             installed_core_headers,
             install_dir: header_install_dir / 'sbio/core',
         )
-        # install_headers(
-        #     installed_cuda_headers,
-        #     install_dir: header_install_dir / 'sbio/cuda',
-        # )
+        install_headers(
+            installed_cuda_headers,
+            install_dir: header_install_dir / 'sbio/cuda',
+        )
         install_headers(
             installed_formats_headers,
             install_dir: header_install_dir / 'sbio/formats',
@@ -687,11 +701,11 @@ if build_python_opt
             pure: false,
             subdir: 'sbio/include/sbio/core',
         )
-        # py3.install_sources(
-        #     installed_cuda_headers,
-        #     pure: false,
-        #     subdir: 'sbio/include/sbio/cuda',
-        # )
+        py3.install_sources(
+            installed_cuda_headers,
+            pure: false,
+            subdir: 'sbio/include/sbio/cuda',
+        )
         py3.install_sources(
             installed_formats_headers,
             pure: false,
@@ -743,6 +757,20 @@ if build_python_opt
         # link_args: py_mod_link_args,
     )
 
+    py_mod = py3.extension_module(
+        'pyxtc2',
+        [
+            'src/lib/pysbio/formats/pyxtc2.cc',
+        ],
+        install: true,
+        install_dir: pysbio_fmts_install_dir,
+        include_directories: sbio_headers,
+        dependencies : deps_for_py_mod,
+        install_rpath: py_to_lib_install_rpath,
+        build_rpath: py_to_lib_install_rpath,
+        # link_args: py_mod_link_args,
+    )
+
     py3.install_sources(
         'src/sbio/__init__.py',
         pure: false,
@@ -752,5 +780,10 @@ if build_python_opt
         'src/sbio/core/__init__.py',
         pure: false,
         subdir: 'sbio/core',
+    )
+    py3.install_sources(
+        'src/sbio/formats/__init__.py',
+        pure: false,
+        subdir: 'sbio/formats',
     )
 endif # build_python_opt
