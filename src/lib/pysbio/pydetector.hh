@@ -38,7 +38,6 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <xalgospp/detector/calibration.hh>
 
 #include <cstdlib>
 #include <memory>
@@ -100,23 +99,9 @@ namespace pysbio {
 #endif
 
   struct DetectorWrapper {
-    using Calibrator = xalgospp::det::Calibration<xalgospp::det::RuntimeCalibPolicy>;
-
     DetectorWrapper(DetectorV d)
       : det(d)
     {}
-
-    void stage_calibration(const Calibrator::Params& params) {
-      auto det_visitor = [&](auto& det) {
-        auto adjusted_params = params;
-        adjusted_params.det_serial_no = this->serial_number;
-        calibrator = std::make_shared<Calibrator>(adjusted_params);
-
-        det.prepare_group_algorithm(*calibrator);
-      };
-
-      std::visit(det_visitor, det);
-    }
 
     const std::string& get_detector_type() const { return detector_type; }
     const std::string& get_serial_number() const { return serial_number; }
@@ -124,8 +109,6 @@ namespace pysbio {
     DetectorV det;
     std::string detector_type;
     std::string serial_number;
-    std::shared_ptr<Calibrator> calibrator;
-    std::shared_ptr<ncarray::NCArray> calib_buffer;
   };
 
   struct AlgWrapper {

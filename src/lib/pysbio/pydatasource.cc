@@ -25,7 +25,6 @@
 #include <mpi.h>
 #endif
 #include <pybind11/pybind11.h>
-#include <xalgospp/detector/calibration.hh>
 
 #include <string>
 #include <variant>
@@ -119,9 +118,6 @@ namespace pysbio {
   }
 
   py::object PyDataSource::detector(py::module& m, const char* name) {
-    using Calibrator = xalgospp::det::Calibration<xalgospp::det::RuntimeCalibPolicy>;
-    using Params = Calibrator::Params;
-
     // TODO: This is quite kludgy because it goes back and forth between sbio det,
     //       the C++ DetectorWrapper, and full Python det for various metadata.
     //       Should normalize this....
@@ -129,22 +125,7 @@ namespace pysbio {
       auto det = ds.get_stream_group(name);
 
       // The wrapper routine will also construct a serial number from pieces
-      auto py_det = wrap_detector(m, det);
-
-      std::shared_ptr<DetectorWrapper> det_wrapper =
-          py_det.template cast<std::shared_ptr<DetectorWrapper>>();
-
-      Params calib_params;
-      // TODO: Get this URL from some place smarter...
-      calib_params.base_url = "https://pswww.slac.stanford.edu";
-      calib_params.experiment = m_exp;
-      calib_params.run = m_run;
-      calib_params.det_type = det.group_type();
-      calib_params.det_serial_no = det_wrapper->get_serial_number();
-
-      det_wrapper->stage_calibration(calib_params);
-
-      return py_det;
+      return wrap_detector(m, det);
     };
 
     return std::visit(det_maker, m_ds);

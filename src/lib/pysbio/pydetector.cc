@@ -69,44 +69,6 @@ namespace pysbio {
 
           // For each "field", attach it to the "algorithm" as a data fetch method
           py::setattr(py_alg, field.c_str(), MethodType(py_data_getter, py_alg));
-
-          // Setup a calibration routine if applicable for the data field
-          if (alg == "raw" && field == "raw") {
-            // TODO: Expose a callback hook for BrokerGroups that allows running
-            //       after collecting all portions (only supports per-seg callbacks atm)
-            // TODO: For Python bindings add the context/pipeline bindings which
-            //       already support this.
-            // TODO: Allow calibration to run per-segment as well.
-            auto calibrate_data = [det, alg, field, cpp_det](AlgWrapper& self, StepIdx step) {
-              if (!cpp_det->calibrator) {
-                throw std::runtime_error("Run the Calibration staging first!");
-              }
-
-              ncarray::NCArrayView raw_arr = det.get_data(step,
-                                                          alg.c_str(),
-                                                          field.c_str());
-
-              if (!cpp_det->calib_buffer) {
-                // Will reuse a single buffer for better memory management.
-                cpp_det->calib_buffer = std::make_shared<ncarray::NCArray>(raw_arr.ndim(),
-                                                                           raw_arr.shape(),
-                                                                           ncarray::DType::float32);
-              }
-
-              // NOTE: Due to underlying template machinery, we must explicitly
-              //       convert to view here. Normally, the NCArray auto converts
-              //       but xalgospp::Algorithm has complex templating that would
-              //       interfere, and result in a misinterpretation.
-              //       Not even an `auto` to extract the reference will work...
-              ncarray::NCArrayView calib_buffer { (*(cpp_det->calib_buffer)).view() };
-              cpp_det->calibrator->process(raw_arr, calib_buffer);
-
-              return *(cpp_det->calib_buffer);
-            };
-
-            auto py_calib_data = py::cpp_function(calibrate_data, py::is_method(py_alg));
-            py::setattr(py_alg, "calib", MethodType(py_calib_data, py_alg));
-          }
         }
 
         // For each "algorithm", attach it to the detector as an object with data
