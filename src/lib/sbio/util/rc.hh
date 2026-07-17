@@ -28,6 +28,9 @@
 #endif
 #endif
 
+// NOTE: The implementation to make it thread safe means not quite GPU compat.
+//       But, it wouldnt be hard to swap out/duplicate to remove that.
+#include <atomic>
 #include <concepts>
 #include <cstdint>
 #include <type_traits>
@@ -123,13 +126,24 @@ namespace sbio {
      * The control struct used by the RC for wrapping an object and tracking ref count.
      */
     struct RCObject {
-      std::size_t ref_count;                       ///< The reference count of a wrapped object.
+      std::atomic<std::size_t> ref_count;          ///< The reference count of a wrapped object.
       T object;                                    ///< The wrapped object to be reference counted.
 #ifdef _WIN32
       [[msvc::no_unique_address]] Deleter deleter; ///< Custom deleter if provided.
 #else
       [[no_unique_address]] Deleter deleter;       ///< Custom deleter if provided.
 #endif
+
+      SBIO_HD RCObject(std::size_t count, T&& obj)
+        : ref_count(count)
+        , object(std::move(obj))
+      {}
+
+      SBIO_HD RCObject(std::size_t count, T&& obj, Deleter del)
+        : ref_count(count)
+        , object(std::move(obj))
+        , deleter(del)
+      {}
     };
 
     /**
@@ -156,9 +170,7 @@ namespace sbio {
      */
     SBIO_HD ~RC() {
       if (m_obj) {
-        dec_reference();
-
-        if (m_obj->ref_count == 0) {
+        if (m_obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
           if constexpr (!std::is_void_v<Deleter>) {
             m_obj->deleter(&(m_obj->object));
             m_obj->deleter.~Deleter();
@@ -239,15 +251,21 @@ namespace sbio {
      *
      * @param count The new reference count to use.
      */
-    SBIO_HD void set_count(std::size_t count) { m_obj->ref_count = count; }
+    SBIO_HD void set_count(std::size_t count) {
+      m_obj->ref_count.store(count, std::memory_order_release);
+    }
     /**
      * Increment the wrapped object's reference count.
      */
-    SBIO_HD void inc_reference() { m_obj->ref_count++; }
+    SBIO_HD void inc_reference() {
+      m_obj->ref_count.fetch_add(1, std::memory_order_relaxed);
+    }
     /**
      * Decrement the wrapped object's reference count.
      */
-    SBIO_HD void dec_reference() { m_obj->ref_count--; }
+    SBIO_HD void dec_reference() {
+      m_obj->ref_count.fetch_sub(1, std::memory_order_acq_rel);
+    }
 
     /**
      * Overloaded dereference operator returns the wrapped object.
@@ -286,7 +304,7 @@ namespace sbio {
       using RCT = RC<T, Allocator, Deleter>;
       using RCObjT = typename RCT::RCObject;
 
-      RCObjT* obj = new RCObjT { 1, T(std::forward<Args>(args)...) };
+      RCObjT* obj = new RCObjT(1, T(std::forward<Args>(args)...));
 
       return RCT(obj);
     }
@@ -343,7 +361,7 @@ namespace sbio {
 
       RCObjT* obj { nullptr };
 
-      obj = new RCObjT { 1, T(std::forward<Args>(args)...), del };
+      obj = new RCObjT(1, T(std::forward<Args>(args)...), del);
 
       return RCT(obj);
     }
