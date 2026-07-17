@@ -56,6 +56,7 @@ namespace sbio {
   >
   class DataSource {
   public:
+    using DSTraits = FTraits;
     using Config = typename FTraits::StreamParameters;
 
     DataSource() = default;

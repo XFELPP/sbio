@@ -303,12 +303,8 @@ namespace sbio {
       auto step = event_idx + m_rank;
       event_idx += m_size;
 
-      if (step >= max_capacity) {
+      while (step >= max_capacity) {
         if (!trigger()) {
-          return FTraits::ExhaustedSentinel;
-        }
-
-        if (step >= max_capacity) {
           return FTraits::ExhaustedSentinel;
         }
       }

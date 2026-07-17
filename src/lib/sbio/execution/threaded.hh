@@ -179,31 +179,42 @@ namespace sbio {
       static std::atomic<typename FTraits::StepIdxType> event_idx { 0 };
 
       static std::mutex trigger_mutex;
+
+      static std::atomic<bool> exhausted { false };
+
       typename FTraits::StepIdxType current { event_idx.load(std::memory_order_acquire) };
 
-      if (current >= max_capacity) {
-        std::lock_guard<std::mutex> lock(trigger_mutex);
-
-        current = event_idx.load(std::memory_order_acquire);
+      while (true) {
+        if (exhausted.load(std::memory_order_acquire)) {
+          return FTraits::ExhaustedSentinel;
+        }
 
         if (current >= max_capacity) {
-          if (!trigger()) {
+          std::lock_guard<std::mutex> lock(trigger_mutex);
+
+          if (exhausted.load(std::memory_order_acquire)) {
             return FTraits::ExhaustedSentinel;
           }
+
+          current = event_idx.load(std::memory_order_acquire);
 
           if (current >= max_capacity) {
-            return FTraits::ExhaustedSentinel;
+            if (!trigger()) {
+              exhausted.store(true, std::memory_order_release);
+              return FTraits::ExhaustedSentinel;
+            }
           }
         }
-      }
 
-      while (current < max_capacity) {
-        if (event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
-          return current;
+        while (current < max_capacity) {
+          if (event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
+            return current;
+          }
         }
-      }
 
-      return FTraits::ExhaustedSentinel;
+        // Do NOT return exhausted here. The trigger must be entered in a coordinated
+        // fashion
+      }
     }
 
   private:

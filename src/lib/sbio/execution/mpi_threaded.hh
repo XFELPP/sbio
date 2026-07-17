@@ -32,6 +32,7 @@
 #include <mpi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <type_traits>
 
@@ -357,35 +358,44 @@ namespace sbio {
       static std::atomic<typename FTraits::StepIdxType> local_idx { 0 };
       static std::mutex trigger_mutex;
 
-      typename FTraits::StepIdxType idx { local_idx.load(std::memory_order_acquire) };
-      typename FTraits::StepIdxType step { idx * m_size + m_rank };
+      static std::atomic<bool> exhausted { false };
 
-      if (step >= max_capacity) {
-        std::lock_guard<std::mutex> lock(trigger_mutex);
+      while (true) {
+        if (exhausted.load(std::memory_order_acquire)) {
+          return FTraits::ExhaustedSentinel;
+        }
 
-        idx = local_idx.load(std::memory_order_acquire);
-        step = idx * m_size + m_rank;
+        typename FTraits::StepIdxType idx { local_idx.load(std::memory_order_acquire) };
+        typename FTraits::StepIdxType step { idx * m_size + m_rank };
 
         if (step >= max_capacity) {
-          if (!trigger()) {
+          std::lock_guard<std::mutex> lock(trigger_mutex);
+
+          if (exhausted.load(std::memory_order_acquire)) {
             return FTraits::ExhaustedSentinel;
           }
 
+          idx = local_idx.load(std::memory_order_acquire);
           step = idx * m_size + m_rank;
+
           if (step >= max_capacity) {
-            return FTraits::ExhaustedSentinel;
+            if (!trigger()) {
+              exhausted.store(true, std::memory_order_release);
+              return FTraits::ExhaustedSentinel;
+            }
           }
         }
-      }
 
-      while (step < max_capacity) {
-        if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
-          return step;
+        while (step < max_capacity) {
+          if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+            return step;
+          }
+          step = idx * m_size + m_rank;
         }
-        step = idx * m_size + m_rank;
-      }
 
-      return FTraits::ExhaustedSentinel;
+        // Do NOT return exhausted here. The trigger must be entered in a coordinated
+        // fashion -- its an MPI collective at the top, so we loop back.
+      }
     }
 
   private:
