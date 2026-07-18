@@ -386,35 +386,6 @@ namespace sbio {
       return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res);
     }
 
-    template <class Algo>
-    void prepare_group_algorithm(Algo& algo) {
-      std::size_t bytes_for_algo { 0 };
-      auto stage_cb = [&]() {
-        algo.stage();
-        bytes_for_algo = algo.staged_data_size();
-
-        return bytes_for_algo;
-      };
-
-      auto sg = make_sync_group(bytes_for_algo);
-
-      auto commit_cb = [&](auto& buf) {
-        // TODO: Consider later device code implications if needing to make device
-        //       compatible. That seems unlikely though.
-        std::memcpy(buf.ptr(), algo.get_staged_data(), algo.staged_data_size());
-      };
-
-
-      EPolicy::template prepare_group_buffers<GroupRole, FTraits>(this->m_storage,
-                                                                  sg,
-                                                                  stage_cb,
-                                                                  commit_cb);
-
-      // Reset the staged data for all instances of the Algorithm
-      auto& algo_buf = this->m_storage.template get<GroupRole, 0>();
-      algo.set_staged_data(reinterpret_cast<std::uint8_t*>(algo_buf.ptr()), bytes_for_algo);
-    }
-
   private:
     char m_name[FTraits::MaxNameSize];
     char m_type[FTraits::MaxNameSize];
