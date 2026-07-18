@@ -55,10 +55,10 @@ namespace sbio {
                                        const char* detId,
                                        unsigned segment,
                                        std::uint32_t offset) {
-        safe_strncpy(m_detectors[name_id].name, name);
-        safe_strncpy(m_detectors[name_id].type, type);
-        safe_strncpy(m_detectors[name_id].alg, alg);
-        safe_strncpy(m_detectors[name_id].detId, detId);
+        safe_strncpy(m_detectors[name_id].name, name, XTC2::MaxNameSize);
+        safe_strncpy(m_detectors[name_id].type, type, XTC2::MaxNameSize);
+        safe_strncpy(m_detectors[name_id].alg, alg, XTC2::MaxNameSize);
+        safe_strncpy(m_detectors[name_id].detId, detId, XTC2::MaxNameSize);
         m_detectors[name_id].segment = segment;
         m_sd_offsets_discovered[name_id] = offset;
       }

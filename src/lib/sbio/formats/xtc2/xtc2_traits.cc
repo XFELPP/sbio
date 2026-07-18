@@ -20,6 +20,7 @@
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 
 #include "sbio/formats/xtc2/traversal.hh"
+#include "sbio/util/string.hh"
 
 #include <cstdint>
 
@@ -63,10 +64,10 @@ namespace {
     for (const auto& [nid, det] : collector.detectors()) {
       // String Table
       auto& n_map = inventory.m_names_id_table[nid_idx];
-      XTC2::safe_strncpy(n_map.key.dettype, det.type);
-      XTC2::safe_strncpy(n_map.key.detname, det.name);
-      XTC2::safe_strncpy(n_map.key.algname, det.alg);
-      XTC2::safe_strncpy(n_map.key.detId, det.detId);
+      safe_strncpy(n_map.key.dettype, det.type, XTC2::MaxNameSize);
+      safe_strncpy(n_map.key.detname, det.name, XTC2::MaxNameSize);
+      safe_strncpy(n_map.key.algname, det.alg, XTC2::MaxNameSize);
+      safe_strncpy(n_map.key.detId, det.detId, XTC2::MaxNameSize);
       n_map.key.segment = det.segment;
       n_map.names_id = nid;
       // Jump Tables
@@ -83,7 +84,7 @@ namespace {
 
         auto& f_map = inventory.m_field_table[field_idx++];
         f_map.key.names_id = nid;
-        XTC2::safe_strncpy(f_map.key.fieldname, f_descr.name);
+        safe_strncpy(f_map.key.fieldname, f_descr.name, XTC2::MaxNameSize);
         f_map.field_idx = f_idx;
       }
       nid_idx++;
@@ -266,10 +267,10 @@ namespace sbio {
   SBIO_HD std::uint32_t
   XTC2Traits::MetadataInventory::resolve_names_id(const DataRequest& req) const {
     DetAlgKey search_key;
-    XTC2::safe_strncpy(search_key.dettype, req.detector_type);
-    XTC2::safe_strncpy(search_key.detname, req.detector_name);
+    safe_strncpy(search_key.dettype, req.detector_type, XTC2::MaxNameSize);
+    safe_strncpy(search_key.detname, req.detector_name, XTC2::MaxNameSize);
     search_key.segment = req.segment_number;
-    XTC2::safe_strncpy(search_key.algname, req.alg_name);
+    safe_strncpy(search_key.algname, req.alg_name, XTC2::MaxNameSize);
 
     auto* it = std::lower_bound(m_names_id_table, m_names_id_table + m_names_id_count, search_key);
 
@@ -282,7 +283,7 @@ namespace sbio {
   SBIO_HD std::uint32_t
   XTC2Traits::MetadataInventory::resolve_field_idx(std::uint32_t nid, const char* field) const {
     FieldKey search_key { nid };
-    XTC2::safe_strncpy(search_key.fieldname, field);
+    safe_strncpy(search_key.fieldname, field, XTC2::MaxNameSize);
     auto* it = std::lower_bound(m_field_table, m_field_table + m_field_count, search_key);
 
     if (it != m_field_table + m_field_count && !(search_key < it->key)) {
