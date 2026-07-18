@@ -2,6 +2,7 @@
 #define SBIO_FORMATS_XTC2_XTC2_HH
 
 #include "sbio/formats/format_traits.hh"
+#include "sbio/util/string.hh"
 
 #ifdef _WIN32
 #include <BaseTsd.h>
@@ -329,7 +330,7 @@ namespace sbio {
       SBIO_HD Alg(const char* alg, std::uint8_t major, std::uint8_t minor, std::uint8_t micro)
         : m_version(major, minor, micro)
       {
-        std::strncpy(m_alg, alg, MaxNameSize);
+        safe_strncpy(m_alg, alg, MaxNameSize);
       }
       SBIO_HD inline std::uint32_t version() const { return m_version.version(); }
       SBIO_HD inline const char* name() const { return m_alg; }
@@ -352,7 +353,7 @@ namespace sbio {
       {
         m_type = static_cast<std::uint32_t>(type);
         m_rank = rank;
-        std::strncpy(m_name, name, MaxNameSize);
+        safe_strncpy(m_name, name, MaxNameSize);
       }
 
       SBIO_HD Name(const char* name, DType type, Alg& alg)
@@ -360,13 +361,13 @@ namespace sbio {
       {
         m_type = static_cast<std::uint32_t>(DType::UINT8);
         m_rank = 1;
-        std::strncpy(m_name, name, MaxNameSize);
+        safe_strncpy(m_name, name, MaxNameSize);
       }
 
       SBIO_HD Name(const char* name, Alg& alg)
         : m_alg(alg)
       {
-        std::strncpy(m_name, name, MaxNameSize);
+        safe_strncpy(m_name, name, MaxNameSize);
         m_type = static_cast<std::uint32_t>(DType::UINT8);
         m_rank = 1;
       }

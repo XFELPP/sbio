@@ -1,6 +1,7 @@
 installed_util_headers = [
     'mpi.hh',
     'rc.hh',
+    'string.hh',
 ]
 
 if not sbio_as_wheel_opt and build_core_opt

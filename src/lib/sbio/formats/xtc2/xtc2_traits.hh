@@ -24,6 +24,7 @@
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
+#include "sbio/util/string.hh"
 
 #ifndef SBIO_HD
 #ifdef __CUDACC__
@@ -135,17 +136,17 @@ namespace sbio {
                   const char* type,
                   const char* alg,
                   const char* field) {
-        std::strncpy(detector_name, name, MaxNameSize);
-        std::strncpy(detector_type, type, MaxNameSize);
-        std::strncpy(alg_name, alg, MaxNameSize);
-        std::strncpy(field_name, field, MaxNameSize);
+        safe_strncpy(detector_name, name, MaxNameSize);
+        safe_strncpy(detector_type, type, MaxNameSize);
+        safe_strncpy(alg_name, alg, MaxNameSize);
+        safe_strncpy(field_name, field, MaxNameSize);
       }
 
       DataRequest(const char* name, const char* type) {
-        std::strncpy(detector_name, name, MaxNameSize);
-        std::strncpy(detector_type, type, MaxNameSize);
-        std::strncpy(alg_name, "raw", MaxNameSize);
-        std::strncpy(field_name, "raw", MaxNameSize);
+        safe_strncpy(detector_name, name, MaxNameSize);
+        safe_strncpy(detector_type, type, MaxNameSize);
+        safe_strncpy(alg_name, "raw", MaxNameSize);
+        safe_strncpy(field_name, "raw", MaxNameSize);
       }
 
       char detector_type[MaxNameSize];

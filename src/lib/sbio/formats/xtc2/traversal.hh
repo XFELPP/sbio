@@ -21,6 +21,7 @@
 #define SBIO_FORMATS_XTC2_TRAVERSAL_HH
 
 #include "sbio/formats/xtc2/xtc2.hh"
+#include "sbio/util/string.hh"
 
 #ifdef _WIN32
 #include <BaseTsd.h>
@@ -45,14 +46,6 @@ typedef SSIZE_T ssize_t;
 
 namespace sbio {
   namespace XTC2 {
-    inline void safe_strncpy(char* dst, const char* src) {
-      std::size_t i { 0 };
-      for (; i < XTC2::MaxNameSize - 1 && src[i] != '\0'; ++i) {
-        dst[i] = src[i];
-      }
-      dst[i] = '\0';
-    }
-
     struct MetadataCollector {
     public:
       SBIO_HD inline void add_detector(std::uint32_t name_id,

@@ -25,6 +25,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/formats/format_traits.hh"
+#include "sbio/util/string.hh"
 
 #include <concepts>
 #include <cstddef>
@@ -105,8 +106,8 @@ namespace sbio {
           }
 
           Config stream_cfg = base_cfg;
-          std::strncpy(stream_cfg.smd_path, smd_path.c_str(), smd_path.size());
-          std::strncpy(stream_cfg.xtc_path, xtc_path.c_str(), xtc_path.size());
+          safe_strncpy(stream_cfg.smd_path, smd_path.c_str(), smd_path.size() + 1);
+          safe_strncpy(stream_cfg.xtc_path, xtc_path.c_str(), xtc_path.size() + 1);
 
           // NOTE: add_data_stream increments m_num_data_streams
           add_data_stream(stream_cfg);
