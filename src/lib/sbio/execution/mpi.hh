@@ -206,7 +206,7 @@ namespace sbio {
      *
      * @returns `true` for rank 0, else `false`.
      */
-    static bool should_index_impl() { m_rank == 0; }
+    static bool should_index_impl() { return m_rank == 0; }
 
     /**
      * Prepare buffers used by the BrokerGroup.

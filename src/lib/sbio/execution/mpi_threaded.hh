@@ -193,7 +193,10 @@ namespace sbio {
 
       auto broadcast_all_ranks = [](auto& var) {
         using VarT = decltype(var);
-        MPI_Bcast(&var, 1, mpi::type_for<VarT>(), 0, MPI_COMM_WORLD);
+
+        auto mpi_type { mpi::type_for<VarT>() };
+
+        MPI_Bcast(&var, 1, mpi_type, 0, MPI_COMM_WORLD);
       };
       sync_vars.for_each(broadcast_all_ranks);
     }
@@ -358,6 +361,7 @@ namespace sbio {
       static std::atomic<typename FTraits::StepIdxType> local_idx { 0 };
       static std::mutex trigger_mutex;
 
+      static std::atomic<typename FTraits::StepIdxType> shared_capacity { 0 };
       static std::atomic<bool> exhausted { false };
 
       while (true) {
@@ -368,29 +372,41 @@ namespace sbio {
         typename FTraits::StepIdxType idx { local_idx.load(std::memory_order_acquire) };
         typename FTraits::StepIdxType step { idx * m_size + m_rank };
 
-        if (step >= max_capacity) {
+        typename FTraits::StepIdxType current_cap =
+          shared_capacity.load(std::memory_order_acquire);
+
+        if (step >= current_cap) {
           std::lock_guard<std::mutex> lock(trigger_mutex);
 
           if (exhausted.load(std::memory_order_acquire)) {
             return FTraits::ExhaustedSentinel;
           }
 
+          if (shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            shared_capacity.store(max_capacity, std::memory_order_release);
+          }
+
           idx = local_idx.load(std::memory_order_acquire);
           step = idx * m_size + m_rank;
+          current_cap = shared_capacity.load(std::memory_order_relaxed);
 
-          if (step >= max_capacity) {
+          if (step >= current_cap) {
             if (!trigger()) {
               exhausted.store(true, std::memory_order_release);
               return FTraits::ExhaustedSentinel;
             }
+            shared_capacity.store(max_capacity, std::memory_order_release);
+            current_cap = max_capacity;
           }
         }
 
-        while (step < max_capacity) {
+        while (step < current_cap) {
           if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
             return step;
           }
+
           step = idx * m_size + m_rank;
+          current_cap = shared_capacity.load(std::memory_order_acquire);
         }
 
         // Do NOT return exhausted here. The trigger must be entered in a coordinated
