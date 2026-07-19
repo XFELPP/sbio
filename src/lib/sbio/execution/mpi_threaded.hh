@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <mutex>
 #include <type_traits>
 
 namespace sbio {
@@ -234,14 +235,16 @@ namespace sbio {
                                   std::size_t num_fetches,
                                   GetCBType&& unit_get_data,
                                   std::size_t num_accesses) {
+      if (num_fetches == 0) {
+        return IOStatus::Success;
+      }
+
       IOStatus status { IOStatus::Success };
-      {
-        std::lock_guard<std::mutex> lock(m_io_mutex);
-        for (std::size_t i = 0; i < num_fetches; ++i) {
-          if (auto s = unit_fetcher(i); s != IOStatus::Success) {
-            status = s;
-            break;
-          }
+      for (std::size_t i = 0; i < num_fetches; ++i) {
+        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
+        if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
+          status = fetch_status;
+          break;
         }
       }
 
@@ -250,6 +253,7 @@ namespace sbio {
           unit_get_data(i);
         }
       }
+
       return status;
     }
 
@@ -346,7 +350,11 @@ namespace sbio {
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 };     ///< This processes rank in the MPI world.
     static inline int m_size { -1 };     ///< The size of the MPI world.
-    static inline std::mutex m_io_mutex; ///< Mutex for locking threaded IO fetches
+    /**
+     * Set of mutexes to allow different brokers of a group from different threads
+     * to fetch in parallel.
+     */
+    static inline std::mutex m_broker_mutexes[2048];
   };
 } // namespace sbio
 

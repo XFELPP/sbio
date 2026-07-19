@@ -130,15 +130,16 @@ namespace sbio {
                                   std::size_t num_fetches,
                                   GetCBType&& unit_get_data,
                                   std::size_t num_accesses) {
-      IOStatus status { IOStatus::Success };
+      if (num_fetches == 0) {
+        return IOStatus::Success;
+      }
 
-      {
-        std::lock_guard<std::mutex> lock(m_io_mutex);
-        for (std::size_t i = 0; i < num_fetches; ++i) {
-          if (auto s = unit_fetcher(i); s != IOStatus::Success) {
-            status = s;
-            break;
-          }
+      IOStatus status { IOStatus::Success };
+      for (std::size_t i = 0; i < num_fetches; ++i) {
+        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
+        if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
+          status = fetch_status;
+          break;
         }
       }
 
@@ -232,7 +233,11 @@ namespace sbio {
     }
 
   private:
-    inline static std::mutex m_io_mutex;
+    /**
+     * Set of mutexes to allow different brokers of a group from different threads
+     * to fetch in parallel.
+     */
+    static inline std::mutex m_broker_mutexes[2048];
   };
 
 } // namespace sbio
