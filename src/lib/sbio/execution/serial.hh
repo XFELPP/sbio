@@ -26,8 +26,13 @@
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/host_buffer.hh"
 
+#include <spdlog/cfg/env.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <type_traits>
 
 namespace sbio {
@@ -61,6 +66,13 @@ namespace sbio {
      */
     template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+      spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
+      std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::SerialExecution");
+      if (!logger) {
+        m_logger = spdlog::stdout_color_mt("sbio::SerialExecution");
+      } else {
+        m_logger = logger;
+      }
       return allocate_impl_helper(Requirements{}, request);
     }
 
@@ -109,16 +121,27 @@ namespace sbio {
 
       if (event_idx >= max_capacity) {
         if (!trigger()) {
+          m_logger->debug("Trigger returned exhausted: "
+                          "max_cap = {}, local_idx = {}",
+                          max_capacity,
+                          event_idx);
           return FTraits::ExhaustedSentinel;
         }
 
         if (event_idx >= max_capacity) {
+          m_logger->debug("Index exceeded capacity: "
+                          "max_cap = {}, local_idx = {}",
+                          max_capacity,
+                          event_idx);
           return FTraits::ExhaustedSentinel;
         }
       }
 
       return event_idx++;
     }
+
+  private:
+    static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 } // namespace sbio
 

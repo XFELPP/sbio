@@ -30,10 +30,14 @@
 #include "sbio/util/mpi.hh"
 
 #include <mpi.h>
+#include <spdlog/cfg/env.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <type_traits>
 
@@ -72,6 +76,14 @@ namespace sbio {
 
     template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+      spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
+      std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::MPIThreadedExecution");
+      if (!logger) {
+        m_logger = spdlog::stdout_color_mt("sbio::MPIThreadedExecution");
+      } else {
+        m_logger = logger;
+      }
+
       if (m_shmem_comm == MPI_COMM_NULL) {
         MPI_Comm_rank(MPI_COMM_WORLD, &m_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &m_size);
@@ -88,6 +100,7 @@ namespace sbio {
     template <typename... Descriptors, FormatTraits FTraits>
     static auto allocate_impl_helper(TypeList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
+      static std::atomic<int> next_win_tag(100); // Tag each MPI window to distinguish them
       Storage<TypeList<Descriptors...>, MPIThreadedExecution> s;
       std::size_t i { 0 };
 
@@ -102,7 +115,10 @@ namespace sbio {
         if constexpr (std::is_same_v<BufRole, IndexRole> ||
                       std::is_same_v<BufRole, GroupRole> ||
                       std::is_same_v<BufHint, Shareable>) {
+          int tag { next_win_tag.fetch_add(1) };
+
           buf.allocate(m_shmem_comm, sz);
+          buf.set_tag(tag);
         } else if constexpr (std::is_same_v<BufRole, DataRole> ||
                              std::is_same_v<BufRole, TableRole>) {
           buf.set_memory(nullptr, sz);
@@ -179,6 +195,7 @@ namespace sbio {
       using Descriptor = typename FindDescriptor<Role, 0, List>::type;
       using Hint = typename GetHint<Descriptor>::type;
 
+      int tag { 0 };
       if constexpr (std::is_same_v<Role, IndexRole> ||
                     std::is_same_v<Role, GroupRole> ||
                     std::is_same_v<Hint, Shareable>) {
@@ -189,15 +206,37 @@ namespace sbio {
             }
           }
         };
+
         storage.template for_each_role<Role>(fence_win);
+        tag = storage.template get<Role>().tag();
       }
 
-      auto broadcast_all_ranks = [](auto& var) {
+      // Broadcast all requested sync_vars
+      // We tag our data to distinguish between brokers on the communicator
+      // This requires point-to-point Send/Recv, but we recreate a binomial tree
+      // distribution pattern like you would get from using a Bcast
+      int tree_idx { 0 };
+      auto broadcast_all_ranks = [m_rank, m_size, tag, &tree_idx](auto& var) {
         using VarT = decltype(var);
 
         auto mpi_type { mpi::type_for<VarT>() };
 
-        MPI_Bcast(&var, 1, mpi_type, 0, MPI_COMM_WORLD);
+        int msg_tag { tag * 100 + tree_idx };
+        tree_idx++;
+
+        int mask { 1 };
+        while (mask < m_size) {
+          if (m_rank < mask) {
+            int peer { m_rank + mask };
+            if (peer < m_size) {
+              MPI_Send(&var, 1, mpi_type, peer, msg_tag, MPI_COMM_WORLD);
+            }
+          } else if (m_rank < 2 * mask) {
+            int src { m_rank - mask };
+            MPI_Recv(&var, 1, mpi_type, src, msg_tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+          }
+          mask <<= 1;
+        }
       };
       sync_vars.for_each(broadcast_all_ranks);
     }
@@ -295,19 +334,34 @@ namespace sbio {
 
       while (true) {
         if (exhausted.load(std::memory_order_acquire)) {
+          m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
+                          "shared_cap = {}, max_cap = {}, local_idx = {}",
+                          m_rank,
+                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                          shared_capacity.load(),
+                          max_capacity,
+                          local_idx.load());
           return FTraits::ExhaustedSentinel;
         }
 
         typename FTraits::StepIdxType idx { local_idx.load(std::memory_order_acquire) };
-        typename FTraits::StepIdxType step { idx * m_size + m_rank };
+        typename FTraits::StepIdxType base_step { idx * m_size };
+        typename FTraits::StepIdxType step { base_step + m_rank };
 
         typename FTraits::StepIdxType current_cap =
           shared_capacity.load(std::memory_order_acquire);
 
-        if (step >= current_cap) {
+        if (base_step >= current_cap) {
           std::lock_guard<std::mutex> lock(trigger_mutex);
 
           if (exhausted.load(std::memory_order_acquire)) {
+            m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
+                            "shared_cap = {}, max_cap = {}, local_idx = {}",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            shared_capacity.load(),
+                            max_capacity,
+                            local_idx.load());
             return FTraits::ExhaustedSentinel;
           }
 
@@ -316,12 +370,61 @@ namespace sbio {
           }
 
           idx = local_idx.load(std::memory_order_acquire);
-          step = idx * m_size + m_rank;
+          base_step = idx * m_size;
+          step = base_step + m_rank;
           current_cap = shared_capacity.load(std::memory_order_relaxed);
 
-          if (step >= current_cap) {
+          if (base_step >= current_cap) {
+            m_logger->debug("[Rank {} - thread {}] Entering trigger: "
+                            "shared_cap = {}, max_cap = {}, local_idx = {}",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            shared_capacity.load(),
+                            max_capacity,
+                            local_idx.load());
             if (!trigger()) {
               exhausted.store(true, std::memory_order_release);
+              m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted: "
+                              "shared_cap = {}, max_cap = {}, local_idx = {}",
+                              m_rank,
+                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                              shared_capacity.load(),
+                              max_capacity,
+                              local_idx.load());
+              // Point-to-point binomial tree barrier to synchronize all ranks before exiting next()
+              int mask { 1 };
+              while (mask < m_size) {
+                if ((m_rank & mask) == 0) {
+                  int peer { m_rank | mask };
+                  if (peer < m_size) {
+                    int dummy { 0 };
+                    MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                  }
+                } else {
+                  int peer { m_rank & ~mask };
+                  int dummy { 0 };
+                  MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
+                  break;
+                }
+                mask <<= 1;
+              }
+
+              mask >>= 1;
+              while (mask > 0) {
+                if ((m_rank & mask) == 0) {
+                  int peer { m_rank | mask };
+                  if (peer < m_size) {
+                    int dummy { 0 };
+                    MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
+                  }
+                } else {
+                  int peer { m_rank & ~mask };
+                  int dummy { 0 };
+                  MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                }
+                mask >>= 1;
+              }
+
               return FTraits::ExhaustedSentinel;
             }
             shared_capacity.store(max_capacity, std::memory_order_release);
@@ -329,17 +432,32 @@ namespace sbio {
           }
         }
 
-        while (step < current_cap) {
-          if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
-            return step;
+        while (base_step < current_cap) {
+          if (step >= current_cap) {
+            if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+              break;
+            }
+          } else {
+            if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+              return step;
+            }
           }
 
-          step = idx * m_size + m_rank;
+          base_step = idx * m_size;
+          step = base_step + m_rank;
           current_cap = shared_capacity.load(std::memory_order_acquire);
+          if (exhausted.load(std::memory_order_acquire)) {
+            m_logger->debug("[Rank {} - thread {}] Returned exhausted after current cap check: "
+                            "base_step = {}, step = {}, max_cap = {}, current_cap = {}",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            base_step,
+                            step,
+                            max_capacity,
+                            current_cap);
+            return FTraits::ExhaustedSentinel;
+          }
         }
-
-        // Do NOT return exhausted here. The trigger must be entered in a coordinated
-        // fashion -- its an MPI collective at the top, so we loop back.
       }
     }
 
@@ -355,6 +473,8 @@ namespace sbio {
      * to fetch in parallel.
      */
     static inline std::mutex m_broker_mutexes[2048];
+
+    static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 } // namespace sbio
 

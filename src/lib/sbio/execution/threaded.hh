@@ -27,9 +27,14 @@
 #include "sbio/storage/thread_local_buffer.hh"
 #include "sbio/formats/format_traits.hh"
 
+#include <spdlog/cfg/env.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <atomic>
 #include <concepts>
+#include <memory>
 #include <mutex>
 #include <type_traits>
 
@@ -68,6 +73,14 @@ namespace sbio {
      */
     template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+      spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
+      std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::ThreadedExecution");
+      if (!logger) {
+        m_logger = spdlog::stdout_color_mt("sbio::ThreadedExecution");
+      } else {
+        m_logger = logger;
+      }
+
       return allocate_impl_helper(Requirements{}, request);
     }
 
@@ -188,6 +201,12 @@ namespace sbio {
 
       while (true) {
         if (exhausted.load(std::memory_order_acquire)) {
+          m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
+                          "shared_cap = {}, max_cap = {}, event_idx = {}",
+                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                          shared_capacity.load(),
+                          max_capacity,
+                          event_idx.load());
           return FTraits::ExhaustedSentinel;
         }
 
@@ -198,6 +217,12 @@ namespace sbio {
           std::lock_guard<std::mutex> lock(trigger_mutex);
 
           if (exhausted.load(std::memory_order_acquire)) {
+            m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
+                            "shared_cap = {}, max_cap = {}, event_idx = {}",
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            shared_capacity.load(),
+                            max_capacity,
+                            event_idx.load());
             return FTraits::ExhaustedSentinel;
           }
 
@@ -211,6 +236,12 @@ namespace sbio {
           if (current >= current_cap) {
             if (!trigger()) {
               exhausted.store(true, std::memory_order_release);
+              m_logger->debug("[Thread {}] Trigger returned exhausted: "
+                              "shared_cap = {}, max_cap = {}, event_idx = {}",
+                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                              shared_capacity.load(),
+                              max_capacity,
+                              event_idx.load());
               return FTraits::ExhaustedSentinel;
             }
 
@@ -238,6 +269,8 @@ namespace sbio {
      * to fetch in parallel.
      */
     static inline std::mutex m_broker_mutexes[2048];
+
+    static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 
 } // namespace sbio

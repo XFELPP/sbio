@@ -351,6 +351,14 @@ if build_python_opt
     endif # pybind11 not found
 endif
 
+spdlog_dep = dependency('spdlog', required: false)
+if not spdlog_dep.found()
+    message('spdlog not found - using subproject')
+    spdlog_proj = subproject('spdlog')
+    spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
+endif
+deps_for_sbio += spdlog_dep
+
 #### Path Setup ####
 ####################
 

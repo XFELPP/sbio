@@ -42,9 +42,6 @@ namespace sbio {
       MPI_Finalized(&finalized);
 
       if (initialized && !finalized) {
-        if (shmem_comm != MPI_COMM_NULL) {
-          MPI_Barrier(shmem_comm);
-        }
         MPI_Win_free(win);
       }
     }
@@ -89,6 +86,11 @@ namespace sbio {
    * up the memory; however, this is only done if there are no remaining references to
    * the Window. It wraps the MPI_Win in an RC which manages the reference counting and
    * performs destruction when the count reaches zero.
+   *
+   * As there is the possibility for multiple StreamBrokers/other objects to run
+   * concurrently within a single rank, each of which using their own shared buffer,
+   * the MPISharedBuffer is tagged. The tag can be used for point-to-point
+   * communciation.
    */
   struct MPISharedBuffer {
 
@@ -98,6 +100,7 @@ namespace sbio {
       : m_ptr(other.m_ptr)
       , m_size(other.m_size)
       , m_window(other.m_window)
+      , m_tag(other.m_tag)
     {}
 
     /**
@@ -111,6 +114,7 @@ namespace sbio {
         m_ptr = other.m_ptr;
         m_size = other.m_size;
         m_window = other.m_window;
+        m_tag = other.m_tag;
       }
 
       return *this;
@@ -126,9 +130,11 @@ namespace sbio {
       : m_ptr(other.m_ptr)
       , m_size(other.m_size)
       , m_window(std::move(other.m_window))
+      , m_tag(other.m_tag)
     {
       other.m_ptr = nullptr;
       other.m_size = 0;
+      other.m_tag = -1;
     }
 
     /**
@@ -142,9 +148,11 @@ namespace sbio {
         m_ptr = other.m_ptr;
         m_size = other.m_size;
         m_window = std::move(other.m_window);
+        m_tag = other.m_tag;
 
         other.m_ptr = nullptr;
         other.m_size = 0;
+        other.m_tag = -1;
       }
 
       return *this;
@@ -183,17 +191,18 @@ namespace sbio {
       set_memory(baseptr, size);
     }
 
-    inline bool is_dirty() const {
-      return false;
-    }
-    inline void set_dirty(bool) {
-    }
+    inline int tag() const { return m_tag; }
+    inline void set_tag(int tag) { m_tag = tag; }
+
+    inline bool is_dirty() const { return false; }
+    inline void set_dirty(bool) {}
 
   private:
     void* m_ptr { nullptr };                              ///< Pointer to the shared memory buffer
     std::size_t m_size { 0 };                             ///< Total size of the buffer/Window
     RC<MPI_Win, MPIWinAllocator, MPIWinDeleter> m_window; ///< Window over the shared memory buffer
     int m_window_idx { 0 };                               ///< The index of the Window for ref counting
+    int m_tag { -1 };                                     ///< Tag to allow point-to-point communication
   };
 } // namespace sbio
 

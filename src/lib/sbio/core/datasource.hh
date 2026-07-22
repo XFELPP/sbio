@@ -149,12 +149,14 @@ namespace sbio {
 
       auto trigger_reindexing = [&] () {
         StepIdx total_capacity { std::numeric_limits<StepIdx>::lowest() };
+        bool failed { false };
 
         for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
           IOStatus status = m_data_streams[n_stream].index_stream();
 
           if (status != IOStatus::Success) {
-            return false;
+            failed = true;
+            continue;
           }
 
           StepIdx stream_capacity = m_data_streams[n_stream].capacity();
@@ -167,6 +169,10 @@ namespace sbio {
               total_capacity = stream_capacity;
             }
           }
+        }
+
+        if (failed) {
+          return total_capacity > 0;
         }
 
         m_steps_capacity += total_capacity;

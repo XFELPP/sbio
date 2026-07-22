@@ -29,7 +29,11 @@
 #include "sbio/util/mpi.hh"
 
 #include <mpi.h>
+#include <spdlog/cfg/env.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 
+#include <memory>
 #include <type_traits>
 
 namespace sbio {
@@ -64,6 +68,14 @@ namespace sbio {
 
     template <IsTypeList Requirements, FormatTraits FTraits>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+      spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
+      std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::MPIExecution");
+      if (!logger) {
+        m_logger = spdlog::stdout_color_mt("sbio::MPIExecution");
+      } else {
+        m_logger = logger;
+      }
+
       if (MPIExecution::m_shmem_comm == MPI_COMM_NULL) {
         MPI_Comm_rank(MPI_COMM_WORLD, &MPIExecution::m_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &MPIExecution::m_size);
@@ -81,6 +93,7 @@ namespace sbio {
     template <typename... Descriptors, FormatTraits FTraits>
     static auto allocate_impl_helper(TypeList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
+      static int new_win_tag { 100 }; // Tag each MPI window to distinguish them
       Storage<TypeList<Descriptors...>, MPIExecution> s;
       std::size_t i { 0 };
 
@@ -98,7 +111,9 @@ namespace sbio {
         if constexpr (std::is_same_v<BufRole, IndexRole> ||
                       std::is_same_v<BufRole, GroupRole> ||
                       std::is_same_v<BufHint, Shareable>) {
+          int tag { new_win_tag++ };
           buf.allocate(m_shmem_comm, sz);
+          buf.set_tag(tag);
         } else {
           // Otherwise, just use a standard host buffer.
           buf.set_memory(new char[sz], sz);
@@ -167,6 +182,7 @@ namespace sbio {
       using Hint = typename GetHint<Descriptor>::type;
 
       // Check if Windows need synchronization
+      int tag { 0 };
       if constexpr (std::is_same_v<Role, IndexRole> ||
                     std::is_same_v<Role, GroupRole> ||
                     std::is_same_v<Hint, Shareable>) {
@@ -182,16 +198,35 @@ namespace sbio {
         };
 
         storage.template for_each_role<Role>(fence_win);
+        tag = storage.template get<Role>().tag();
       }
 
       // Broadcast all requested sync_vars
-      auto broadcast_all_ranks = [](auto& var) {
+      // We tag our data to distinguish between brokers on the communicator
+      // This requires point-to-point Send/Recv, but we recreate a binomial tree
+      // distribution pattern like you would get from using a Bcast
+      int tree_idx { 0 };
+      auto broadcast_all_ranks = [m_rank, m_size, tag, &tree_idx](auto& var) {
         using VarT = decltype(var);
 
         auto mpi_type { mpi::type_for<VarT>() };
 
-        // Currently only support the broadcast on primitives not arrays/vectors
-        MPI_Bcast(&var, 1, mpi_type, 0, MPI_COMM_WORLD);
+        int msg_tag { tag * 100 + tree_idx };
+        tree_idx++;
+
+        int mask { 1 };
+        while (mask < m_size) {
+          if (m_rank < mask) {
+            int peer { m_rank + mask };
+            if (peer < m_size) {
+              MPI_Send(&var, 1, mpi_type, peer, msg_tag, MPI_COMM_WORLD);
+            }
+          } else if (m_rank < 2 * mask) {
+            int src { m_rank - mask };
+            MPI_Recv(&var, 1, mpi_type, src, msg_tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+          }
+          mask <<= 1;
+        }
       };
 
       sync_vars.for_each(broadcast_all_ranks);
@@ -233,6 +268,43 @@ namespace sbio {
 
       while (step >= max_capacity) {
         if (!trigger()) {
+          m_logger->debug("[Rank {}] Trigger returned exhausted: "
+                          "max_cap = {}",
+                          m_rank,
+                          max_capacity);
+          int mask { 1 };
+          while (mask < m_size) {
+            if ((m_rank & mask) == 0) {
+              int peer { m_rank | mask };
+              if (peer < m_size) {
+                int dummy { 0 };
+                MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+              }
+            } else {
+              int peer { m_rank & ~mask };
+              int dummy { 0 };
+              MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
+              break;
+            }
+            mask <<= 1;
+          }
+
+          mask >>= 1;
+          while (mask > 0) {
+            if ((m_rank & mask) == 0) {
+              int peer { m_rank | mask };
+              if (peer < m_size) {
+                int dummy { 0 };
+                MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
+              }
+            } else {
+              int peer { m_rank & ~mask };
+              int dummy { 0 };
+              MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+            mask >>= 1;
+          }
+
           return FTraits::ExhaustedSentinel;
         }
       }
@@ -264,9 +336,14 @@ namespace sbio {
     }
 
   private:
+    /**
+     * Communicator used when generating shareable buffers.
+     */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
-    static inline int m_rank { -1 };
-    static inline int m_size { -1 };
+    static inline int m_rank { -1 }; ///< This processes rank in the MPI world.
+    static inline int m_size { -1 }; ///< The size of the MPI world.
+
+    static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 } // namespace sbio
 
