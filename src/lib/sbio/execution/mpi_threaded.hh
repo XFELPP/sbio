@@ -40,6 +40,7 @@
 #include <memory>
 #include <mutex>
 #include <type_traits>
+#include <vector>
 
 namespace sbio {
   /**
@@ -84,6 +85,10 @@ namespace sbio {
         m_logger = logger;
       }
 
+      if (m_world_comm == MPI_COMM_NULL) {
+        MPI_Comm_dup(MPI_COMM_WORLD, &m_world_comm);
+      }
+
       if (m_shmem_comm == MPI_COMM_NULL) {
         MPI_Comm_rank(MPI_COMM_WORLD, &m_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &m_size);
@@ -119,6 +124,14 @@ namespace sbio {
 
           buf.allocate(m_shmem_comm, sz);
           buf.set_tag(tag);
+          if (buf.window() != MPI_WIN_NULL) {
+            MPI_Win_lock_all(0, buf.window());
+          }
+
+          // Reset collective stores and latches
+          m_shared_capacity.store(0, std::memory_order_release);
+          m_local_idx.store(0, std::memory_order_release);
+          m_exhausted.store(false, std::memory_order_release);
         } else if constexpr (std::is_same_v<BufRole, DataRole> ||
                              std::is_same_v<BufRole, TableRole>) {
           buf.set_memory(nullptr, sz);
@@ -155,7 +168,7 @@ namespace sbio {
         auto fence_win = [](auto& buf) {
           if constexpr (requires { buf.window(); }) {
             if (buf.window() != MPI_WIN_NULL) {
-              MPI_Win_fence(0, buf.window());
+              MPI_Win_sync(buf.window());
             }
           }
         };
@@ -196,48 +209,83 @@ namespace sbio {
       using Hint = typename GetHint<Descriptor>::type;
 
       int tag { 0 };
+      int seq { 0 };
       if constexpr (std::is_same_v<Role, IndexRole> ||
                     std::is_same_v<Role, GroupRole> ||
                     std::is_same_v<Hint, Shareable>) {
+        auto& buf = storage.template get<Role>();
+        tag = buf.tag();
+        seq = buf.fetch_next_seq();
+
         auto fence_win = [](auto& buf) {
           if constexpr (requires { buf.window(); }) {
             if (buf.window() != MPI_WIN_NULL) {
-              MPI_Win_fence(0, buf.window());
+              MPI_Win_sync(buf.window());
             }
           }
         };
-
         storage.template for_each_role<Role>(fence_win);
-        tag = storage.template get<Role>().tag();
       }
 
-      // Broadcast all requested sync_vars
-      // We tag our data to distinguish between brokers on the communicator
       // This requires point-to-point Send/Recv, but we recreate a binomial tree
       // distribution pattern like you would get from using a Bcast
+      // NOTE: We include a chunk identifier as well as a buffer tag to prevent
+      //       desynch and mismatched collectives if ranks move at different rates
       int tree_idx { 0 };
-      auto broadcast_all_ranks = [m_rank, m_size, tag, &tree_idx](auto& var) {
+      auto broadcast_all_ranks = [m_rank, m_size, tag, seq, &tree_idx](auto& var) {
         using VarT = decltype(var);
 
         auto mpi_type { mpi::type_for<VarT>() };
 
-        int msg_tag { tag * 100 + tree_idx };
+        int ub { mpi::tag_upper_bound() };
+        int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
         tree_idx++;
 
-        int mask { 1 };
-        while (mask < m_size) {
-          if (m_rank < mask) {
-            int peer { m_rank + mask };
-            if (peer < m_size) {
-              MPI_Send(&var, 1, mpi_type, peer, msg_tag, MPI_COMM_WORLD);
-            }
-          } else if (m_rank < 2 * mask) {
-            int src { m_rank - mask };
-            MPI_Recv(&var, 1, mpi_type, src, msg_tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (m_rank == 0) {
+          std::vector<MPI_Request> reqs(m_size - 1);
+          for (int peer = 1; peer < m_size; ++peer) {
+            m_logger->trace("[Rank {} - thread {}] About to send sync vars to {}."
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            peer,
+                            tag,
+                            seq,
+                            msg_tag);
+            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_world_comm, &reqs[peer - 1]);
           }
-          mask <<= 1;
+
+          if (!reqs.empty()) {
+            MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+            m_logger->trace("[Rank {} - thread {}] Sync vars sent to all peers!"
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            tag,
+                            seq,
+                            msg_tag);
+          }
+        } else {
+          MPI_Request req;
+          m_logger->trace("[Rank {} - thread {}] Waiting to receive sync vars from rank 0."
+                          "(tag = {}, seq = {}, msg_tag = {})",
+                          m_rank,
+                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                          tag,
+                          seq,
+                          msg_tag);
+          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_world_comm, &req);
+          MPI_Wait(&req, MPI_STATUS_IGNORE);
+          m_logger->trace("[Rank {} - thread {}] Received sync vars from rank 0."
+                          "(tag = {}, seq = {}, msg_tag = {})",
+                          m_rank,
+                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                          tag,
+                          seq,
+                          msg_tag);
         }
       };
+
       sync_vars.for_each(broadcast_all_ranks);
     }
 
@@ -326,127 +374,91 @@ namespace sbio {
     template <FormatTraits FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static std::atomic<typename FTraits::StepIdxType> local_idx { 0 };
-      static std::mutex trigger_mutex;
-
-      static std::atomic<typename FTraits::StepIdxType> shared_capacity { 0 };
-      static std::atomic<bool> exhausted { false };
-
       while (true) {
-        if (exhausted.load(std::memory_order_acquire)) {
+        if (m_exhausted.load(std::memory_order_acquire)) {
           m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
-                          "shared_cap = {}, max_cap = {}, local_idx = {}",
+                          "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                           m_rank,
                           std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          shared_capacity.load(),
+                          m_shared_capacity.load(),
                           max_capacity,
-                          local_idx.load());
+                          m_local_idx.load());
+
           return FTraits::ExhaustedSentinel;
         }
 
-        typename FTraits::StepIdxType idx { local_idx.load(std::memory_order_acquire) };
+        typename FTraits::StepIdxType idx { m_local_idx.load(std::memory_order_acquire) };
         typename FTraits::StepIdxType base_step { idx * m_size };
         typename FTraits::StepIdxType step { base_step + m_rank };
-
         typename FTraits::StepIdxType current_cap =
-          shared_capacity.load(std::memory_order_acquire);
+          m_shared_capacity.load(std::memory_order_acquire);
 
         if (base_step >= current_cap) {
-          std::lock_guard<std::mutex> lock(trigger_mutex);
+          std::lock_guard<std::mutex> lock(m_trigger_mutex);
 
-          if (exhausted.load(std::memory_order_acquire)) {
+          if (m_exhausted.load(std::memory_order_acquire)) {
             m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
-                            "shared_cap = {}, max_cap = {}, local_idx = {}",
+                            "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                             m_rank,
                             std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            shared_capacity.load(),
+                            m_shared_capacity.load(),
                             max_capacity,
-                            local_idx.load());
+                            m_local_idx.load());
+
             return FTraits::ExhaustedSentinel;
           }
 
-          if (shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
-            shared_capacity.store(max_capacity, std::memory_order_release);
+          if (m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            m_shared_capacity.store(max_capacity, std::memory_order_release);
           }
 
-          idx = local_idx.load(std::memory_order_acquire);
+          idx = m_local_idx.load(std::memory_order_acquire);
           base_step = idx * m_size;
           step = base_step + m_rank;
-          current_cap = shared_capacity.load(std::memory_order_relaxed);
+          current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (base_step >= current_cap) {
             m_logger->debug("[Rank {} - thread {}] Entering trigger: "
-                            "shared_cap = {}, max_cap = {}, local_idx = {}",
+                            "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                             m_rank,
                             std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            shared_capacity.load(),
+                            m_shared_capacity.load(),
                             max_capacity,
-                            local_idx.load());
+                            m_local_idx.load());
             if (!trigger()) {
-              exhausted.store(true, std::memory_order_release);
+              m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted: "
-                              "shared_cap = {}, max_cap = {}, local_idx = {}",
+                              "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                               m_rank,
                               std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              shared_capacity.load(),
+                              m_shared_capacity.load(),
                               max_capacity,
-                              local_idx.load());
-              // Point-to-point binomial tree barrier to synchronize all ranks before exiting next()
-              int mask { 1 };
-              while (mask < m_size) {
-                if ((m_rank & mask) == 0) {
-                  int peer { m_rank | mask };
-                  if (peer < m_size) {
-                    int dummy { 0 };
-                    MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                  }
-                } else {
-                  int peer { m_rank & ~mask };
-                  int dummy { 0 };
-                  MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
-                  break;
-                }
-                mask <<= 1;
-              }
-
-              mask >>= 1;
-              while (mask > 0) {
-                if ((m_rank & mask) == 0) {
-                  int peer { m_rank | mask };
-                  if (peer < m_size) {
-                    int dummy { 0 };
-                    MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
-                  }
-                } else {
-                  int peer { m_rank & ~mask };
-                  int dummy { 0 };
-                  MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                }
-                mask >>= 1;
-              }
+                              m_local_idx.load());
 
               return FTraits::ExhaustedSentinel;
             }
-            shared_capacity.store(max_capacity, std::memory_order_release);
+
+            m_shared_capacity.store(max_capacity, std::memory_order_release);
             current_cap = max_capacity;
           }
         }
 
         while (base_step < current_cap) {
           if (step >= current_cap) {
-            if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+            if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
               break;
             }
           } else {
-            if (local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+            if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
               return step;
             }
           }
 
           base_step = idx * m_size;
           step = base_step + m_rank;
-          current_cap = shared_capacity.load(std::memory_order_acquire);
-          if (exhausted.load(std::memory_order_acquire)) {
+          current_cap = m_shared_capacity.load(std::memory_order_acquire);
+
+          if (m_exhausted.load(std::memory_order_acquire)) {
             m_logger->debug("[Rank {} - thread {}] Returned exhausted after current cap check: "
                             "base_step = {}, step = {}, max_cap = {}, current_cap = {}",
                             m_rank,
@@ -463,6 +475,10 @@ namespace sbio {
 
   private:
     /**
+     * Communicator for synchronizing across the whole MPI world.
+     */
+    static inline MPI_Comm m_world_comm { MPI_COMM_NULL };
+    /**
      * Communicator used when generating shareable buffers.
      */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
@@ -473,8 +489,23 @@ namespace sbio {
      * to fetch in parallel.
      */
     static inline std::mutex m_broker_mutexes[2048];
-
-    static inline std::shared_ptr<spdlog::logger> m_logger;
+    /**
+     * Mutex for thread synchronization on reindexing
+     */
+    static inline std::mutex m_trigger_mutex;
+    /**
+     * Thread-local index within the rank's set of indices to distribute.
+     */
+    static inline std::atomic<std::size_t> m_local_idx { 0 };
+    /**
+     * Intra-rank capacity store for inter-thread synchronization of indices.
+     */
+    static inline std::atomic<std::size_t> m_shared_capacity { 0 };
+    /**
+     * Latch for if the rank has exhausted all indices.
+     */
+    static inline std::atomic<bool> m_exhausted { false };
+    static inline std::shared_ptr<spdlog::logger> m_logger; ///< Execution policy logger
   };
 } // namespace sbio
 

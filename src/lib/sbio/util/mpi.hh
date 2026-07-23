@@ -70,6 +70,33 @@ namespace sbio::mpi {
 
     return MPI_DATATYPE_NULL;
   }
+
+  /**
+   * Return the supported upper bound for a tag.
+   *
+   * The routine finds the largest supported tag value by the current MPI implementation
+   * which can be used to avoid overflows in tag calculations when sending messages.
+   *
+   * @returns The tag upper bound.
+   */
+  inline int tag_upper_bound() {
+    // 32767 is the minimum upper bound for a compliant MPI implementation
+    int max_tag { 32767 };
+
+    // But most implementations support more, so query
+    int initialized { 0 };
+    MPI_Initialized(&initialized);
+    if (initialized) {
+      int* tag_ub_ptr { nullptr };
+      int flag { 0 };
+      MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &tag_ub_ptr, &flag);
+      if (flag && tag_ub_ptr) {
+        max_tag = *tag_ub_ptr;
+      }
+    }
+
+    return max_tag;
+  }
 } // namespace sbio::mpi
 
 #endif // SBIO_UTIL_MPI_HH

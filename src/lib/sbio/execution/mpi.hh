@@ -35,6 +35,7 @@
 
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 namespace sbio {
   /**
@@ -76,6 +77,10 @@ namespace sbio {
         m_logger = logger;
       }
 
+      if (m_world_comm == MPI_COMM_NULL) {
+        MPI_Comm_dup(MPI_COMM_WORLD, &m_world_comm);
+      }
+
       if (MPIExecution::m_shmem_comm == MPI_COMM_NULL) {
         MPI_Comm_rank(MPI_COMM_WORLD, &MPIExecution::m_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &MPIExecution::m_size);
@@ -114,6 +119,12 @@ namespace sbio {
           int tag { new_win_tag++ };
           buf.allocate(m_shmem_comm, sz);
           buf.set_tag(tag);
+          if (buf.window() != MPI_WIN_NULL) {
+            MPI_Win_lock_all(0, buf.window());
+          }
+
+          // Reset collective stores
+          m_event_idx = 0;
         } else {
           // Otherwise, just use a standard host buffer.
           buf.set_memory(new char[sz], sz);
@@ -183,22 +194,25 @@ namespace sbio {
 
       // Check if Windows need synchronization
       int tag { 0 };
+      int seq { 0 };
       if constexpr (std::is_same_v<Role, IndexRole> ||
                     std::is_same_v<Role, GroupRole> ||
                     std::is_same_v<Hint, Shareable>) {
-        // Only the IndexRole buffers use a Window
+        auto& buf = storage.template get<Role>();
+        tag = buf.tag();
+        seq = buf.fetch_next_seq();
+
         auto fence_win = [](auto& buf) {
           // Check if the buffer type is of one supporting a Window.
           if constexpr (requires { buf.window(); }) {
             if (buf.window() != MPI_WIN_NULL) {
-              // If its a Window and has valid memory backing, fence to synchronize.
-              MPI_Win_fence(0, buf.window());
+              // If its a Window and has valid memory backing, synchronize.
+              MPI_Win_sync(buf.window());
             }
           }
         };
 
         storage.template for_each_role<Role>(fence_win);
-        tag = storage.template get<Role>().tag();
       }
 
       // Broadcast all requested sync_vars
@@ -206,26 +220,53 @@ namespace sbio {
       // This requires point-to-point Send/Recv, but we recreate a binomial tree
       // distribution pattern like you would get from using a Bcast
       int tree_idx { 0 };
-      auto broadcast_all_ranks = [m_rank, m_size, tag, &tree_idx](auto& var) {
+      auto broadcast_all_ranks = [m_rank, m_size, tag, seq, &tree_idx](auto& var) {
         using VarT = decltype(var);
 
         auto mpi_type { mpi::type_for<VarT>() };
 
-        int msg_tag { tag * 100 + tree_idx };
+        int ub { mpi::tag_upper_bound() };
+        int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
         tree_idx++;
 
-        int mask { 1 };
-        while (mask < m_size) {
-          if (m_rank < mask) {
-            int peer { m_rank + mask };
-            if (peer < m_size) {
-              MPI_Send(&var, 1, mpi_type, peer, msg_tag, MPI_COMM_WORLD);
-            }
-          } else if (m_rank < 2 * mask) {
-            int src { m_rank - mask };
-            MPI_Recv(&var, 1, mpi_type, src, msg_tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        if (m_rank == 0) {
+          std::vector<MPI_Request> reqs(m_size - 1);
+          for (int peer = 1; peer < m_size; ++peer) {
+            m_logger->trace("[Rank {}] About to send sync vars to {}."
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            peer,
+                            tag,
+                            seq,
+                            msg_tag);
+            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_world_comm, &reqs[peer - 1]);
           }
-          mask <<= 1;
+
+          if (!reqs.empty()) {
+            MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+            m_logger->trace("[Rank {}] Sync vars sent to all peers!"
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            tag,
+                            seq,
+                            msg_tag);
+          }
+        } else {
+          MPI_Request req;
+          m_logger->trace("[Rank {}] Waiting to receive sync vars from rank 0."
+                          "(tag = {}, seq = {}, msg_tag = {})",
+                          m_rank,
+                          tag,
+                          seq,
+                          msg_tag);
+          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_world_comm, &req);
+          MPI_Wait(&req, MPI_STATUS_IGNORE);
+          m_logger->trace("[Rank {}] Received sync vars from rank 0."
+                          "(tag = {}, seq = {}, msg_tag = {})",
+                          m_rank,
+                          tag,
+                          seq,
+                          msg_tag);
         }
       };
 
@@ -261,10 +302,10 @@ namespace sbio {
     template <FormatTraits FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static typename FTraits::StepIdxType event_idx { 0 };
+      static typename FTraits::StepIdxType m_event_idx { 0 };
 
-      auto step = event_idx + m_rank;
-      event_idx += m_size;
+      auto step = m_event_idx + m_rank;
+      m_event_idx += m_size;
 
       while (step >= max_capacity) {
         if (!trigger()) {
@@ -272,39 +313,6 @@ namespace sbio {
                           "max_cap = {}",
                           m_rank,
                           max_capacity);
-          int mask { 1 };
-          while (mask < m_size) {
-            if ((m_rank & mask) == 0) {
-              int peer { m_rank | mask };
-              if (peer < m_size) {
-                int dummy { 0 };
-                MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-              }
-            } else {
-              int peer { m_rank & ~mask };
-              int dummy { 0 };
-              MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
-              break;
-            }
-            mask <<= 1;
-          }
-
-          mask >>= 1;
-          while (mask > 0) {
-            if ((m_rank & mask) == 0) {
-              int peer { m_rank | mask };
-              if (peer < m_size) {
-                int dummy { 0 };
-                MPI_Send(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD);
-              }
-            } else {
-              int peer { m_rank & ~mask };
-              int dummy { 0 };
-              MPI_Recv(&dummy, 1, MPI_INT, peer, 9999, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            }
-            mask >>= 1;
-          }
-
           return FTraits::ExhaustedSentinel;
         }
       }
@@ -337,11 +345,19 @@ namespace sbio {
 
   private:
     /**
+     * Communicator for synchronizing across the whole MPI world.
+     */
+    static inline MPI_Comm m_world_comm { MPI_COMM_NULL };
+    /**
      * Communicator used when generating shareable buffers.
      */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 }; ///< This processes rank in the MPI world.
     static inline int m_size { -1 }; ///< The size of the MPI world.
+    /**
+     * Rank-local index within the MPI world's set of indices to distribute.
+     */
+    static inline std::size_t m_event_idx { 0 };
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };

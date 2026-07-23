@@ -41,7 +41,7 @@ namespace sbio {
       int finalized { 0 };
       MPI_Finalized(&finalized);
 
-      if (initialized && !finalized) {
+      if (initialized && !finalized && win && *win != MPI_WIN_NULL) {
         MPI_Win_free(win);
       }
     }
@@ -90,7 +90,13 @@ namespace sbio {
    * As there is the possibility for multiple StreamBrokers/other objects to run
    * concurrently within a single rank, each of which using their own shared buffer,
    * the MPISharedBuffer is tagged. The tag can be used for point-to-point
-   * communciation.
+   * communciation. Additionally, a sequence identifier is used to track the number
+   * of updates on this particular buffer. This helps prevent desynchronization by
+   * avoiding collectives called with the buffer from ranks moving at different rates.
+   *
+   * @note The attributes of this buffer class are non-atomic/protected. If using the
+   *       buffer in a multi-threaded environment, the synchronization of the attributes
+   *       must be managed by the caller.
    */
   struct MPISharedBuffer {
 
@@ -194,6 +200,10 @@ namespace sbio {
     inline int tag() const { return m_tag; }
     inline void set_tag(int tag) { m_tag = tag; }
 
+    inline int seq() const { return m_seq; }
+    inline void set_seq(int seq) { m_seq = seq; }
+    inline int fetch_next_seq() { return m_seq++; }
+
     inline bool is_dirty() const { return false; }
     inline void set_dirty(bool) {}
 
@@ -203,6 +213,7 @@ namespace sbio {
     RC<MPI_Win, MPIWinAllocator, MPIWinDeleter> m_window; ///< Window over the shared memory buffer
     int m_window_idx { 0 };                               ///< The index of the Window for ref counting
     int m_tag { -1 };                                     ///< Tag to allow point-to-point communication
+    int m_seq { 0 };                                      ///< A sequence number to track sync points
   };
 } // namespace sbio
 
