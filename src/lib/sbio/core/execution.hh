@@ -291,7 +291,7 @@ namespace sbio {
     }
 
     template <class FTraits, class FetchCBType, class GetCBType>
-    SBIO_HD static IOStatus get_data_steps(std::initializer_list<typename FTraits::StepIdxType>& steps,
+    SBIO_HD static IOStatus get_data_steps(const std::initializer_list<typename FTraits::StepIdxType>& steps,
                                            FetchCBType&& unit_fetcher,
                                            std::size_t num_fetches,
                                            GetCBType&& unit_get_data,

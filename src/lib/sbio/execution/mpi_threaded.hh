@@ -363,7 +363,7 @@ namespace sbio {
      * @returns The IOStatus from the fetch and get procedure.
      */
     template <class FTraits, class FetchCBType, class GetCBType>
-    static IOStatus get_data_steps_impl(std::initializer_list<typename FTraits::StepIdxType> steps,
+    static IOStatus get_data_steps_impl(const std::initializer_list<typename FTraits::StepIdxType> steps,
                                         FetchCBType&& unit_fetcher,
                                         std::size_t num_fetches,
                                         GetCBType&& unit_get_data,
