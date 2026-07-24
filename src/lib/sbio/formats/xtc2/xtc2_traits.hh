@@ -484,6 +484,75 @@ namespace sbio {
       return IOStatus::GeneralIOError;
     }
 
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus fetch_multi_steps(Stream<IO, XTC2Traits>* streams,
+                                              StorageViewT& storage,
+                                              DiscoveryState& stream_state,
+                                              const StreamParameters& cfg,
+                                              StepIdxType step_idx,
+                                              StepIdxType count,
+                                              DataAccessPtn ptn) {
+      stream_state.events_per_read = cfg.events_per_read;
+      stream_state.last_accessed_ptn = ptn;
+      if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
+        std::size_t start_index { step_idx % stream_state.events_per_read };
+        std::size_t end_index { start_index + count - 1 };
+
+        if (end_index >= stream_state.num_events) {
+          return IOStatus::AllRequestedRead;
+        }
+
+        auto* l1_offsets =
+          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+
+        auto& start_offset = l1_offsets[start_index];
+        auto& end_offset = l1_offsets[end_index];
+        std::size_t file_offset { start_offset.offset };
+        std::size_t read_size { (end_offset.offset + end_offset.size) - file_offset };
+
+        auto* bd_buf = storage.template acquire<DataRole, 0>();
+        IOStatus status = streams[BD].read_at(bd_buf, file_offset, read_size);
+
+        if (status == IOStatus::Success) {
+          std::size_t read_count = streams[BD].read_count();
+          if (read_count == 0) {
+            status = IOStatus::ZeroBytesRead;
+          } else {
+            status = IOStatus::Success;
+          }
+        }
+
+        storage.template release<IndexRole, 0>(l1_offsets, status);
+        storage.template release<DataRole, 0>(bd_buf, status);
+        return status;
+      } else {
+        /// TODO: Implement... something for this.
+      }
+
+      return IOStatus::GeneralIOError;
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus fetch_multi_steps_stride(Stream<IO, XTC2Traits>* streams,
+                                                     StorageViewT& storage,
+                                                     DiscoveryState& stream_state,
+                                                     const StreamParameters& cfg,
+                                                     StepIdxType step_idx,
+                                                     StepIdxType count,
+                                                     StepIdxType stride,
+                                                     DataAccessPtn ptn) {
+      stream_state.events_per_read = cfg.events_per_read;
+      stream_state.last_accessed_ptn = ptn;
+      if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
+        /// TODO: Implement... something for this.
+      } else {
+        /// TODO: Implement... something for this.
+      }
+
+      return IOStatus::GeneralIOError;
+    }
+
+
     template <class StorageViewT>
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
                                                  const MetadataInventory& inv,

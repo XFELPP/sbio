@@ -129,7 +129,8 @@ namespace sbio {
       }
 
       using IOType = typename BrokerType::IOType;
-      m_ptr_storage = EPolicy::template allocate_group_storage<IOType, FTraits>(m_num_segments);
+      m_ptr_storage = EPolicy::template allocate_group_storage<IOType, FTraits>(m_num_segments,
+                                                                                /*max_batch_count=*/10);
     }
 
     const char* group_name() const { return m_name; }
@@ -147,6 +148,14 @@ namespace sbio {
       auto& access_ptn = m_access_ptns[broker_no];
 
       return stream_broker->fetch_step(step_idx, access_ptn);
+    }
+
+    inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
+                                    std::size_t broker_no) const {
+      auto* stream_broker = m_stream_brokers[broker_no];
+      auto& access_ptn = m_access_ptns[broker_no];
+
+      return stream_broker->fetch_steps(steps, access_ptn);
     }
 
     template <class CBType>
@@ -202,7 +211,7 @@ namespace sbio {
      */
     template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
     requires std::invocable<CBType, DataResult>
-    inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
+    inline ncarray::SOViewFor<MemTag> get_data(StepIdxType& step_idx,
                                                CBType&& callback,
                                                Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
@@ -310,7 +319,7 @@ namespace sbio {
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <typename MemTag = ncarray::HostTag, typename... Args>
-    inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
+    inline ncarray::SOViewFor<MemTag> get_data(StepIdxType& step_idx,
                                                Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
@@ -386,6 +395,149 @@ namespace sbio {
 
       return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res);
     }
+
+    template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
+    requires std::invocable<CBType, DataResult>
+    inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,
+                                                     CBType&& callback,
+                                                     Args&&... args) const {
+      DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
+
+      bool passed_step { steps.size() == 3 };
+      StepIdxType first { *steps.begin() };
+      StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+      std::size_t count { (last > first) ? (last - first) : 1 };
+
+      // Save a result reference to capture the data in the lambdas
+      DataResult ref_res;
+
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+
+      auto read_cb = [&](std::size_t i) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          /// TODO: Setup Chronological
+        } else {
+          auto& access_ptn = m_access_ptns[i];
+          return m_stream_brokers[i]->fetch_steps(steps, access_ptn);
+        }
+      };
+
+      auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          /// TODO: Setup Chronological
+        } else {
+          auto res = get_data_for(req,
+                                  i,
+                                  std::forward<CBType>(callback));
+
+          std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
+          ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+          if (i == 0) {
+            // This assumes all segments are same shape...
+            ref_res.data = res.data;
+            ref_res.size = res.size;
+            ref_res.rank = res.rank + 1;
+            ref_res.shape[0] = count;
+            // TODO: Consider ways to avoid copy....
+            for (std::uint16_t i = 0; i < res.rank - 1; ++i) {
+              ref_res.shape[i + 1] = res.shape[i];
+            }
+            ref_res.dtype = res.dtype;
+          }
+        }
+      };
+
+      std::size_t num_brokers { m_num_brokers };
+      std::size_t num_segments { m_num_segments };
+
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        num_brokers = 1;
+        num_segments = 1;
+      }
+
+      EPolicy::template get_data_steps<FTraits>(steps,
+                                                read_cb,
+                                                num_brokers,
+                                                get_data_cb,
+                                                num_segments);
+
+      const void** ptr_table { const_cast<const void**>(ptr_tbl) };
+      if constexpr (std::is_same_v<MemTag, ncarray::DevTag>) {
+#ifdef SBIO_HAS_CUDA
+        cudaMemcpy(m_dev_ptrs, ptr_tbl, num_segments * sizeof(void*), cudaMemcpyHostToDevice);
+        ptr_table = const_cast<const void**>(reinterpret_cast<void**>(m_dev_ptrs));
+#endif
+      }
+
+      return as_ncarray<MemTag>(ptr_table, num_segments, ref_res, count);
+    }
+
+    template <typename MemTag = ncarray::HostTag, typename... Args>
+    inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,
+                                                     Args&&... args) const {
+      DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
+
+      bool passed_step { steps.size() == 3 };
+      StepIdxType first { *steps.begin() };
+      StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+      std::size_t count { (last > first) ? (last - first) : 1 };
+
+      // Save a result reference to capture the data in the lambdas
+      DataResult ref_res;
+
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+
+      auto read_cb = [&](std::size_t i) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          // TODO: Setup Chronological
+        } else {
+          auto& access_ptn = m_access_ptns[i];
+          return m_stream_brokers[i]->fetch_steps(steps, access_ptn);
+        }
+      };
+
+      auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          // TODO: Setup Chronological
+        } else {
+          auto res = get_data_for(req, i);
+
+          std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
+          ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+          if (i == 0 && cnt == 0) {
+            // This assumes all segments are same shape...
+            ref_res.data = res.data;
+            ref_res.size = res.size;
+            ref_res.rank = res.rank;
+            ref_res.shape[0] = count;
+            // TODO: Consider ways to avoid copy....
+            for (std::uint16_t i = 0; i < res.rank; ++i) {
+              ref_res.shape[i + 1] = res.shape[i];
+            }
+            ref_res.dtype = res.dtype;
+          }
+        }
+      };
+
+      std::size_t num_brokers { m_num_brokers };
+      std::size_t num_segments { m_num_segments };
+
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        num_brokers = 1;
+        num_segments = 1;
+      }
+
+      EPolicy::template get_data_steps<FTraits>(steps,
+                                                read_cb,
+                                                num_brokers,
+                                                get_data_cb,
+                                                num_segments);
+
+      return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res, count);
+    }
+
 
   private:
     char m_name[FTraits::MaxNameSize];

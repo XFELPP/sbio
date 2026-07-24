@@ -352,37 +352,53 @@ namespace sbio {
       return status;
     }
 
-    /*
-    SBIO_HD inline IOStatus fetch_steps(this auto&& self,
-                                        std::initializer_list<StepIdxType> steps,
+    SBIO_HD inline IOStatus fetch_steps(std::initializer_list<StepIdxType> steps,
                                         const DataAccessPtn ptn) {
       if (steps.size() == 1) {
-        return self.fetch_step(*steps.begin(), ptn);
+        return fetch_step(*steps.begin(), ptn);
       } else if (steps.size() <= 3) {
+        m_broker_state = BrokerState::STREAMING;
+
+        EPolicy::template pre_update<DataRole>(m_storage);
+
         // Passed begin/end, steps of 1 unit or explicit as 3rd item
         bool passed_step { steps.size() == 3 };
         StepIdxType first { *steps.begin() };
         StepIdxType last = passed_step ? *(steps.end() - 2) : *(steps.end() - 1);
-        StepIdxType step = passed_step ? *(steps.end() - 1) : 1;
 
-        self.m_broker_state = BrokerState::STREAMING;
+        // StepIdxType step = passed_step ? *(steps.end() - 1) : 1;
+        // TODO: Support the striding, for now only use 1
 
-        EPolicy::template pre_update<DataRole>(self.m_storage);
+        StepIdxType count { (last > first) ? (last - first) : 1 };
 
-        IOStatus status = IOStatus::Success;
+        IOStatus status { IOStatus::Success };
         if (EPolicy::template should_process<FTraits>(first)) {
-          status = self.fetch_steps_impl(first, last, step, ptn);
+          if constexpr (!std::is_void_v<Derived> && requires {
+              static_cast<Derived*>(this)->fetch_steps_impl(steps, ptn);
+            }) {
+            status = static_cast<Derived*>(this)->fetch_steps_impl(steps, ptn);
+          } else {
+
+
+            StorageView<StorageT, EPolicy> sv(m_storage);
+            status = FTraits::fetch_multi_steps(m_streams,
+                                                sv,
+                                                m_stream_state,
+                                                m_config,
+                                                first,
+                                                count,
+                                                ptn);
+          }
         }
 
         // Should do an error check to set state properly.
-        self.m_broker_state = BrokerState::READY;
+        m_broker_state = BrokerState::READY;
 
         return status;
       } else {
-        // Error.
+        return IOStatus::GeneralIOError;
       }
     }
-    */
 
     SBIO_HD inline IOStatus process() {
       if constexpr (!std::is_void_v<Derived>) {

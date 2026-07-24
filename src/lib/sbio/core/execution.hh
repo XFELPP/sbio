@@ -232,17 +232,21 @@ namespace sbio {
     // ---------------------------------- //
     template <class IO, class FTraits>
     requires FormatTraits<FTraits, IO, Derived>
-    SBIO_HD static auto allocate_group_storage(std::size_t num_segments) {
-      using PtrTableRequirements =
-          TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
-          //TypeList<BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>>;
+    SBIO_HD static auto allocate_group_storage(std::size_t num_segments,
+                                               std::size_t max_batch_count = 1) {
+      using PtrTableRequirements = TypeList<
+        BufferDescriptor<TableRole, 0, sizeof(void*)>
+      >;
+
       if constexpr (requires {
-          Derived::template allocate_group_storage_impl<PtrTableRequirements, FTraits>(num_segments);
+          Derived::template allocate_group_storage_impl<PtrTableRequirements, FTraits>(num_segments,
+                                                                                       max_batch_count);
       }) {
-        return Derived::template allocate_group_storage_impl<PtrTableRequirements, FTraits>(num_segments);
+        return Derived::template allocate_group_storage_impl<PtrTableRequirements, FTraits>(num_segments,
+                                                                                            max_batch_count);
       } else {
         AllocationRequest<FTraits> alloc_request;
-        alloc_request.size_requests[0] = sizeof(void*) * num_segments;
+        alloc_request.size_requests[0] = sizeof(void*) * num_segments * max_batch_count;
 
         return Derived::template allocate_storage<PtrTableRequirements, IO, FTraits>(alloc_request);
       }
@@ -285,6 +289,56 @@ namespace sbio {
         return status;
       }
     }
+
+    template <class FTraits, class FetchCBType, class GetCBType>
+    SBIO_HD static IOStatus get_data_steps(std::initializer_list<typename FTraits::StepIdxType>& steps,
+                                           FetchCBType&& unit_fetcher,
+                                           std::size_t num_fetches,
+                                           GetCBType&& unit_get_data,
+                                           std::size_t num_accesses) {
+      if constexpr (requires {
+          Derived::template get_data_steps_impl<FTraits>(steps,
+                                                         std::forward<FetchCBType>(unit_fetcher),
+                                                         num_fetches,
+                                                         std::forward<GetCBType>(unit_get_data),
+                                                         num_accesses);
+        }) {
+        return Derived::template get_data_steps_impl<FTraits>(steps,
+                                                              std::forward<FetchCBType>(unit_fetcher),
+                                                              num_fetches,
+                                                              std::forward<GetCBType>(unit_get_data),
+                                                              num_accesses);
+      } else {
+        // By default, we will do IO for all units (segments)
+        // Then afterwards we will do data retrieval.
+        IOStatus status = IOStatus::Success;
+        for (std::size_t i = 0; i < num_fetches; ++i) {
+          IOStatus s = unit_fetcher(i);
+          if (s != IOStatus::Success) {
+            status = s;
+            break;
+          }
+        }
+        if (status == IOStatus::Success) {
+          bool passed_step { steps.size() == 3 };
+          typename FTraits::StepIdxType first { *steps.begin() };
+          typename FTraits::StepIdxType last {
+            passed_step ? *(steps.end() - 2) : *(steps.end() - 1)
+          };
+          typename FTraits::StepIdxType count {
+            (last > first) ? static_cast<std::size_t>(last - first) : 1
+          };
+
+          for (std::size_t cnt = 0; cnt < static_cast<std::size_t>(count); ++cnt) {
+            for (std::size_t i = 0; i < num_accesses; ++i) {
+              unit_get_data(i, cnt);
+            }
+          }
+        }
+        return status;
+      }
+    }
+
 
     // --- DataSource level policies --- //
     // --------------------------------- //

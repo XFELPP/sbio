@@ -161,11 +161,11 @@ namespace sbio {
 
 
   SBIO_HD std::size_t XTC2Traits::populate_offsets(XTC2Traits::DataUnit* dg, // Dgram*
-                                                    XTC2Traits::DiscoveryState& state,
-                                                    std::size_t beginning_offset,
-                                                    XTC2Traits::EventOffset* l1_offsets_buf,
-                                                    XTC2Traits::TransitionOffset* transition_offsets_buf,
-                                                    std::size_t access_offset) {
+                                                   XTC2Traits::DiscoveryState& state,
+                                                   std::size_t beginning_offset,
+                                                   XTC2Traits::EventOffset* l1_offsets_buf,
+                                                   XTC2Traits::TransitionOffset* transition_offsets_buf,
+                                                   std::size_t access_offset) {
     int payload_size { dg->xtc.sizeofPayload() };
 
     if (dg->service() == XTC2::TransitionId::L1Accept) {
