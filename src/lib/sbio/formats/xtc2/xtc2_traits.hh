@@ -118,15 +118,16 @@ namespace sbio {
      * and the total number of events and transitions seen.
      */
     struct DiscoveryState {
-      ssize_t last_l1_idx_seen { -1 };
-      std::uint64_t next_bd_offset { 0 };
-      bool seen_end_run { false };
-      std::size_t l1_offset_idx { 0 };
-      std::size_t trans_offset_idx { 0 };
-      std::size_t events_per_read { 0 };
-      std::size_t num_transitions { 0 };
-      std::size_t num_events { 0 };
-      std::size_t curr_smd_offset { 0 };
+      ssize_t last_l1_idx_seen { -1 };                             ///< The index of the last L1Accept seen
+      std::uint64_t next_bd_offset { 0 };                          ///< The next L1Accept offset
+      bool seen_end_run { false };                                 ///< Whether an EndRun transition has been passed
+      std::size_t l1_offset_idx { 0 };                             ///< Current index into L1Accept offsets
+      std::size_t trans_offset_idx { 0 };                          ///< Current index into transition offsets
+      std::size_t events_per_read { 0 };                           ///< Number of offsets to read per indexing
+      std::size_t num_transitions { 0 };                           ///< Number of transition (offset)s read
+      std::size_t num_events { 0 };                                ///< Number of event (offset)s read
+      std::size_t curr_smd_offset { 0 };                           ///< Current offset in .smd
+      DataAccessPtn last_accessed_ptn { DataAccessPtn::L1Accept }; ///< Indicate last buffer used
     };
 
     struct DataRequest {
@@ -359,6 +360,7 @@ namespace sbio {
                                        StepIdxType step_idx,
                                        DataAccessPtn ptn) {
       stream_state.events_per_read = cfg.events_per_read;
+      stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         std::size_t adjusted_index { step_idx % stream_state.events_per_read };
         if (adjusted_index >= stream_state.num_events) {
@@ -396,7 +398,7 @@ namespace sbio {
         }
 
         std::size_t adjusted_index { step_idx % stream_state.events_per_read };
-        if (adjusted_index >= stream_state.num_transitions) {
+        if (adjusted_index >= stream_state.num_events) {
           return IOStatus::AllRequestedRead;
         }
 
@@ -407,14 +409,33 @@ namespace sbio {
 
         auto& curr_transition_index { stream_state.trans_offset_idx };
         auto& offset { transition_offsets[curr_transition_index] };
-        while (offset.transition_id != transition_id) {
+
+        // We'll try to add some minimal support to go backwards after you've gone
+        // through once - this only will work within the events_per_read batch of
+        // indices though
+        if (offset.previous_l1_index > step_idx) {
+          curr_transition_index = 0;      // Just reset back to beginning of buffer
+          offset = transition_offsets[0]; // It will re-iterate through below
+        }
+
+        while (offset.transition_id != transition_id ||
+               offset.previous_l1_index <= step_idx) {
           curr_transition_index++;
 
           if (curr_transition_index >= stream_state.num_transitions) {
             return IOStatus::AllRequestedRead;
           }
 
-          offset = transition_offsets[curr_transition_index];
+          auto& next_transition_offset { transition_offsets[curr_transition_index] };
+          if (next_transition_offset.previous_l1_index > step_idx) {
+            // Since we incremented at the statr of the loop, check if we went past
+            // and break if so - we haven't set the offset again yet
+            break;
+          }
+
+          if (next_transition_offset.transition_id == transition_id) {
+            offset = transition_offsets[curr_transition_index];
+          }
         }
 
         std::int64_t prev_l1_index { offset.previous_l1_index };
@@ -537,11 +558,17 @@ namespace sbio {
     template <class StorageViewT>
     SBIO_HD static auto current_buffer(StorageViewT& storage,
                                        const DiscoveryState& state) {
-      // TODO: Auto select correct buffer depeneding on if using transitions or L1s
-      auto* buf = storage.template acquire<DataRole, 0>();
-      storage.template release<DataRole, 0>(buf);
+      if (state.last_accessed_ptn == DataAccessPtn::L1Accept) {
+        auto* buf = storage.template acquire<DataRole, 0>();
+        storage.template release<DataRole, 0>(buf);
 
-      return buf;
+        return buf;
+      } else {
+        auto* buf = storage.template acquire<MetadataRole, 0>();
+        storage.template release<MetadataRole, 0>(buf);
+
+        return buf;
+      }
     }
   };
 
