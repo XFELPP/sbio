@@ -346,6 +346,55 @@ namespace sbio {
     }
 
     /**
+     * The MPIThreadedExecution policy multi-contiguous step fetch and get.
+     *
+     * @tparam FTraits The data-format traits.
+     * @tparam FetchCBType The type of the BrokerGroup callback for data fetching.
+     * @tparam GetCBType The type of the BrokerGroup callback for data resolution.
+     * @param[in] steps The steps to read { start, stop }. Currently adding a third step
+     *            for strided access is not yet supported.
+     * @oaram[in] unit_fetcher A per-broker callback from the BrokerGroup to fetch data.
+     * @param[in] num_fetches The number of fetches to perform. (Generally equal
+     *            to the number of brokers)
+     * @param[in] unit_get_data A per-broker callback from the BrokerGroup to resolve a
+     *            piece of requested data inside the bytes just fetched.
+     * @param[in] num_accesses The number of gets to perform. (Generally equal
+     *            to the number of brokers)
+     * @returns The IOStatus from the fetch and get procedure.
+     */
+    template <class FTraits, class FetchCBType, class GetCBType>
+    static IOStatus get_data_steps_impl(std::initializer_list<typename FTraits::StepIdxType> steps,
+                                        FetchCBType&& unit_fetcher,
+                                        std::size_t num_fetches,
+                                        GetCBType&& unit_get_data,
+                                        std::size_t num_accesses) {
+      if (num_fetches == 0) {
+        return IOStatus::Success;
+      }
+      IOStatus status { IOStatus::Success };
+      for (std::size_t i = 0; i < num_fetches; ++i) {
+        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
+        if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
+          status = fetch_status;
+          break;
+        }
+      }
+      if (status == IOStatus::Success) {
+        bool passed_step { steps.size() == 3 };
+        typename FTraits::StepIdxType first { *steps.begin() };
+        typename FTraits::StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+        std::size_t count { (last > first) ? static_cast<std::size_t>(last - first) : 1 };
+        for (std::size_t cnt = 0; cnt < count; ++cnt) {
+          for (std::size_t seg = 0; seg < num_accesses; ++seg) {
+            unit_get_data(seg, cnt);
+          }
+        }
+      }
+
+      return status;
+    }
+
+    /**
      * The MPIThreadedExecution policy generates step indices modulo MPI world size.
      *
      * This policy generates steps with consideration of both the MPI world, as well

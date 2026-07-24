@@ -60,7 +60,13 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   //       Instead, create the *classes* dynamically and attach the methods
   py::classh<DetectorWrapper>(pysbio_module, "DetectorWrapper", py::dynamic_attr())
     .def_property_readonly("detector_type", &DetectorWrapper::get_detector_type)
-    .def_property_readonly("serial_number", &DetectorWrapper::get_serial_number);
+    .def_property_readonly("serial_number", &DetectorWrapper::get_serial_number)
+    .def("get_data", &DetectorWrapper::get_data)
+    .def("get_multi_data", &DetectorWrapper::get_multi_data);
+    //.def("get_multi_data",
+    //     [](DetectorWrapper& self, std::initializer_list<std::size_t> steps, const char* alg, const char* field) {
+    //       return self.get_multi_data(steps, alg, field);
+    //     });
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
 

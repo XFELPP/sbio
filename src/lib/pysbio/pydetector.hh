@@ -23,6 +23,7 @@
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/datasource.hh"
 #include "sbio/execution/serial.hh"
+
 #ifdef SBIO_HAS_MPI
 #include "sbio/execution/mpi.hh"
 #endif
@@ -35,12 +36,14 @@
 #endif
 
 #include <ncarray/ncarrays.hh>
+#include <ncarray/soarrays.hh>
 #include <mpi.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <cstdlib>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <variant>
@@ -106,6 +109,14 @@ namespace pysbio {
 
     const std::string& get_detector_type() const { return detector_type; }
     const std::string& get_serial_number() const { return serial_number; }
+
+    ncarray::SOViewFor<ncarray::HostTag> get_data(std::size_t step,
+                                                  const char* alg,
+                                                  const char* field);
+
+    ncarray::SOViewFor<ncarray::HostTag> get_multi_data(std::initializer_list<std::size_t> steps,
+                                                        const char* alg,
+                                                        const char* field);
 
     DetectorV det;
     std::string detector_type;

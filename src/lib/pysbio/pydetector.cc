@@ -24,6 +24,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -80,5 +81,24 @@ namespace pysbio {
     std::visit(det_visitor, detv);
 
     return py_det;
+  }
+
+  ncarray::SOViewFor<ncarray::HostTag>
+  DetectorWrapper::get_data(std::size_t step, const char* alg, const char* field) {
+    auto getter = [&](auto& det) {
+
+      return det.get_data(step, alg, field);
+    };
+
+    return std::visit(getter, this->det);
+  }
+
+  ncarray::SOViewFor<ncarray::HostTag>
+  DetectorWrapper::get_multi_data(std::initializer_list<std::size_t> steps,
+                                  const char* alg,
+                                  const char* field) {
+    auto getter = [&](auto& det) { return det.get_multi_data(steps, alg, field); };
+
+    return std::visit(getter, this->det);
   }
 } // namespace pysbio
