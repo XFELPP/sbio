@@ -6,6 +6,7 @@ installed_core_headers = [
     'execution.hh',
     'io.hh',
     'storage.hh',
+    'storage_view.hh',
     'stream.hh',
     'sync.hh',
     'utility.hh',

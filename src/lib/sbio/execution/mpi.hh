@@ -67,7 +67,8 @@ namespace sbio {
       HostBuffer
     >;
 
-    template <IsTypeList Requirements, FormatTraits FTraits>
+    template <IsTypeList Requirements, class IO, class FTraits>
+    requires FormatTraits<FTraits, IO, MPIExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::MPIExecution");
@@ -95,7 +96,7 @@ namespace sbio {
       return allocate_impl_helper(Requirements{}, request);
     }
 
-    template <typename... Descriptors, FormatTraits FTraits>
+    template <typename... Descriptors, class FTraits>
     static auto allocate_impl_helper(TypeList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
       static int new_win_tag { 100 }; // Tag each MPI window to distinguish them
@@ -220,7 +221,7 @@ namespace sbio {
       // This requires point-to-point Send/Recv, but we recreate a binomial tree
       // distribution pattern like you would get from using a Bcast
       int tree_idx { 0 };
-      auto broadcast_all_ranks = [m_rank, m_size, tag, seq, &tree_idx](auto& var) {
+      auto broadcast_all_ranks = [tag, seq, &tree_idx](auto& var) {
         using VarT = decltype(var);
 
         auto mpi_type { mpi::type_for<VarT>() };
@@ -299,7 +300,7 @@ namespace sbio {
      *            exhausted.
      * @returns The next step to process using the fixed offset of the world size.
      */
-    template <FormatTraits FTraits, class IndexTrigger>
+    template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
       static typename FTraits::StepIdxType m_event_idx { 0 };

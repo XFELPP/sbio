@@ -40,8 +40,8 @@
 
 namespace sbio {
   template <
-    class BrokerType,
-    FormatTraits FTraits,
+    IsStreamBroker BrokerType,
+    FormatTraits<typename BrokerType::IOType, typename BrokerType::ExecutionPolicy> FTraits,
     std::size_t MaxSegments = 128
   >
   class BrokerGroup {
@@ -128,7 +128,8 @@ namespace sbio {
         }
       }
 
-      m_ptr_storage = EPolicy::template allocate_group_storage<FTraits>(m_num_segments);
+      using IOType = typename BrokerType::IOType;
+      m_ptr_storage = EPolicy::template allocate_group_storage<IOType, FTraits>(m_num_segments);
     }
 
     const char* group_name() const { return m_name; }

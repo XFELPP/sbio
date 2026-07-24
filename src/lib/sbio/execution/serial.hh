@@ -64,7 +64,8 @@ namespace sbio {
      * @param[in] request The allocation request.
      * @returns Allocated storage per the request.
      */
-    template <IsTypeList Requirements, FormatTraits FTraits>
+    template <IsTypeList Requirements, class IO, class FTraits>
+    requires FormatTraits<FTraits, IO, SerialExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::SerialExecution");
@@ -76,7 +77,7 @@ namespace sbio {
       return allocate_impl_helper(Requirements{}, request);
     }
 
-    template <typename... Descriptors, FormatTraits FTraits>
+    template <typename... Descriptors, class FTraits>
     static auto allocate_impl_helper(TypeList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
       Storage<TypeList<Descriptors...>, SerialExecution> s;
@@ -114,7 +115,7 @@ namespace sbio {
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
-    template <FormatTraits FTraits, class IndexTrigger>
+    template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
       static typename FTraits::StepIdxType event_idx { 0 };

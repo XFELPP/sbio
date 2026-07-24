@@ -21,6 +21,8 @@
 #define SBIO_FORMATS_XTC2_XTC2_TRAITS_HH
 
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
+#include "sbio/core/sync.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
@@ -122,6 +124,9 @@ namespace sbio {
       std::size_t l1_offset_idx { 0 };
       std::size_t trans_offset_idx { 0 };
       std::size_t events_per_read { 0 };
+      std::size_t num_transitions { 0 };
+      std::size_t num_events { 0 };
+      std::size_t curr_smd_offset { 0 };
     };
 
     struct DataRequest {
@@ -220,6 +225,324 @@ namespace sbio {
                                                 EventOffset* l1_offsets_buf,
                                                 TransitionOffset* transition_offsets_buf,
                                                 std::size_t access_offset = 0);
+
+    SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(StreamParameters& cfg) {
+      AllocationRequest<XTC2Traits> request;
+      request.size_requests[0] = cfg.max_dgram_size; // Transition buf
+      request.size_requests[1] = // Scratch buffer for reading ahead in smd file
+        cfg.events_per_read * (sizeof(XTC2::Dgram) + 80);
+      request.size_requests[2] = cfg.max_dgram_size; // Event buf
+      request.size_requests[3] = cfg.events_per_read * sizeof(XTC2Traits::EventOffset);
+      request.size_requests[4] =
+        cfg.events_per_read * sizeof(XTC2Traits::TransitionOffset);
+
+      return request;
+    }
+
+    template <IOTraits IO>
+    SBIO_HD static IOStatus open_streams(Stream<IO, XTC2Traits>* streams,
+                                         const StreamParameters& cfg) {
+      if (streams[SMD].connect(cfg.smd_path) != IOStatus::Success) {
+        return IOStatus::OpenFailed;
+      }
+
+      if (streams[BD].connect(cfg.xtc_path) != IOStatus::Success) {
+        return IOStatus::OpenFailed;
+      }
+
+      return IOStatus::Success;
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus discover_metadata(Stream<IO, XTC2Traits>* streams,
+                                              StorageViewT& storage,
+                                              MetadataInventory& inv) {
+      auto* smd_buf = storage.template acquire<MetadataRole>();
+
+      IOStatus status = streams[SMD].read_one(smd_buf,
+                                              storage.template size<MetadataRole>());
+
+      if (status == IOStatus::Success) {
+        auto* dg = reinterpret_cast<XTC2::Dgram*>(smd_buf);
+
+        if (dg->service() == XTC2::TransitionId::Configure) {
+          XTC2Traits::discover_metadata(dg, inv, 0);
+        }
+      }
+
+      storage.template release<MetadataRole, 0>(smd_buf, status);
+      return status;
+    }
+
+    SBIO_HD static auto sync_vars(DiscoveryState& state) {
+      return make_sync_group(state.num_events, state.num_transitions);
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus index_stream(Stream<IO, XTC2Traits>* streams,
+                                         StorageViewT& storage,
+                                         DiscoveryState& stream_state,
+                                         const StreamParameters& cfg) {
+      auto events_per_read { cfg.events_per_read };
+      stream_state.events_per_read = events_per_read;
+
+      std::size_t read_size { (sizeof(XTC2::Dgram) + 80) * events_per_read };
+
+      std::size_t missing_chunk { 0 };
+      if (stream_state.curr_smd_offset) {
+        std::size_t last_bytes_read = streams[SMD].read_count();
+        missing_chunk = last_bytes_read - stream_state.curr_smd_offset;
+      }
+
+      // Read a lot into a scratch buffer
+      auto* smd_buf = storage.template acquire<MetadataRole, 1>();
+      IOStatus status = streams[SMD].read_batch(smd_buf, read_size, missing_chunk);
+
+      if (status == IOStatus::ZeroBytesRead) {
+        stream_state.num_events = 0;
+        stream_state.num_transitions = 0;
+      } else if (status == IOStatus::Success) {
+        auto* l1_offsets =
+          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+        auto* transition_offsets =
+            reinterpret_cast<TransitionOffset*>(storage.template acquire<IndexRole, 1>());
+
+        std::size_t bytes_read = streams[SMD].read_count();
+        stream_state.curr_smd_offset = 0;
+        std::size_t n_events { 0 };
+        std::size_t n_transitions { 0 };
+        while (stream_state.curr_smd_offset < bytes_read) {
+          if (n_events >= events_per_read) {
+            status = IOStatus::AllRequestedRead;
+            break;
+          }
+
+          if (stream_state.curr_smd_offset + sizeof(XTC2::Dgram) > bytes_read) {
+            // Will want to deal with this differently for handling "Live Mode"
+            status = IOStatus::TruncatedRead;
+            break;
+          }
+
+          auto* dg = reinterpret_cast<XTC2::Dgram*>(reinterpret_cast<char*>(smd_buf) +
+                                                    stream_state.curr_smd_offset);
+
+          stream_state.curr_smd_offset += populate_offsets(dg,
+                                                           stream_state,
+                                                           0,
+                                                           l1_offsets,
+                                                           transition_offsets,
+                                                           stream_state.curr_smd_offset);
+
+          if (dg->service() == XTC2::TransitionId::L1Accept) {
+            n_events++;
+          } else {
+            n_transitions++;
+          }
+        }
+
+        stream_state.num_events = n_events;
+        stream_state.num_transitions = n_transitions;
+
+        storage.template release<IndexRole, 0>(l1_offsets, status);
+        storage.template release<IndexRole, 1>(transition_offsets, status);
+      }
+
+      storage.template release<MetadataRole, 1>(smd_buf, status);
+      return status;
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus fetch_step(Stream<IO, XTC2Traits>* streams,
+                                       StorageViewT& storage,
+                                       DiscoveryState& stream_state,
+                                       const StreamParameters& cfg,
+                                       StepIdxType step_idx,
+                                       DataAccessPtn ptn) {
+      stream_state.events_per_read = cfg.events_per_read;
+      if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
+        std::size_t adjusted_index { step_idx % stream_state.events_per_read };
+        if (adjusted_index >= stream_state.num_events) {
+          return IOStatus::AllRequestedRead;
+        }
+
+        auto* l1_offsets =
+          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+
+        auto& offset = l1_offsets[adjusted_index];
+        std::size_t file_offset { offset.offset };
+        std::size_t read_size { offset.size };
+
+        auto* bd_buf = storage.template acquire<DataRole, 0>();
+        IOStatus status = streams[BD].read_at(bd_buf, file_offset, read_size);
+
+        if (status == IOStatus::Success) {
+          std::size_t read_count = streams[BD].read_count();
+          if (read_count == 0) {
+            status = IOStatus::ZeroBytesRead;
+          } else {
+            status = IOStatus::Success;
+          }
+        }
+
+        storage.template release<IndexRole, 0>(l1_offsets, status);
+        storage.template release<DataRole, 0>(bd_buf, status);
+        return status;
+      } else {
+        XTC2::TransitionId transition_id;
+        if (ptn == DataAccessPtn::SlowUpdate) {
+          transition_id = XTC2::TransitionId::SlowUpdate;
+        } else if (ptn == DataAccessPtn::BeginStep) {
+          transition_id = XTC2::TransitionId::BeginStep;
+        }
+
+        std::size_t adjusted_index { step_idx % stream_state.events_per_read };
+        if (adjusted_index >= stream_state.num_transitions) {
+          return IOStatus::AllRequestedRead;
+        }
+
+        auto* l1_offsets =
+          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+        auto* transition_offsets =
+          reinterpret_cast<TransitionOffset*>(storage.template acquire<IndexRole, 1>());
+
+        auto& curr_transition_index { stream_state.trans_offset_idx };
+        auto& offset { transition_offsets[curr_transition_index] };
+        while (offset.transition_id != transition_id) {
+          curr_transition_index++;
+
+          if (curr_transition_index >= stream_state.num_transitions) {
+            return IOStatus::AllRequestedRead;
+          }
+
+          offset = transition_offsets[curr_transition_index];
+        }
+
+        std::int64_t prev_l1_index { offset.previous_l1_index };
+
+        std::size_t read_size { 0 };
+        std::size_t file_offset { 0 };
+        if (prev_l1_index <= static_cast<std::int64_t>(step_idx) &&
+            curr_transition_index < stream_state.num_transitions) {
+          read_size = offset.size;
+          if (prev_l1_index == -1) {
+            auto& l1_offset = l1_offsets[0];
+            std::size_t total_offset_from_l1 { read_size };
+            std::size_t transition_index { curr_transition_index };
+
+            auto& next_transition_offset { transition_offsets[transition_index] };
+            while (next_transition_offset.previous_l1_index == -1) {
+              total_offset_from_l1 += next_transition_offset.size;
+              transition_index++;
+              next_transition_offset = transition_offsets[transition_index];
+            }
+
+            file_offset = l1_offset.offset - total_offset_from_l1;
+          } else {
+            file_offset = offset.offset;
+          }
+        }
+
+        auto* bd_buf { storage.template acquire<MetadataRole, 0>() };
+        IOStatus status = streams[BD].read_at(bd_buf, file_offset, read_size);
+
+        if (status == IOStatus::Success) {
+          std::size_t read_count = streams[BD].read_count();
+          if (read_count == 0) {
+            status = IOStatus::ZeroBytesRead;
+          } else {
+            status = IOStatus::Success;
+          }
+        }
+
+        storage.template release<IndexRole, 0>(l1_offsets, status);
+        storage.template release<IndexRole, 1>(transition_offsets, status);
+        storage.template release<MetadataRole, 0>(bd_buf, status);
+        return status;
+      }
+
+      return IOStatus::GeneralIOError;
+    }
+
+    template <class StorageViewT>
+    SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
+                                                 const MetadataInventory& inv,
+                                                 const DataRequest& req,
+                                                 DataAccessPtn ptn) {
+      if (ptn == DataAccessPtn::L1Accept) {
+        auto* bd_buf = storage.template acquire<DataRole, 0>();
+        DataResult res = XTC2Traits::resolve_data(bd_buf, inv, req);
+        storage.template release<DataRole, 0>(bd_buf, res);
+        return res;
+      } else if (ptn == DataAccessPtn::SlowUpdate) {
+        // Semantic Mapping: Requested name is actually a PV field in "epics"
+        DataRequest epics_req { req };
+        const char* epics_det_name { "epics" };
+        std::size_t i { 0 };
+        for (; i < 5; ++i) {
+          epics_req.detector_name[i] = epics_det_name[i];
+        }
+        epics_req.detector_name[i] = '\0';
+
+        i = 0;
+        for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
+          epics_req.field_name[i] = req.detector_name[i];
+        }
+        epics_req.field_name[i] = '\0';
+
+        auto* bd_buf = storage.template acquire<MetadataRole, 0>();
+        DataResult res = XTC2Traits::resolve_data(bd_buf, inv, epics_req);
+        storage.template release<MetadataRole, 0>(bd_buf, res);
+        return res;
+      } else if (ptn == DataAccessPtn::BeginStep) {
+        // `scan` should be like a "normal" detector. However, it must be read from
+        // the BeginStep transition buffers.
+        // Those buffers will have:
+        // - `step_value`     : INT64
+        // - `step_docstring` : CHARSTR, optional (but usually present)
+        // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
+        // We also allow for people to pass `scan_var_namexxx` as the name directly
+        // So in the case we have Scan type access, but the name is not "scan" we must
+        // do a rewrite
+        DataRequest scan_req { req };
+
+        if (std::strcmp(scan_req.detector_name, "scan") != 0) {
+          const char* scan_det_name { "scan" };
+          std::size_t i { 0 };
+          for (; i < 4; ++i) {
+            scan_req.detector_name[i] = scan_det_name[i];
+          }
+          scan_req.detector_name[i] = '\0';
+
+          i = 0;
+          for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
+            scan_req.field_name[i] = req.detector_name[i];
+          }
+          scan_req.field_name[i] = '\0';
+        }
+
+        auto* bd_buf = storage.template acquire<MetadataRole, 0>();
+        DataResult res = XTC2Traits::resolve_data(bd_buf, inv, scan_req);
+        storage.template release<MetadataRole, 0>(bd_buf, res);
+        return res;
+      }
+      return {};
+    }
+
+    template <class StorageViewT>
+    SBIO_HD static auto capacity(const StorageViewT& storage,
+                                 const DiscoveryState& state) {
+      return state.num_events;
+    }
+
+    template <class StorageViewT>
+    SBIO_HD static auto current_buffer(StorageViewT& storage,
+                                       const DiscoveryState& state) {
+      // TODO: Auto select correct buffer depeneding on if using transitions or L1s
+      auto* buf = storage.template acquire<DataRole, 0>();
+      storage.template release<DataRole, 0>(buf);
+
+      return buf;
+    }
   };
 
   struct XTC2Traits::MetadataInventory {

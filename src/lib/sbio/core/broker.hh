@@ -23,6 +23,9 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
+#include "sbio/core/stream.hh"
+#include "sbio/core/sync.hh"
 #include "sbio/formats/format_traits.hh"
 
 #include <concepts>
@@ -42,12 +45,26 @@ namespace sbio {
    * Determines whether a class conforms to the StreamBroker interface.
    */
   template <typename T>
-  concept DataBrokerLike = requires(T broker) {
+  concept IsStreamBroker = requires(T broker,
+                                    typename T::StepIdxType step_idx,
+                                    typename T::DataAccessPtn ptn,
+                                    typename T::DataRequest req) {
     { broker.allocate_storage() };
     { broker.open_data_stream() } -> std::convertible_to<IOStatus>;
     { broker.discover_metadata() } -> std::convertible_to<IOStatus>;
+    { broker.fetch_step(step_idx, ptn) } -> std::convertible_to<IOStatus>;
+    { broker.get_data_in_buffer(req, ptn) } -> std::convertible_to<typename T::DataResult>;
     { broker.process() } -> std::convertible_to<IOStatus>;
     { broker.capacity() } -> std::convertible_to<std::size_t>;
+    { broker.sync_vars() };
+  };
+
+  /**
+   * Determines whether a class conforms to the StreamBroker interface.
+   */
+  template <typename T>
+  concept IsIndexableStreamBroker = IsStreamBroker<T> && requires(T broker) {
+    { broker.index_stream() } -> std::convertible_to<IOStatus>;
   };
 
   /**
@@ -99,13 +116,16 @@ namespace sbio {
    * I suspect this can genericaly expose the required interfaces.
    */
   template <
-    class Derived,
     IOTraits IO,
     class EPolicy,
-    FormatTraits FTraits
+    FormatTraits<IO, EPolicy> FTraits,
+    class Derived = void
   >
   class StreamBroker {
   public:
+    using StreamType = Stream<IO, FTraits>;
+    static constexpr std::size_t StreamCount = FTraits::RoleCount;
+
     using StorageT = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
     using Config = typename FTraits::StreamParameters;
     using DiscoveryState = typename FTraits::DiscoveryState;
@@ -118,6 +138,7 @@ namespace sbio {
 
     // Surface the execution policy for use by higher levels (Detector, e.g.)
     using ExecutionPolicy = EPolicy;
+    using IOType = IO;
 
     /**
      * A default constructor is provided for simplicity.
@@ -148,8 +169,8 @@ namespace sbio {
      * @param[in] cfg The data format specif configuration parameters.
      */
     SBIO_HD inline void configure_broker(const Config& cfg) {
-      auto& self = *static_cast<Derived*>(this);
-      self.m_config = cfg;
+      m_config = cfg;
+      m_broker_state = BrokerState::INIT;
     }
 
     /**
@@ -158,16 +179,23 @@ namespace sbio {
      * This corresponds to the ALLOCATE stage of the state machine.
      */
     SBIO_HD inline void allocate_storage() {
-      auto& self = *static_cast<Derived *>(this);
-      self.m_broker_state = BrokerState::ALLOCATE;
+      m_broker_state = BrokerState::ALLOCATE;
 
-      AllocationRequest<FTraits> request;
-      // Broker sub-classes may optionally setup requests from the EPolicy allocation
-      if constexpr (requires { self.get_allocation_request(); }) {
-        request = self.get_allocation_request();
+      if constexpr (!std::is_void_v<Derived>) {
+        auto& self = *static_cast<Derived*>(this);
+        AllocationRequest<FTraits> request;
+
+        // Broker sub-classes may optionally setup requests from the EPolicy allocation
+        if constexpr (requires { self.get_allocation_request(); }) {
+          request = self.get_allocation_request();
+        }
+
+        self.m_storage = EPolicy::template allocate_storage<IO, FTraits>(request);
+      } else {
+        AllocationRequest<FTraits> request = FTraits::get_allocation_request(m_config);
+
+        m_storage = EPolicy::template allocate_storage<IO, FTraits>(request);
       }
-
-      self.m_storage = EPolicy::template allocate_storage<FTraits>(request);
     }
 
     /**
@@ -176,9 +204,13 @@ namespace sbio {
      * This corresponds to the CONNECT stage of the state machine.
      */
     SBIO_HD inline IOStatus open_data_stream() {
-      auto& self = *static_cast<Derived *>(this);
-      self.m_broker_state = BrokerState::CONNECT;
-      return self.open_data_stream_impl();
+      m_broker_state = BrokerState::CONNECT;
+
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<Derived*>(this)->open_data_stream_impl();
+      } else {
+        return FTraits::open_streams(m_streams, m_config);
+      }
     }
 
     /**
@@ -191,18 +223,22 @@ namespace sbio {
      * @returns An IOStatus for whether metadata reads were successful.
      */
     SBIO_HD inline IOStatus discover_metadata() {
-      auto& self = *static_cast<Derived*>(this);
+      m_broker_state = BrokerState::DISCOVERY;
 
-      self.m_broker_state = BrokerState::DISCOVERY;
-      EPolicy::template pre_discovery<decltype(self), FTraits>(self,
-                                                               self.m_metadata_inv);
+      EPolicy::template pre_discovery<StreamBroker, FTraits>(*this, m_metadata_inv);
 
-      IOStatus status = self.discover_metadata_impl();
+      IOStatus status;
+      if constexpr (!std::is_void_v<Derived>) {
+        status = static_cast<Derived*>(this)->discover_metadata_impl();
+      } else {
+        StorageView<StorageT, EPolicy> sv(m_storage);
+        status = FTraits::discover_metadata(m_streams, sv, m_metadata_inv);
+      }
 
-      EPolicy::template on_discovery<decltype(self), FTraits>(self,
-                                                              self.m_metadata_inv,
-                                                              status);
-      self.m_broker_state = BrokerState::READY;
+      EPolicy::template on_discovery<StreamBroker, FTraits>(*this,
+                                                            m_metadata_inv,
+                                                            status);
+      m_broker_state = BrokerState::READY;
 
       return status;
     }
@@ -211,19 +247,31 @@ namespace sbio {
     // In general, you will want to allocate, connect and discover in one swoop.
     // The low-level breakdown is available if you need more precise control, though.
     SBIO_HD inline IOStatus prepare() {
-      auto& self = *static_cast<Derived*>(this);
+      IOStatus status { IOStatus::Success };
+      if constexpr (!std::is_void_v<Derived>) {
+        auto& self = *static_cast<Derived*>(this);
+        self.allocate_storage();
 
-      // Proceed through allocation
-      self.allocate_storage();
+        status = self.open_data_stream();
+        if (status == IOStatus::Success) {
+          status = self.discover_metadata();
+        }
+      } else {
+        // Proceed through allocation
+        allocate_storage();
 
-      // Abandon metadata discovery if open/connect fails
-      IOStatus status = self.open_data_stream();
-      if (status != IOStatus::Success) {
-        self.m_broker_state = BrokerState::ERROR;
-        return status;
+        // Abandon metadata discovery if open/connect fails
+        status = open_data_stream();
+        if (status == IOStatus::Success) {
+          status = discover_metadata();
+        }
       }
 
-      return self.discover_metadata_impl();
+      if (status != IOStatus::Success) {
+        m_broker_state = BrokerState::ERROR;
+      }
+
+      return status;
     }
 
     /**
@@ -236,27 +284,35 @@ namespace sbio {
      * @returns An IOStatus for whether indexing was successful.
      */
     SBIO_HD inline IOStatus index_stream() {
-      auto& self = *static_cast<Derived*>(this);
+      m_broker_state = BrokerState::INDEXING;
 
-      self.m_broker_state = BrokerState::INDEXING;
+      EPolicy::template pre_update<IndexRole>(m_storage);
 
-      EPolicy::template pre_update<IndexRole>(self.m_storage);
-
-      IOStatus status = IOStatus::Success;
+      IOStatus status { IOStatus::Success };
       if (EPolicy::should_index()) {
-        status = self.index_stream_impl();
+        if constexpr (!std::is_void_v<Derived>) {
+          status = static_cast<Derived*>(this)->index_stream_impl();
+        } else {
+          StorageView<StorageT, EPolicy> sv(m_storage);
+
+          // Must ensure that the signatures match to avoid silent failures
+          const auto& cfg { m_config };
+          if constexpr (requires {
+            FTraits::index_stream(m_streams, sv, m_stream_state, cfg);
+          }) {
+            status = FTraits::index_stream(m_streams, sv, m_stream_state, cfg);
+          }
+        }
       }
 
       // self.sync_vars returns a SyncGroup object (see core/sync.hh)
       // This object must contain references to various attributes - it is the
       // responsibility of the execution policy to handle appropriate assingment
       // when synchronization is required.
-      EPolicy::template post_update<IndexRole>(self.m_storage,
-                                               self.sync_vars(),
-                                               status);
+      EPolicy::template post_update<IndexRole>(m_storage, sync_vars(), status);
 
       // Should do an error check to set state properly.
-      self.m_broker_state = BrokerState::READY;
+      m_broker_state = BrokerState::READY;
 
       return status;
     }
@@ -275,19 +331,23 @@ namespace sbio {
      */
     SBIO_HD inline IOStatus fetch_step(StepIdxType step_idx,
                                        const DataAccessPtn ptn) {
-      auto& self = *static_cast<Derived*>(this);
+      m_broker_state = BrokerState::STREAMING;
 
-      self.m_broker_state = BrokerState::STREAMING;
+      EPolicy::template pre_update<DataRole>(m_storage);
 
-      EPolicy::template pre_update<DataRole>(self.m_storage);
-
-      IOStatus status = IOStatus::Success;
+      IOStatus status { IOStatus::Success };
       if (EPolicy::template should_process<FTraits>(step_idx)) {
-        status = self.fetch_step_impl(step_idx, ptn);
+        if constexpr (!std::is_void_v<Derived>) {
+          status = static_cast<Derived*>(this)->fetch_step_impl(step_idx, ptn);
+        } else {
+          StorageView<StorageT, EPolicy> sv(m_storage);
+          status =
+            FTraits::fetch_step(m_streams, sv, m_stream_state, m_config, step_idx, ptn);
+        }
       }
 
       // Should do an error check to set state properly.
-      self.m_broker_state = BrokerState::READY;
+      m_broker_state = BrokerState::READY;
 
       return status;
     }
@@ -325,23 +385,33 @@ namespace sbio {
     */
 
     SBIO_HD inline IOStatus process() {
-      auto& self = *static_cast<Derived*>(this);
-
-      return self.process();
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<Derived*>(this)->process();
+      } else {
+        return process();
+      }
     }
 
     SBIO_HD inline IOStatus run() {
-      auto& self = *static_cast<Derived*>(this);
-
-      return self.run();
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<Derived*>(this)->run();
+      } else {
+        return run();
+      }
     }
 
     // Provide option to include callback?
     template <class CBType>
     SBIO_HD inline IOStatus step(CBType&& callback) {
-      auto& self = *static_cast<Derived*>(this);
-
-      return self.step(std::forward<CBType>(callback));
+      if constexpr (!std::is_void_v<Derived>) {
+        if constexpr (requires {
+            static_cast<Derived*>(this)->step(std::forward<CBType>(callback));
+          }) {
+          return static_cast<Derived*>(this)->step(std::forward<CBType>(callback));
+        }
+      } else if constexpr (requires { step(std::forward<CBType>(callback)); }) {
+        return step(std::forward<CBType>(callback));
+      }
     }
 
     /**
@@ -376,10 +446,13 @@ namespace sbio {
      *
      * @returns The current capacity: the number of immediately available indices.
      */
-    SBIO_HD inline std::size_t capacity() {
-      auto& self = *static_cast<Derived*>(this);
-
-      return self.capacity();
+    SBIO_HD inline std::size_t capacity() const {
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<const Derived*>(this)->capacity();
+      } else {
+        const StorageView<const StorageT, EPolicy> sv(m_storage);
+        return FTraits::capacity(sv, m_stream_state);
+      }
     }
 
     // Functions to set and retrieve buffers
@@ -396,9 +469,12 @@ namespace sbio {
      * @returns A pointer to the buffer filled after a fetch from (a) Stream(s).
      */
     SBIO_HD inline typename FTraits::DataUnit* current_buffer() {
-      auto& self = *static_cast<Derived*>(this);
-
-      return self.current_buffer();
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<Derived*>(this)->current_buffer();
+      } else {
+        StorageView<StorageT, EPolicy> sv(m_storage);
+        return FTraits::current_buffer(sv, m_stream_state);
+      }
     }
 
     /**
@@ -415,9 +491,13 @@ namespace sbio {
     SBIO_HD inline DataResult
     get_data_in_buffer(const DataRequest& req,
                        const DataAccessPtn ptn) {
-      auto& self = *static_cast<Derived*>(this);
 
-      return self.get_data_in_buffer(req, ptn);
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn);
+      } else {
+        StorageView<StorageT, EPolicy> sv(m_storage);
+        return FTraits::get_data_in_buffer(sv, m_metadata_inv, req, ptn);
+      }
     }
 
     /**
@@ -428,11 +508,8 @@ namespace sbio {
      *
      * @returns The compiled metadata from the brokered Stream(s).
      */
-    SBIO_HD inline MetadataInventory& metadata() {
-      auto& self = *static_cast<Derived*>(this);
-
-      return self.m_metadata_inv;
-    }
+    SBIO_HD inline MetadataInventory& metadata() { return m_metadata_inv; }
+    SBIO_HD inline const MetadataInventory& metadata() const { return m_metadata_inv; }
 
     /**
      * Configure the Broker with a set of metadata.
@@ -449,14 +526,31 @@ namespace sbio {
      * @param[in] The metadata to provide the Broker with.
      */
     SBIO_HD inline void set_metadata(MetadataInventory& metadata) {
-      auto& self = *static_cast<Derived*>(this);
-
-      self.m_metadata_inv = metadata;
+      m_metadata_inv = metadata;
     }
 
-  protected:
+    SBIO_HD inline StreamType& stream(std::size_t role_idx) {
+      return m_streams[role_idx];
+    }
+
+    SBIO_HD inline const StreamType& stream(std::size_t role_idx) const {
+      return m_streams[role_idx];
+    }
+
+    SBIO_HD inline auto sync_vars() {
+      if constexpr (!std::is_void_v<Derived>) {
+        return static_cast<Derived*>(this)->sync_vars();
+      } else if constexpr (requires { FTraits::sync_vars(m_stream_state); }) {
+        return FTraits::sync_vars(m_stream_state);
+      } else {
+        return make_sync_group();
+      }
+    }
+
     ~StreamBroker() = default;
 
+  protected:
+    StreamType m_streams[StreamCount];
     Config m_config;
     BrokerState m_broker_state;
     DiscoveryState m_stream_state;

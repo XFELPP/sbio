@@ -28,11 +28,9 @@
 #endif
 #include "sbio/io/posix.hh"
 #ifdef SBIO_HAS_XTC1
-#include "sbio/xtc1_broker.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
 #ifdef SBIO_HAS_XTC2
-#include "sbio/xtc2_broker.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
@@ -52,13 +50,13 @@ namespace py = pybind11;
 namespace pysbio {
 #ifdef SBIO_HAS_XTC1
   using SerialDetector1 = sbio::BrokerGroup<
-    sbio::XTC1StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution>,
+    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
 
 #ifdef SBIO_HAS_MPI
   using MPIDetector1 = sbio::BrokerGroup<
-    sbio::XTC1StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution>,
+    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
 #endif
@@ -66,13 +64,13 @@ namespace pysbio {
 
 #ifdef SBIO_HAS_XTC2
   using SerialDetector2 = sbio::BrokerGroup<
-    sbio::XTC2StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution>,
+    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution, sbio::XTC2Traits>,
     sbio::XTC2Traits
   >;
 
 #ifdef SBIO_HAS_MPI
   using MPIDetector2 = sbio::BrokerGroup<
-    sbio::XTC2StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution>,
+    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC2Traits>,
     sbio::XTC2Traits
   >;
 #endif

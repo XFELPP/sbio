@@ -20,7 +20,10 @@
 #ifndef SBIO_FORMATS_FORMAT_TRAITS_HH
 #define SBIO_FORMATS_FORMAT_TRAITS_HH
 
+#include "sbio/core/io.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
+#include "sbio/core/stream.hh"
 
 #include <concepts>
 #include <cstdint>
@@ -109,8 +112,57 @@ namespace sbio {
     }
 
     SBIO_HD static inline void discover_metadata(DataUnit* buf,
-                                                  MetadataInventory& inv,
-                                                  std::size_t offset) {}
+                                                 MetadataInventory& inv,
+                                                 std::size_t offset) {}
+
+    template <IOTraits IO>
+    SBIO_HD static IOStatus open_streams(Stream<IO, BaseTraits>* streams,
+                                         const StreamParameters& cfg) {
+      return IOStatus::Success;
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus discover_metadata(Stream<IO, BaseTraits>* streams,
+                                              StorageViewT& storage,
+                                              MetadataInventory& inv) {
+      return IOStatus::Success;
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus index_stream(Stream<IO, BaseTraits>* streams,
+                                         StorageViewT& storage,
+                                         DiscoveryState& stream_state,
+                                         const StreamParameters& cfg) {
+      return IOStatus::Success;
+    }
+
+    template <IOTraits IO, class StorageViewT>
+    SBIO_HD static IOStatus fetch_step(Stream<IO, BaseTraits>* streams,
+                                       StorageViewT& storage,
+                                       DiscoveryState& stream_state,
+                                       const StreamParameters& cfg,
+                                       StepIdxType step_idx,
+                                       DataAccessPtn ptn) {
+      return IOStatus::Success;
+    }
+
+    template <class StorageViewT>
+    SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
+                                                 const MetadataInventory& inv,
+                                                 const DataRequest& req,
+                                                 DataAccessPtn ptn) {
+      return DataResult{};
+    }
+
+    SBIO_HD static auto sync_vars(DiscoveryState& state) {}
+
+    template <class StorageViewT>
+    SBIO_HD static auto capacity(const StorageViewT& storage,
+                                 const DiscoveryState& state) {}
+
+    template <class StorageViewT>
+    SBIO_HD static auto current_buffer(StorageViewT& storage,
+                                       const DiscoveryState& state) {}
   };
 
   template <typename T>
@@ -155,6 +207,12 @@ namespace sbio {
     { T::resolve_data(buf, inv, req) } -> std::same_as<typename T::DataResult>;
   };
 
+  template <typename T, typename IO>
+  concept CanOpenStreams = requires(Stream<IO, T>* streams,
+                                    const typename T::StreamParameters& cfg) {
+    { T::open_streams(streams, cfg) } -> std::convertible_to<IOStatus>;
+  };
+
   template <typename T>
   concept HasMetadataDiscovery = requires(typename T::DataUnit* buf,
                                           typename T::MetadataInventory& inv,
@@ -162,23 +220,71 @@ namespace sbio {
     { T::discover_metadata(buf, inv, offset) } -> std::same_as<void>;
   };
 
+  template <typename T, typename IO, typename StorageViewT>
+  concept CanIndexStreams = requires(Stream<IO, T>* streams,
+                                     StorageViewT& storage,
+                                     typename T::DiscoveryState& state,
+                                     const typename T::StreamParameters& cfg) {
+    { T::index_stream(streams, storage, state, cfg) } -> std::convertible_to<IOStatus>;
+  };
+
+  template <typename T, typename IO, typename StorageViewT>
+  concept CanFetchStreamData = requires(Stream<IO, T>* streams,
+                                        StorageViewT& storage,
+                                        typename T::DiscoveryState& state,
+                                        const typename T::StreamParameters& cfg,
+                                        typename T::StepIdxType step_idx,
+                                        typename T::DataAccessPtn ptn) {
+    { T::fetch_step(streams, storage, state, cfg, step_idx, ptn) } -> std::convertible_to<IOStatus>;
+  };
+
+  template <typename T, typename IO, class StorageViewT>
+  concept CanFillBuffer = requires(StorageViewT& storage,
+                                   const typename T::MetadataInventory& inv,
+                                   const typename T::DataRequest& req,
+                                   typename T::DataAccessPtn ptn) {
+    { T::get_data_in_buffer(storage, inv, req, ptn) } -> std::convertible_to<typename T::DataResult>;
+  };
+
   template <typename T>
-  concept FormatTraits = HasBoundedDataDimensions<T> &&
-    HasStreamParameters<T> &&
-    HasDataRequest<T> &&
-    HasResolveData<T> &&
+  concept HasStateSynch = requires(typename T::DiscoveryState& state) {
+    { T::sync_vars(state) };
+  };
+
+  template <typename T, typename IO, typename EPolicy>
+  concept FormatTraits =
+    HasBoundedDataDimensions<T>                                                     &&
+    HasStreamParameters<T>                                                          &&
+    HasDataRequest<T>                                                               &&
+    HasResolveData<T>                                                               &&
+    CanOpenStreams<T, IO>                                                           &&
+    CanFetchStreamData<
+      T,
+      IO,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+    CanFillBuffer<
+      T,
+      IO,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
     HasMetadataDiscovery<T>;
 
-  template <typename T>
-  concept EventOffsetFormatTraits = FormatTraits<T> && HasEventOffset<T>;
+  template <typename T, typename IO, class StorageViewT>
+  concept IndexableFormatTraits =
+    FormatTraits<T, IO, StorageViewT> && CanIndexStreams<T, IO, StorageViewT>;
 
-  template <typename T>
-  concept TransitionOffsetFormatTraits = FormatTraits<T> && HasTransitionOffset<T>;
+  template <typename T, typename IO, class StorageViewT>
+  concept SynchableFormatTraits = FormatTraits<T, IO, StorageViewT> && HasStateSynch<T>;
+
+  template <typename T, typename IO, class StorageViewT>
+  concept EventOffsetFormatTraits = FormatTraits<T, IO, StorageViewT> && HasEventOffset<T>;
+
+  template <typename T, typename IO, class StorageViewT>
+  concept TransitionOffsetFormatTraits = FormatTraits<T, IO, StorageViewT> && HasTransitionOffset<T>;
 
 
-  template <typename T>
+  template <typename T, typename IO, class StorageViewT>
   concept OffsetBasedFormatTraits =
-  FormatTraits<T> && HasEventOffset<T> && HasTransitionOffset<T>;
+    FormatTraits<T, IO, StorageViewT> && HasEventOffset<T> && HasTransitionOffset<T>;
 } // namespace sbio
 
 #endif // SBIO_FORMATS_FORMAT_TRAITS_HH

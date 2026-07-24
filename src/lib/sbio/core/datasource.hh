@@ -51,8 +51,8 @@ namespace sbio {
   template <
     IOTraits IO,
     class EPolicy,
-    FormatTraits FTraits,
-    class BrokerType,
+    FormatTraits<IO, EPolicy> FTraits,
+    IsStreamBroker BrokerType = StreamBroker<IO, EPolicy, FTraits>,
     std::size_t MaxDataStreams = 128
   >
   class DataSource {
@@ -128,10 +128,14 @@ namespace sbio {
           return status;
         }
 
-        status = m_data_streams[n_stream].index_stream();
+        if constexpr (IsIndexableStreamBroker<BrokerType>) {
+          status = m_data_streams[n_stream].index_stream();
+        }
+
         if (status != IOStatus::Success) {
           return status;
         }
+
         // Update our total steps capacity as the data stream brokers tell us
         std::size_t stream_steps = m_data_streams[n_stream].capacity();
         if (stream_steps > steps_capacity) {

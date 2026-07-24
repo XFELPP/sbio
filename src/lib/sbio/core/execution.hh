@@ -107,22 +107,25 @@ namespace sbio {
      *            buffers it will need.
      * @return storage The storage object containing all buffers.
      */
-    template <FormatTraits FTraits>
+    template <class IO, class FTraits>
+    requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_storage(AllocationRequest<FTraits>& request) {
       using Requirements = typename FTraits::BrokerBufferRequirements;
-      return Derived::template allocate_storage_impl<Requirements, FTraits>(request);
+      return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
     }
 
-    template <IsTypeList Requirements, FormatTraits FTraits>
+    template <IsTypeList Requirements, class IO, class FTraits>
+    requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_storage(AllocationRequest<FTraits>& request) {
-      return Derived::template allocate_storage_impl<Requirements, FTraits>(request);
+      return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
     }
 
     /**
      * The stage 2 hooks - provide the mechanism for metadata synchronization across
      * the various parallel processors.
      */
-    template <class BrokerType, FormatTraits FTraits>
+    template <class BrokerType, class FTraits>
+    requires FormatTraits<FTraits, typename BrokerType::IOType, Derived>
     SBIO_HD static void pre_discovery(BrokerType& broker,
                                       typename FTraits::MetadataInventory& inv) {
       if constexpr (requires {
@@ -132,7 +135,8 @@ namespace sbio {
       }
     }
 
-    template <class BrokerType, FormatTraits FTraits>
+    template <class BrokerType, class FTraits>
+    requires FormatTraits<FTraits, typename BrokerType::IOType, Derived>
     SBIO_HD static void on_discovery(BrokerType& broker,
                                      typename FTraits::MetadataInventory& inv,
                                      IOStatus status) {
@@ -155,7 +159,7 @@ namespace sbio {
       }
     }
 
-    template <FormatTraits FTraits>
+    template <class FTraits>
     SBIO_HD static bool should_process(typename FTraits::StepIdxType& step_idx) {
       if constexpr (requires { Derived::template should_process_impl<FTraits>(step_idx); }) {
         return Derived::template should_process_impl<FTraits>(step_idx);
@@ -226,7 +230,8 @@ namespace sbio {
 
     // --- BrokerGroup level policies --- //
     // ---------------------------------- //
-    template <FormatTraits FTraits>
+    template <class IO, class FTraits>
+    requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_group_storage(std::size_t num_segments) {
       using PtrTableRequirements =
           TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
@@ -239,7 +244,7 @@ namespace sbio {
         AllocationRequest<FTraits> alloc_request;
         alloc_request.size_requests[0] = sizeof(void*) * num_segments;
 
-        return Derived::template allocate_storage<PtrTableRequirements, FTraits>(alloc_request);
+        return Derived::template allocate_storage<PtrTableRequirements, IO, FTraits>(alloc_request);
       }
     }
 
@@ -283,7 +288,7 @@ namespace sbio {
 
     // --- DataSource level policies --- //
     // --------------------------------- //
-    template <FormatTraits FTraits, class IndexTrigger>
+    template <class FTraits, class IndexTrigger>
     SBIO_HD static typename FTraits::StepIdxType
     next(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
       if constexpr (requires {

@@ -27,11 +27,9 @@
 #endif
 #include "sbio/io/posix.hh"
 #ifdef SBIO_HAS_XTC1
-#include "sbio/xtc1_broker.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
 #ifdef SBIO_HAS_XTC2
-#include "sbio/xtc2_broker.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
@@ -52,16 +50,14 @@ namespace pysbio {
   using SerialDataSource1 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::SerialExecution,
-    sbio::XTC1Traits,
-    sbio::XTC1StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution>
+    sbio::XTC1Traits
   >;
 
 #ifdef SBIO_HAS_MPI
   using MPIDataSource1 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::MPIExecution,
-    sbio::XTC1Traits,
-    sbio::XTC1StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution>
+    sbio::XTC1Traits
   >;
 #endif
 #endif
@@ -70,16 +66,14 @@ namespace pysbio {
   using SerialDataSource2 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::SerialExecution,
-    sbio::XTC2Traits,
-    sbio::XTC2StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution>
+    sbio::XTC2Traits
   >;
 
 #ifdef SBIO_HAS_MPI
   using MPIDataSource2 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::MPIExecution,
-    sbio::XTC2Traits,
-    sbio::XTC2StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution>
+    sbio::XTC2Traits
   >;
 #endif
 #endif
