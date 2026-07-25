@@ -59,8 +59,17 @@ namespace sbio {
   public:
     using DSTraits = FTraits;
     using Config = typename FTraits::StreamParameters;
+    using EPolicyConfig = typename EPolicy::Config;
 
     DataSource() = default;
+
+    explicit DataSource(const EPolicyConfig& ecfg) {
+      configure_execution_policy(ecfg);
+    }
+
+    inline void configure_execution_policy(const EPolicyConfig& ecfg) {
+      EPolicy::configure(ecfg);
+    }
 
     SBIO_HD inline bool add_data_stream(const Config& cfg) {
       if (m_num_data_streams >= MaxDataStreams) {

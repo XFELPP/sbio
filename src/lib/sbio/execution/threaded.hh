@@ -59,6 +59,14 @@ namespace sbio {
       HostBuffer
     >;
 
+    struct Config {
+      std::size_t num_threads { 0 };
+    };
+
+    static void configure_impl(const Config& config) {
+      m_num_threads = config.num_threads;
+    }
+
     /**
      * Allocate ThreadLocalBuffer storage for Index/DataRole and HostBuffer otherwise.
      *
@@ -315,6 +323,8 @@ namespace sbio {
     }
 
   private:
+    static inline std::size_t m_num_threads { 0 };
+
     /**
      * Set of mutexes to allow different brokers of a group from different threads
      * to fetch in parallel.

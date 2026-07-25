@@ -24,7 +24,9 @@
 #include "sbio/execution/serial.hh"
 #ifdef SBIO_HAS_MPI
 #include "sbio/execution/mpi.hh"
+#include "sbio/execution/mpi_threaded.hh"
 #endif
+#include "sbio/execution/threaded.hh"
 #include "sbio/io/posix.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -53,10 +55,21 @@ namespace pysbio {
     sbio::XTC1Traits
   >;
 
-#ifdef SBIO_HAS_MPI
+  using ThreadedDataSource1 = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    sbio::ThreadedExecution,
+    sbio::XTC1Traits
+  >;
+
+  #ifdef SBIO_HAS_MPI
   using MPIDataSource1 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::MPIExecution,
+    sbio::XTC1Traits
+  >;
+  using ThreadedMPIDataSource1 = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    sbio::MPIThreadedExecution,
     sbio::XTC1Traits
   >;
 #endif
@@ -69,10 +82,21 @@ namespace pysbio {
     sbio::XTC2Traits
   >;
 
+  using ThreadedDataSource2 = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    sbio::ThreadedExecution,
+    sbio::XTC2Traits
+  >;
 #ifdef SBIO_HAS_MPI
   using MPIDataSource2 = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::MPIExecution,
+    sbio::XTC2Traits
+  >;
+
+  using ThreadedMPIDataSource2 = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    sbio::MPIThreadedExecution,
     sbio::XTC2Traits
   >;
 #endif
@@ -82,26 +106,37 @@ namespace pysbio {
 #ifdef SBIO_HAS_MPI
   using DataSourceV = std::variant<
     SerialDataSource1,
+    ThreadedDataSource1,
     MPIDataSource1,
+    ThreadedMPIDataSource1,
     SerialDataSource2,
-    MPIDataSource2
+    ThreadedDataSource2,
+    MPIDataSource2,
+    ThreadedMPIDataSource2
   >;
 #else
-  using DataSourceV = std::variant<SerialDataSource1, SerialDataSource2>;
+  using DataSourceV = std::variant<
+    SerialDataSource1,
+    ThreadedDataSource1,
+    SerialDataSource2,
+    ThreadedDataSource2
+  >;
 #endif
 
 #elif defined(SBIO_HAS_XTC1)
 #ifdef SBIO_HAS_MPI
-  using DataSourceV = std::variant<SerialDataSource1, MPIDataSource1>;
+  using DataSourceV =
+    std::variant<SerialDataSource1, ThreadedDataSource1, MPIDataSource1, ThreadedMPIDataSource1>;
 #else
-  using DataSourceV = std::variant<SerialDataSource1>;
+  using DataSourceV = std::variant<SerialDataSource1, ThreadedDataSource1>;
 #endif
 
 #elif defined(SBIO_HAS_XTC2)
 #ifdef SBIO_HAS_MPI
-  using DataSourceV = std::variant<SerialDataSource2, MPIDataSource2>;
+  using DataSourceV =
+    std::variant<SerialDataSource2, ThreadedDataSource2, MPIDataSource2, ThreadedMPIDataSource2>;
 #else
-  using DataSourceV = std::variant<SerialDataSource2>;
+  using DataSourceV = std::variant<SerialDataSource2, ThreadedDataSource2>;
 #endif
 
 #endif

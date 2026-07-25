@@ -61,6 +61,8 @@ namespace sbio {
    */
   class MPIThreadedExecution : public Execution<MPIThreadedExecution> {
   public:
+    static constexpr std::size_t MaxInactiveRanks { 1024 };
+
     template <typename Descriptor>
     using BufferTypeFor = std::conditional_t<
       std::is_same_v<typename Descriptor::role, IndexRole> ||
@@ -74,6 +76,68 @@ namespace sbio {
         HostBuffer
       >
     >;
+
+    struct Config {
+      MPI_Comm communicator { MPI_COMM_WORLD };
+      std::initializer_list<int> active_ranks {};
+      int main_rank { 0 };
+      bool main_rank_loops { true };
+
+      std::size_t num_threads { 0 };
+      std::initializer_list<int> cpu_affinities {};
+    };
+
+    static void configure_impl(const Config& config) {
+      if (m_world_comm != MPI_COMM_NULL) {
+        MPI_Comm_free(&m_world_comm);
+      }
+
+      MPI_Comm_dup(config.communicator, &m_world_comm);
+
+      MPI_Comm_rank(m_world_comm, &m_rank);
+      MPI_Comm_size(m_world_comm, &m_size);
+
+      if (m_shmem_comm != MPI_COMM_NULL) {
+        MPI_Comm_free(&m_shmem_comm);
+      }
+
+      MPI_Comm_split_type(m_world_comm,
+                          MPI_COMM_TYPE_SHARED,
+                          0,
+                          MPI_INFO_NULL,
+                          &m_shmem_comm);
+
+      m_num_inactive_ranks = 0;
+      if (config.active_ranks.size() > 0) {
+        int curr_rank { -1 };
+        for (int rank : config.active_ranks) {
+          curr_rank++;
+
+          while (rank != curr_rank) {
+            if (m_inactive_ranks < MaxInactiveRanks) {
+              m_inactive_ranks[m_num_inactive_ranks++] = curr_rank;
+            }
+            curr_rank++;
+          }
+        }
+
+        curr_rank++;
+        while (curr_rank < m_size) {
+          if (m_num_inactive_ranks < MaxInactiveRanks) {
+            m_inactive_ranks[m_num_inactive_ranks++] = curr_rank;
+          }
+          curr_rank++;
+        }
+      }
+
+      m_main_rank = config.main_rank;
+      m_main_rank_loops = config.main_rank_loops;
+
+      // Reset collective state
+      m_shared_capacity.store(0, std::memory_order_release);
+      m_local_idx.store(0, std::memory_order_release);
+      m_exhausted.store(false, std::memory_order_release);
+    }
 
     template <IsTypeList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIThreadedExecution>
@@ -128,11 +192,6 @@ namespace sbio {
           if (buf.window() != MPI_WIN_NULL) {
             MPI_Win_lock_all(0, buf.window());
           }
-
-          // Reset collective stores and latches
-          m_shared_capacity.store(0, std::memory_order_release);
-          m_local_idx.store(0, std::memory_order_release);
-          m_exhausted.store(false, std::memory_order_release);
         } else if constexpr (std::is_same_v<BufRole, DataRole> ||
                              std::is_same_v<BufRole, TableRole>) {
           buf.set_memory(nullptr, sz);
@@ -528,6 +587,13 @@ namespace sbio {
      * Communicator for synchronizing across the whole MPI world.
      */
     static inline MPI_Comm m_world_comm { MPI_COMM_NULL };
+    static inline int m_inactive_ranks[MaxInactiveRanks] {};
+    static inline std::size_t m_num_inactive_ranks { 0 };
+    static inline int m_main_rank { 0 };
+    static inline bool m_main_rank_loops { true };
+
+    static inline std::size_t m_num_threads { 0 };
+
     /**
      * Communicator used when generating shareable buffers.
      */

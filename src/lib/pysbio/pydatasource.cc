@@ -59,6 +59,11 @@ namespace pysbio {
         ds.load_run(exp.c_str(), run, base_cfg);
         ds.discover_metadata();
         m_ds = std::move(ds);
+      } else if (type == "threads") {
+        ThreadedDataSource1 ds;
+        ds.load_run(exp.c_str(), run, base_cfg);
+        ds.discover_metadata();
+        m_ds = std::move(ds);
       } else if (type == "mpi") {
 #ifdef SBIO_HAS_MPI
         // If MPI hasn't been initialized, we'll do it for the user here
@@ -78,6 +83,31 @@ namespace pysbio {
 #else
         throw std::runtime_error("Requiested MPI DataSource, but sbio built without MPI support!");
 #endif
+      } else if (type == "mpi_threads") {
+#ifdef SBIO_HAS_MPI
+        int initialized { 0 };
+        MPI_Initialized(&initialized);
+
+        if (!initialized) {
+          int argc { 0 };
+          char** argv { nullptr };
+
+          int provided;
+          MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+          if (provided < MPI_THREAD_MULTIPLE) {
+            // Need to check if you get the thread_multiple or not.
+            std::cout << "Was not able to provide full MPI thread support." << std::endl
+                      << "- Support was provied at level: " << provided << std::endl;
+          }
+        }
+
+        ThreadedMPIDataSource1 ds;
+        ds.load_run(exp.c_str(), run, base_cfg);
+        ds.discover_metadata();
+        m_ds = std::move(ds);
+#else
+        throw std::runtime_error("Requested Threaded MPI DataSource, but sbio built without MPI!");
+#endif
       } else {
         throw std::runtime_error("Unsupported DataSource type: " + type + "!");
       }
@@ -92,6 +122,11 @@ namespace pysbio {
 
       if (type == "serial") {
         SerialDataSource2 ds;
+        ds.load_run(exp.c_str(), run, base_cfg);
+        ds.discover_metadata();
+        m_ds = std::move(ds);
+      } else if (type == "threads") {
+        ThreadedDataSource2 ds;
         ds.load_run(exp.c_str(), run, base_cfg);
         ds.discover_metadata();
         m_ds = std::move(ds);
@@ -113,6 +148,31 @@ namespace pysbio {
         m_ds = std::move(ds);
 #else
         throw std::runtime_error("Requiested MPI DataSource, but sbio built without MPI support!");
+#endif
+      } else if (type == "mpi_threads") {
+#ifdef SBIO_HAS_MPI
+        int initialized { 0 };
+        MPI_Initialized(&initialized);
+
+        if (!initialized) {
+          int argc { 0 };
+          char** argv { nullptr };
+
+          int provided;
+          MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+          if (provided < MPI_THREAD_MULTIPLE) {
+            // Need to check if you get the thread_multiple or not.
+            std::cout << "Was not able to provide full MPI thread support." << std::endl
+                      << "- Support was provied at level: " << provided << std::endl;
+          }
+        }
+
+        ThreadedMPIDataSource2 ds;
+        ds.load_run(exp.c_str(), run, base_cfg);
+        ds.discover_metadata();
+        m_ds = std::move(ds);
+#else
+        throw std::runtime_error("Requested Threaded MPI DataSource, but sbio built without MPI!");
 #endif
       } else {
         throw std::runtime_error("Unsupported DataSource type: " + type + "!");

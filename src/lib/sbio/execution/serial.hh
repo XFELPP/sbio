@@ -52,6 +52,10 @@ namespace sbio {
     template <typename Descriptor>
     using BufferTypeFor = HostBuffer;
 
+    struct Config {};
+
+    static void configure_impl(const Config&) {}
+
     /**
      * Allocate HostBuffer storage for requested roles.
      *

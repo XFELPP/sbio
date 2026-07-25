@@ -33,6 +33,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <initializer_list>
 #include <memory>
 #include <type_traits>
 #include <vector>
@@ -55,6 +56,8 @@ namespace sbio {
    */
   class MPIExecution : public Execution<MPIExecution> {
   public:
+    static constexpr std::size_t MaxInactiveRanks { 1024 };
+
     /**
      * Map IndexRole to MPISharedBuffer and all other roles to HostBuffer.
      */
@@ -66,6 +69,63 @@ namespace sbio {
       MPISharedBuffer,
       HostBuffer
     >;
+
+    struct Config {
+      MPI_Comm communicator { MPI_COMM_WORLD };
+      std::initializer_list<int> active_ranks {};
+      int main_rank { 0 };
+      bool main_rank_loops { true };
+    };
+
+    static void configure_impl(const Config& config) {
+      if (m_world_comm != MPI_COMM_NULL) {
+        MPI_Comm_free(&m_world_comm);
+      }
+
+      MPI_Comm_dup(config.communicator, &m_world_comm);
+
+      MPI_Comm_rank(m_world_comm, &m_rank);
+      MPI_Comm_size(m_world_comm, &m_size);
+
+      if (m_shmem_comm != MPI_COMM_NULL) {
+        MPI_Comm_free(&m_shmem_comm);
+      }
+
+      MPI_Comm_split_type(m_world_comm,
+                          MPI_COMM_TYPE_SHARED,
+                          0,
+                          MPI_INFO_NULL,
+                          &m_shmem_comm);
+
+      m_num_inactive_ranks = 0;
+      if (config.active_ranks.size() > 0) {
+        int curr_rank { -1 };
+        for (int rank : config.active_ranks) {
+          curr_rank++;
+
+          while (rank != curr_rank) {
+            if (m_inactive_ranks < MaxInactiveRanks) {
+              m_inactive_ranks[m_num_inactive_ranks++] = curr_rank;
+            }
+            curr_rank++;
+          }
+        }
+
+        curr_rank++;
+        while (curr_rank < m_size) {
+          if (m_num_inactive_ranks < MaxInactiveRanks) {
+            m_inactive_ranks[m_num_inactive_ranks++] = curr_rank;
+          }
+          curr_rank++;
+        }
+      }
+
+      m_main_rank = config.main_rank;
+      m_main_rank_loops = config.main_rank_loops;
+
+      // Reset remaining state
+      m_event_idx = 0;
+    }
 
     template <IsTypeList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIExecution>
@@ -123,9 +183,6 @@ namespace sbio {
           if (buf.window() != MPI_WIN_NULL) {
             MPI_Win_lock_all(0, buf.window());
           }
-
-          // Reset collective stores
-          m_event_idx = 0;
         } else {
           // Otherwise, just use a standard host buffer.
           buf.set_memory(new char[sz], sz);
@@ -349,6 +406,10 @@ namespace sbio {
      * Communicator for synchronizing across the whole MPI world.
      */
     static inline MPI_Comm m_world_comm { MPI_COMM_NULL };
+    static inline int m_inactive_ranks[MaxInactiveRanks] {};
+    static inline std::size_t m_num_inactive_ranks { 0 };
+    static inline int m_main_rank { 0 };
+    static inline bool m_main_rank_loops { true };
     /**
      * Communicator used when generating shareable buffers.
      */

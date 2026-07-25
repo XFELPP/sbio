@@ -97,6 +97,18 @@ namespace sbio {
     template <typename Descriptor>
     using BufferTypeFor = void;
 
+    struct DefaultConfig {};
+
+    // --- Execution Policy Configuration (if applicable) --- //
+    // ------------------------------------------------------ //
+
+    template <class ConfigT>
+    SBIO_HD static void configure(const ConfigT& config) {
+      if constexpr (requires { Derived::configure_impl(config); }) {
+        Derived::configure_impl(config);
+      }
+    }
+
     // --- StreamBroker level policies --- //
     // ----------------------------------- //
 

@@ -26,7 +26,9 @@
 
 #ifdef SBIO_HAS_MPI
 #include "sbio/execution/mpi.hh"
+#include "sbio/execution/mpi_threaded.hh"
 #endif
+#include "sbio/execution/threaded.hh"
 #include "sbio/io/posix.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -57,9 +59,18 @@ namespace pysbio {
     sbio::XTC1Traits
   >;
 
+  using ThreadedDetector1 = sbio::BrokerGroup<
+    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::ThreadedExecution, sbio::XTC1Traits>,
+    sbio::XTC1Traits
+  >;
 #ifdef SBIO_HAS_MPI
   using MPIDetector1 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC1Traits>,
+    sbio::XTC1Traits
+  >;
+
+  using ThreadedMPIDetector1 = sbio::BrokerGroup<
+    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIThreadedExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
 #endif
@@ -71,33 +82,54 @@ namespace pysbio {
     sbio::XTC2Traits
   >;
 
+  using ThreadedDetector2 = sbio::BrokerGroup<
+      sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::ThreadedExecution, sbio::XTC2Traits>,
+      sbio::XTC2Traits
+  >;
 #ifdef SBIO_HAS_MPI
   using MPIDetector2 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC2Traits>,
     sbio::XTC2Traits
+  >;
+
+  using ThreadedMPIDetector2 = sbio::BrokerGroup<
+      sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIThreadedExecution, sbio::XTC2Traits>,
+      sbio::XTC2Traits
   >;
 #endif
 #endif
 
 #if defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
 #ifdef SBIO_HAS_MPI
-  using DetectorV = std::variant<SerialDetector1, SerialDetector2, MPIDetector1, MPIDetector2>;
+  using DetectorV = std::variant<
+    SerialDetector1,
+    SerialDetector2,
+    ThreadedDetector1,
+    ThreadedDetector2,
+    MPIDetector1,
+    MPIDetector2,
+    ThreadedMPIDetector1,
+    ThreadedMPIDetector2
+  >;
 #else
-  using DetectorV = std::variant<SerialDetector1, SerialDetector2>;
+  using DetectorV =
+    std::variant<SerialDetector1, ThreadedDetector1, SerialDetector2, ThreadedDetector2>;
 #endif
 
 #elif defined(SBIO_HAS_XTC1)
 #ifdef SBIO_HAS_MPI
-  using DetectorV = std::variant<SerialDetector1, MPIDetector1>;
+  using DetectorV =
+    std::variant<SerialDetector1, ThreadedDetector1, MPIDetector1, ThreadedMPIDetector1>;
 #else
-  using DetectorV = std::variant<SerialDetector1>;
+  using DetectorV = std::variant<SerialDetector1, ThreadedDetector2>;
 #endif
 
 #elif defined(SBIO_HAS_XTC2)
 #ifdef SBIO_HAS_MPI
-  using DetectorV = std::variant<SerialDetector2, MPIDetector2>;
+  using DetectorV =
+    std::variant<SerialDetector2, ThreadedDetector2, MPIDetector2, ThreadedMPIDetector2>;
 #else
-  using DetectorV = std::variant<SerialDetector2>;
+  using DetectorV = std::variant<SerialDetector2, ThreadedDetector2>;
 #endif
 
 #endif
