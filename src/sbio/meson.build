@@ -8,3 +8,6 @@ endif
 
 subdir('core')
 subdir('formats')
+subdir('io')
+subdir('execution')
+subdir('brokers')

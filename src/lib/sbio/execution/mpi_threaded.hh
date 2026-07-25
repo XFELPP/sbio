@@ -92,20 +92,18 @@ namespace sbio {
         MPI_Comm_free(&m_world_comm);
       }
 
-      MPI_Comm_dup(config.communicator, &m_world_comm);
-
-      MPI_Comm_rank(m_world_comm, &m_rank);
-      MPI_Comm_size(m_world_comm, &m_size);
+      if (m_active_comm != MPI_COMM_NULL) {
+        MPI_Comm_free(&m_active_comm);
+      }
 
       if (m_shmem_comm != MPI_COMM_NULL) {
         MPI_Comm_free(&m_shmem_comm);
       }
 
-      MPI_Comm_split_type(m_world_comm,
-                          MPI_COMM_TYPE_SHARED,
-                          0,
-                          MPI_INFO_NULL,
-                          &m_shmem_comm);
+      MPI_Comm_dup(config.communicator, &m_world_comm);
+
+      MPI_Comm_rank(m_world_comm, &m_rank);
+      MPI_Comm_size(m_world_comm, &m_size);
 
       m_num_inactive_ranks = 0;
       if (config.active_ranks.size() > 0) {
@@ -114,7 +112,7 @@ namespace sbio {
           curr_rank++;
 
           while (rank != curr_rank) {
-            if (m_inactive_ranks < MaxInactiveRanks) {
+            if (m_num_inactive_ranks < MaxInactiveRanks) {
               m_inactive_ranks[m_num_inactive_ranks++] = curr_rank;
             }
             curr_rank++;
@@ -128,6 +126,35 @@ namespace sbio {
           }
           curr_rank++;
         }
+      }
+
+      if (m_num_inactive_ranks > 0) {
+        MPI_Group world_group;
+        MPI_Comm_group(m_world_comm, &world_group);
+
+        MPI_Group active_group;
+        MPI_Group_excl(world_group,
+                       m_num_inactive_ranks,
+                       m_inactive_ranks,
+                       &active_group);
+
+        MPI_Comm_create_group(m_world_comm, active_group, 0, &m_active_comm);
+
+        MPI_Group_free(&world_group);
+        MPI_Group_free(&active_group);
+      } else {
+        MPI_Comm_dup(m_world_comm, &m_active_comm);
+      }
+
+      if (m_active_comm != MPI_COMM_NULL) {
+        MPI_Comm_rank(m_active_comm, &m_active_rank);
+        MPI_Comm_size(m_active_comm, &m_active_size);
+
+        MPI_Comm_split_type(m_active_comm,
+                            MPI_COMM_TYPE_SHARED,
+                            0,
+                            MPI_INFO_NULL,
+                            &m_shmem_comm);
       }
 
       m_main_rank = config.main_rank;
@@ -150,20 +177,6 @@ namespace sbio {
         m_logger = logger;
       }
 
-      if (m_world_comm == MPI_COMM_NULL) {
-        MPI_Comm_dup(MPI_COMM_WORLD, &m_world_comm);
-      }
-
-      if (m_shmem_comm == MPI_COMM_NULL) {
-        MPI_Comm_rank(MPI_COMM_WORLD, &m_rank);
-        MPI_Comm_size(MPI_COMM_WORLD, &m_size);
-
-        MPI_Comm_split_type(MPI_COMM_WORLD,
-                            MPI_COMM_TYPE_SHARED,
-                            0,
-                            MPI_INFO_NULL,
-                            &m_shmem_comm);
-      }
       return allocate_impl_helper(Requirements{}, request);
     }
 
@@ -245,7 +258,7 @@ namespace sbio {
      *
      * @returns `true` for rank 0, else `false`.
      */
-    static bool should_index_impl() { return m_rank == 0; }
+    static bool should_index_impl() { return m_rank == m_main_rank; }
 
     /**
      * After updates, synchronize shared resources.
@@ -312,7 +325,7 @@ namespace sbio {
                             tag,
                             seq,
                             msg_tag);
-            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_world_comm, &reqs[peer - 1]);
+            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
           }
 
           if (!reqs.empty()) {
@@ -334,7 +347,7 @@ namespace sbio {
                           tag,
                           seq,
                           msg_tag);
-          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_world_comm, &req);
+          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
           MPI_Wait(&req, MPI_STATUS_IGNORE);
           m_logger->trace("[Rank {} - thread {}] Received sync vars from rank 0."
                           "(tag = {}, seq = {}, msg_tag = {})",
@@ -453,6 +466,15 @@ namespace sbio {
       return status;
     }
 
+    static bool is_current_rank_inactive() {
+      for (std::size_t i = 0; i < m_num_inactive_ranks; ++i) {
+        if (m_rank == m_inactive_ranks[i]) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     /**
      * The MPIThreadedExecution policy generates step indices modulo MPI world size.
      *
@@ -483,6 +505,18 @@ namespace sbio {
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
+      if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
+        return FTraits::ExhaustedSentinel;
+      }
+
+      int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
+      int worker_rank;
+      if (m_main_rank_loops || m_active_rank <= m_main_rank) {
+        worker_rank = m_active_rank;
+      } else {
+        worker_rank = m_active_rank - 1;
+      }
+
       while (true) {
         if (m_exhausted.load(std::memory_order_acquire)) {
           m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
@@ -497,8 +531,8 @@ namespace sbio {
         }
 
         typename FTraits::StepIdxType idx { m_local_idx.load(std::memory_order_acquire) };
-        typename FTraits::StepIdxType base_step { idx * m_size };
-        typename FTraits::StepIdxType step { base_step + m_rank };
+        typename FTraits::StepIdxType base_step { idx * worker_count };
+        typename FTraits::StepIdxType step { base_step + worker_rank };
         typename FTraits::StepIdxType current_cap =
           m_shared_capacity.load(std::memory_order_acquire);
 
@@ -522,8 +556,8 @@ namespace sbio {
           }
 
           idx = m_local_idx.load(std::memory_order_acquire);
-          base_step = idx * m_size;
-          step = base_step + m_rank;
+          base_step = idx * worker_count;
+          step = base_step + worker_rank;
           current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (base_step >= current_cap) {
@@ -563,8 +597,8 @@ namespace sbio {
             }
           }
 
-          base_step = idx * m_size;
-          step = base_step + m_rank;
+          base_step = idx * worker_count;
+          step = base_step + worker_rank;
           current_cap = m_shared_capacity.load(std::memory_order_acquire);
 
           if (m_exhausted.load(std::memory_order_acquire)) {
@@ -587,6 +621,9 @@ namespace sbio {
      * Communicator for synchronizing across the whole MPI world.
      */
     static inline MPI_Comm m_world_comm { MPI_COMM_NULL };
+    static inline MPI_Comm m_active_comm { MPI_COMM_NULL };
+    static inline int m_active_rank { -1 };
+    static inline int m_active_size { -1 };
     static inline int m_inactive_ranks[MaxInactiveRanks] {};
     static inline std::size_t m_num_inactive_ranks { 0 };
     static inline int m_main_rank { 0 };

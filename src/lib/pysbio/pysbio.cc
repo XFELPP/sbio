@@ -56,6 +56,18 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::module_::import("ncarray");
   pysbio_module.doc() = "sbio Python bindings.";
 
+  py::module_::import("sbio.formats.pyformat_traits");
+#ifdef SBIO_HAS_XTC1
+  py::module_::import("sbio.formats.pyxtc1");
+#endif
+#ifdef SBIO_HAS_XTC2
+  py::module_::import("sbio.formats.pyxtc2");
+#endif
+
+  py::module_::import("sbio.io");
+  py::module_::import("sbio.execution");
+  py::module_::import("sbio.brokers");
+
   // TODO: Try to rework these wrappers to remove dynamic_attr
   //       Instead, create the *classes* dynamically and attach the methods
   py::classh<DetectorWrapper>(pysbio_module, "DetectorWrapper", py::dynamic_attr())

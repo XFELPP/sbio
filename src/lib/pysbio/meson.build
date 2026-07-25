@@ -40,3 +40,6 @@ else
 endif # not sbio_as_wheel_opt and build_core_opt
 
 subdir('formats')
+subdir('io')
+subdir('execution')
+subdir('brokers')

@@ -82,20 +82,18 @@ namespace sbio {
         MPI_Comm_free(&m_world_comm);
       }
 
-      MPI_Comm_dup(config.communicator, &m_world_comm);
-
-      MPI_Comm_rank(m_world_comm, &m_rank);
-      MPI_Comm_size(m_world_comm, &m_size);
+      if (m_active_comm != MPI_COMM_NULL) {
+        MPI_Comm_free(&m_active_comm);
+      }
 
       if (m_shmem_comm != MPI_COMM_NULL) {
         MPI_Comm_free(&m_shmem_comm);
       }
 
-      MPI_Comm_split_type(m_world_comm,
-                          MPI_COMM_TYPE_SHARED,
-                          0,
-                          MPI_INFO_NULL,
-                          &m_shmem_comm);
+      MPI_Comm_dup(config.communicator, &m_world_comm);
+
+      MPI_Comm_rank(m_world_comm, &m_rank);
+      MPI_Comm_size(m_world_comm, &m_size);
 
       m_num_inactive_ranks = 0;
       if (config.active_ranks.size() > 0) {
@@ -104,7 +102,7 @@ namespace sbio {
           curr_rank++;
 
           while (rank != curr_rank) {
-            if (m_inactive_ranks < MaxInactiveRanks) {
+            if (m_num_inactive_ranks < MaxInactiveRanks) {
               m_inactive_ranks[m_num_inactive_ranks++] = curr_rank;
             }
             curr_rank++;
@@ -118,6 +116,35 @@ namespace sbio {
           }
           curr_rank++;
         }
+      }
+
+      if (m_num_inactive_ranks > 0) {
+        MPI_Group world_group;
+        MPI_Comm_group(m_world_comm, &world_group);
+
+        MPI_Group active_group;
+        MPI_Group_excl(world_group,
+                       m_num_inactive_ranks,
+                       m_inactive_ranks,
+                       &active_group);
+
+        MPI_Comm_create_group(m_world_comm, active_group, 0, &m_active_comm);
+
+        MPI_Group_free(&world_group);
+        MPI_Group_free(&active_group);
+      } else {
+        MPI_Comm_dup(m_world_comm, &m_active_comm);
+      }
+
+      if (m_active_comm != MPI_COMM_NULL) {
+        MPI_Comm_rank(m_active_comm, &m_active_rank);
+        MPI_Comm_size(m_active_comm, &m_active_size);
+
+        MPI_Comm_split_type(m_active_comm,
+                            MPI_COMM_TYPE_SHARED,
+                            0,
+                            MPI_INFO_NULL,
+                            &m_shmem_comm);
       }
 
       m_main_rank = config.main_rank;
@@ -136,21 +163,6 @@ namespace sbio {
         m_logger = spdlog::stdout_color_mt("sbio::MPIExecution");
       } else {
         m_logger = logger;
-      }
-
-      if (m_world_comm == MPI_COMM_NULL) {
-        MPI_Comm_dup(MPI_COMM_WORLD, &m_world_comm);
-      }
-
-      if (MPIExecution::m_shmem_comm == MPI_COMM_NULL) {
-        MPI_Comm_rank(MPI_COMM_WORLD, &MPIExecution::m_rank);
-        MPI_Comm_size(MPI_COMM_WORLD, &MPIExecution::m_size);
-
-        MPI_Comm_split_type(MPI_COMM_WORLD,
-                            MPI_COMM_TYPE_SHARED,
-                            0,
-                            MPI_INFO_NULL,
-                            &MPIExecution::m_shmem_comm);
       }
 
       return allocate_impl_helper(Requirements{}, request);
@@ -297,7 +309,7 @@ namespace sbio {
                             tag,
                             seq,
                             msg_tag);
-            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_world_comm, &reqs[peer - 1]);
+            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
           }
 
           if (!reqs.empty()) {
@@ -317,7 +329,7 @@ namespace sbio {
                           tag,
                           seq,
                           msg_tag);
-          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_world_comm, &req);
+          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
           MPI_Wait(&req, MPI_STATUS_IGNORE);
           m_logger->trace("[Rank {}] Received sync vars from rank 0."
                           "(tag = {}, seq = {}, msg_tag = {})",
@@ -340,7 +352,16 @@ namespace sbio {
      *
      * @returns `true` for rank 0, else `false`.
      */
-    static bool should_index_impl() { return m_rank == 0; }
+    static bool should_index_impl() { return m_rank == m_main_rank; }
+
+    static bool is_current_rank_inactive() {
+      for (std::size_t i = 0; i < m_num_inactive_ranks; ++i) {
+        if (m_rank == m_inactive_ranks[i]) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     /**
      * Retrieve the next step index to process.
@@ -362,8 +383,20 @@ namespace sbio {
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
       static typename FTraits::StepIdxType m_event_idx { 0 };
 
-      auto step = m_event_idx + m_rank;
-      m_event_idx += m_size;
+      if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
+        return FTraits::ExhaustedSentinel;
+      }
+
+      int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
+      int worker_rank;
+      if (m_main_rank_loops || m_active_rank <= m_main_rank) {
+        worker_rank = m_active_rank;
+      } else {
+        worker_rank = m_active_rank - 1;
+      }
+
+      auto step = m_event_idx + worker_rank;
+      m_event_idx += worker_count;
 
       while (step >= max_capacity) {
         if (!trigger()) {
@@ -406,6 +439,9 @@ namespace sbio {
      * Communicator for synchronizing across the whole MPI world.
      */
     static inline MPI_Comm m_world_comm { MPI_COMM_NULL };
+    static inline MPI_Comm m_active_comm { MPI_COMM_NULL };
+    static inline int m_active_rank { -1 };
+    static inline int m_active_size { -1 };
     static inline int m_inactive_ranks[MaxInactiveRanks] {};
     static inline std::size_t m_num_inactive_ranks { 0 };
     static inline int m_main_rank { 0 };
