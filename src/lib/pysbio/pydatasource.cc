@@ -19,7 +19,7 @@
 
 #include "pysbio/pydatasource.hh"
 
-#include "pysbio/pydetector.hh"
+#include "pysbio/pybroker_group.hh"
 
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -36,6 +36,7 @@
 
 #include <initializer_list>
 #include <string>
+#include <type_traits>
 #include <variant>
 
 namespace py = pybind11;
@@ -254,18 +255,34 @@ namespace pysbio {
     }
   }
 
-  py::object PyDataSource::detector(py::module& m, const char* name) {
+  py::object PyDataSource::group(py::module& m, const char* name) {
     // TODO: This is quite kludgy because it goes back and forth between sbio det,
     //       the C++ DetectorWrapper, and full Python det for various metadata.
     //       Should normalize this....
-    auto det_maker = [&](auto& ds) -> py::object {
-      auto det = ds.get_stream_group(name);
+    auto group_maker = [&](auto& ds) -> py::object {
+      auto grp = ds.get_stream_group(name);
 
+      using BGFTraits = typename decltype(grp)::BrokerGroupFTraits;
+
+      constexpr bool use_wrapper =
+#ifdef SBIO_HAS_XTC1
+        std::is_same_v<BGFTraits, sbio::XTC1Traits> ||
+#endif
+#ifdef SBIO_HAS_XTC2
+        std::is_same_v<BGFTraits, sbio::XTC2Traits> ||
+#endif
+        false;
+
+      // For XTC1 and XTC2 have special bindings to remap accessors as methods
       // The wrapper routine will also construct a serial number from pieces
-      return wrap_detector(m, det);
+      if constexpr (use_wrapper) {
+        return wrap_xtc_detector(m, grp);
+      } else {
+        return grp;
+      }
     };
 
-    return std::visit(det_maker, m_ds);
+    return std::visit(group_maker, m_ds);
   }
 
   std::size_t PyDataSource::next() {

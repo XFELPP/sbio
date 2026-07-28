@@ -17,8 +17,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "pysbio/pybroker_group.hh"
 #include "pysbio/pydatasource.hh"
-#include "pysbio/pydetector.hh"
 
 #include <ncarray/ncarrays.hh>
 #ifdef SBIO_HAS_MPI
@@ -72,11 +72,11 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
 
   // TODO: Try to rework these wrappers to remove dynamic_attr
   //       Instead, create the *classes* dynamically and attach the methods
-  py::classh<DetectorWrapper>(pysbio_module, "DetectorWrapper", py::dynamic_attr())
-    .def_property_readonly("detector_type", &DetectorWrapper::get_detector_type)
-    .def_property_readonly("serial_number", &DetectorWrapper::get_serial_number)
-    .def("get_data", &DetectorWrapper::get_data)
-    .def("get_multi_data", &DetectorWrapper::get_multi_data);
+  py::classh<BrokerGroupWrapper>(pysbio_module, "BrokerGroupWrapper", py::dynamic_attr())
+    .def_property_readonly("group_type", &BrokerGroupWrapper::get_detector_type)
+    .def_property_readonly("serial_number", &BrokerGroupWrapper::get_serial_number)
+    .def("get_data", &BrokerGroupWrapper::get_data)
+    .def("get_multi_data", &BrokerGroupWrapper::get_multi_data);
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
 
@@ -90,10 +90,10 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("ds_type") = "mpi",
          py::arg("exec_cfg") = py::dict(),
          ds_doc)
-    .def("detector", [&](PyDataSource& self, const char* name) {
-      return self.detector(pysbio_module, name);
+    .def("group", [&](PyDataSource& self, const char* name) {
+      return self.group(pysbio_module, name);
     },
-      py::arg("detname"))
+      py::arg("group_name"))
     // Event generation and iteration
     // NOTE: Iterators are generated at run-time due to type-erasure and variant issues
     // making binding the iterator itself rather annoying.

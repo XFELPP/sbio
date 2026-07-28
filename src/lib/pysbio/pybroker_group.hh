@@ -17,8 +17,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef PYSBIO_PYDETECTOR_HH
-#define PYSBIO_PYDETECTOR_HH
+#ifndef PYSBIO_PYBROKER_GROUP_HH
+#define PYSBIO_PYBROKER_GROUP_HH
 
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/datasource.hh"
@@ -177,7 +177,7 @@ namespace pysbio {
     std::string alg_name;
   };
 
-  py::object wrap_detector(py::module& m, BrokerGroupV detv);
+  py::object wrap_xtc_detector(py::module& m, BrokerGroupV detv);
 } // namespace pysbio
 
-#endif // PYSBIO_PYDETECTOR_HH
+#endif // PYSBIO_PYBROKER_GROUP_HH

@@ -17,7 +17,7 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "pysbio/pydetector.hh"
+#include "pysbio/pybroker_group.hh"
 
 #include "pysbio/utilities.hh"
 
@@ -33,14 +33,14 @@
 namespace py = pybind11;
 
 namespace pysbio {
-  py::object wrap_detector(py::module& m, DetectorV detv) {
+  py::object wrap_xtc_detector(py::module& m, BrokerGroupV detv) {
     // Use the internal MethodType to make sure attached data getters don't require
     // passing `self` as the first argument (i.e., they behave as true Python methods)
     auto MethodType = py::module_::import("types").attr("MethodType");
 
-    py::object py_det { py::cast(std::make_shared<DetectorWrapper>(detv)) };
-    std::shared_ptr<DetectorWrapper> cpp_det {
-      py_det.cast<std::shared_ptr<DetectorWrapper>>()
+    py::object py_det { py::cast(std::make_shared<BrokerGroupWrapper>(detv)) };
+    std::shared_ptr<BrokerGroupWrapper> cpp_det {
+      py_det.cast<std::shared_ptr<BrokerGroupWrapper>>()
     };
 
     auto det_visitor = [&](auto& det) {
@@ -100,5 +100,5 @@ namespace pysbio {
     auto getter = [&](auto& grp) { return grp.get_multi_data(steps, alg, field); };
 
     return std::visit(getter, this->grp);
-  }x
+  }
 } // namespace pysbio

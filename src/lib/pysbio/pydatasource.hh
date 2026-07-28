@@ -151,7 +151,7 @@ namespace pysbio {
                  std::string type = "mpi",
                  py::dict exec_cfg = py::dict());
 
-    py::object detector(py::module& m, const char* name);
+    py::object group(py::module& m, const char* name);
 
     std::size_t next();
 

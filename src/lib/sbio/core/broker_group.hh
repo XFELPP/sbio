@@ -53,6 +53,8 @@ namespace sbio {
     using DataRequest = typename FTraits::DataRequest;
     using StepIdxType = typename FTraits::StepIdxType;
 
+    using BrokerGroupFTraits = FTraits;
+
     /**
      * A reference to a specific piece of data, a numerical identifier, and pointer to its broker.
      *

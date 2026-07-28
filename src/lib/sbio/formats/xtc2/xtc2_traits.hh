@@ -36,6 +36,13 @@
 #endif
 #endif
 
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#else
+#include <sys/types.h>
+#endif
+
 #include <cstddef>
 #include <filesystem>
 #include <sstream>
@@ -481,13 +488,13 @@ namespace sbio {
         // We'll try to add some minimal support to go backwards after you've gone
         // through once - this only will work within the events_per_read batch of
         // indices though
-        if (offset.previous_l1_index > step_idx) {
+        if (offset.previous_l1_index > static_cast<ssize_t>(step_idx)) {
           curr_transition_index = 0;      // Just reset back to beginning of buffer
           offset = transition_offsets[0]; // It will re-iterate through below
         }
 
         while (offset.transition_id != transition_id ||
-               offset.previous_l1_index <= step_idx) {
+               offset.previous_l1_index <= static_cast<ssize_t>(step_idx)) {
           curr_transition_index++;
 
           if (curr_transition_index >= stream_state.num_transitions) {
@@ -495,7 +502,7 @@ namespace sbio {
           }
 
           auto& next_transition_offset { transition_offsets[curr_transition_index] };
-          if (next_transition_offset.previous_l1_index > step_idx) {
+          if (next_transition_offset.previous_l1_index > static_cast<ssize_t>(step_idx)) {
             // Since we incremented at the statr of the loop, check if we went past
             // and break if so - we haven't set the offset again yet
             break;

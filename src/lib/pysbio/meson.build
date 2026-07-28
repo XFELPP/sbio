@@ -5,8 +5,8 @@ if build_python_opt
     py_mod = py3.extension_module(
         '_pysbio',
         [
+            'pybroker_group.cc',
             'pydatasource.cc',
-            'pydetector.cc',
             'pysbio.cc',
             'utilities.cc',
         ],
@@ -21,8 +21,8 @@ if build_python_opt
 endif # build_python_opt
 
 installed_py_bindings_headers = [
+    'pybroker_group.hh',
     'pydatasource.hh',
-    'pydetector.hh',
     'utilities.hh',
 ]
 

@@ -168,6 +168,9 @@ namespace pysbio {
    * a more friendly STL mapping for algorithms and data access fields. It will also
    * determine and format the serial number for the detector (if applicable).
    *
+   * @note This is a utility specificaly for managing the metadata for XTC-type
+   * broker groups.
+   *
    * @param[in] brokersv The set of StreamBrokers managing the detector.
    * @param[in] detector_name The name of the detector to find metadata for.
    * @param[in] num_brokers The total number of StreamBrokers managing the detector.
