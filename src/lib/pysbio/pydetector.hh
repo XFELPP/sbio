@@ -54,22 +54,22 @@ namespace py = pybind11;
 
 namespace pysbio {
 #ifdef SBIO_HAS_XTC1
-  using SerialDetector1 = sbio::BrokerGroup<
+  using SerialBrokerGroup1 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
 
-  using ThreadedDetector1 = sbio::BrokerGroup<
+  using ThreadedBrokerGroup1 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::ThreadedExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
 #ifdef SBIO_HAS_MPI
-  using MPIDetector1 = sbio::BrokerGroup<
+  using MPIBrokerGroup1 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
 
-  using ThreadedMPIDetector1 = sbio::BrokerGroup<
+  using ThreadedMPIBrokerGroup1 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIThreadedExecution, sbio::XTC1Traits>,
     sbio::XTC1Traits
   >;
@@ -77,22 +77,22 @@ namespace pysbio {
 #endif
 
 #ifdef SBIO_HAS_XTC2
-  using SerialDetector2 = sbio::BrokerGroup<
+  using SerialBrokerGroup2 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution, sbio::XTC2Traits>,
     sbio::XTC2Traits
   >;
 
-  using ThreadedDetector2 = sbio::BrokerGroup<
+  using ThreadedBrokerGroup2 = sbio::BrokerGroup<
       sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::ThreadedExecution, sbio::XTC2Traits>,
       sbio::XTC2Traits
   >;
 #ifdef SBIO_HAS_MPI
-  using MPIDetector2 = sbio::BrokerGroup<
+  using MPIBrokerGroup2 = sbio::BrokerGroup<
     sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC2Traits>,
     sbio::XTC2Traits
   >;
 
-  using ThreadedMPIDetector2 = sbio::BrokerGroup<
+  using ThreadedMPIBrokerGroup2 = sbio::BrokerGroup<
       sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIThreadedExecution, sbio::XTC2Traits>,
       sbio::XTC2Traits
   >;
@@ -101,42 +101,54 @@ namespace pysbio {
 
 #if defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
 #ifdef SBIO_HAS_MPI
-  using DetectorV = std::variant<
-    SerialDetector1,
-    SerialDetector2,
-    ThreadedDetector1,
-    ThreadedDetector2,
-    MPIDetector1,
-    MPIDetector2,
-    ThreadedMPIDetector1,
-    ThreadedMPIDetector2
+  using BrokerGroupV = std::variant<
+    SerialBrokerGroup1,
+    SerialBrokerGroup2,
+    ThreadedBrokerGroup1,
+    ThreadedBrokerGroup2,
+    MPIBrokerGroup1,
+    MPIBrokerGroup2,
+    ThreadedMPIBrokerGroup1,
+    ThreadedMPIBrokerGroup2
   >;
 #else
-  using DetectorV =
-    std::variant<SerialDetector1, ThreadedDetector1, SerialDetector2, ThreadedDetector2>;
+  using BrokerGroupV = std::variant<
+    SerialBrokerGroup1,
+    ThreadedBrokerGroup1,
+    SerialBrokerGroup2,
+    ThreadedBrokerGroup2
+  >;
 #endif
 
 #elif defined(SBIO_HAS_XTC1)
 #ifdef SBIO_HAS_MPI
-  using DetectorV =
-    std::variant<SerialDetector1, ThreadedDetector1, MPIDetector1, ThreadedMPIDetector1>;
+  using BrokerGroupV = std::variant<
+    SerialBrokerGroup1,
+    ThreadedBrokerGroup1,
+    MPIBrokerGroup1,
+    ThreadedMPIBrokerGroup1
+  >;
 #else
-  using DetectorV = std::variant<SerialDetector1, ThreadedDetector2>;
+  using BrokerGroupV = std::variant<SerialBrokerGroup1, ThreadedBrokerGroup2>;
 #endif
 
 #elif defined(SBIO_HAS_XTC2)
 #ifdef SBIO_HAS_MPI
-  using DetectorV =
-    std::variant<SerialDetector2, ThreadedDetector2, MPIDetector2, ThreadedMPIDetector2>;
+  using BrokerGroupV = std::variant<
+    SerialBrokerGroup2,
+    ThreadedBrokerGroup2,
+    MPIBrokerGroup2,
+    ThreadedMPIBrokerGroup2
+  >;
 #else
-  using DetectorV = std::variant<SerialDetector2, ThreadedDetector2>;
+  using BrokerGroupV = std::variant<SerialBrokerGroup2, ThreadedBrokerGroup2>;
 #endif
 
 #endif
 
-  struct DetectorWrapper {
-    DetectorWrapper(DetectorV d)
-      : det(d)
+  struct BrokerGroupWrapper {
+    BrokerGroupWrapper(BrokerGroupV g)
+      : grp(g)
     {}
 
     const std::string& get_detector_type() const { return detector_type; }
@@ -150,22 +162,22 @@ namespace pysbio {
                                                         const char* alg,
                                                         const char* field);
 
-    DetectorV det;
+    BrokerGroupV grp;
     std::string detector_type;
     std::string serial_number;
   };
 
   struct AlgWrapper {
-    AlgWrapper(DetectorV d, std::string n)
-      : det(d)
+    AlgWrapper(BrokerGroupV g, std::string n)
+      : grp(g)
       , alg_name(n)
     {}
 
-    DetectorV det;
+    BrokerGroupV grp;
     std::string alg_name;
   };
 
-  py::object wrap_detector(py::module& m, DetectorV detv);
+  py::object wrap_detector(py::module& m, BrokerGroupV detv);
 } // namespace pysbio
 
 #endif // PYSBIO_PYDETECTOR_HH

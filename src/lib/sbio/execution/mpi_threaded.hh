@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -86,6 +87,10 @@ namespace sbio {
       std::size_t num_threads { 0 };
       std::initializer_list<int> cpu_affinities {};
     };
+
+    static constexpr std::bitset<
+      static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
+    > ParallelSupport { 0x3 }; // 0b11 - MPI | THREADS
 
     static void configure_impl(const Config& config) {
       if (m_world_comm != MPI_COMM_NULL) {
@@ -186,6 +191,12 @@ namespace sbio {
       static std::atomic<int> next_win_tag(100); // Tag each MPI window to distinguish them
       Storage<TypeList<Descriptors...>, MPIThreadedExecution> s;
       std::size_t i { 0 };
+
+      if (m_active_comm == MPI_COMM_NULL) {
+        // Configuration was forgotten - force a default config now or will seg fault
+        Config def_cfg {};
+        configure(def_cfg);
+      }
 
       auto make_window_or_local = [&](auto DescTag) {
         using Descriptor = typename decltype(DescTag)::type;

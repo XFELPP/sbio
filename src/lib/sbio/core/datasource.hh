@@ -86,44 +86,11 @@ namespace sbio {
      * load_run: Scans the standard hutch directory and automatically registers
      * all streams for a given experiment and run number.
      */
-    bool load_run(std::string_view experiment,
-                  unsigned run,
-                  Config base_cfg) {
-      std::string SIT_PSDM_DATA = std::getenv("SIT_PSDM_DATA");
-      if (SIT_PSDM_DATA.empty()) {
-        SIT_PSDM_DATA = "/sdf/data/lcls/ds";
-      }
-      std::string hutch { experiment.substr(0,3) };
-      std::ostringstream dir_oss;
-      dir_oss << SIT_PSDM_DATA << "/" << hutch << "/" << experiment << "/xtc";
-      std::string xtc_dir = dir_oss.str();
+    template <typename... Args>
+    bool load_run(Config base_cfg, Args&&... args) {
+      auto ds_params = typename FTraits::DataSourceParameters(std::forward<Args>(args)...);
 
-      std::ostringstream oss;
-      oss << experiment << "-r" << std::setw(4) << std::setfill('0') << run;
-      std::string file_base_ptn = oss.str();
-      for (auto const& dir_entry : fs::directory_iterator(xtc_dir)) {
-        std::string xtc_path = dir_entry.path();
-        if (xtc_path.find(file_base_ptn) != std::string::npos) {
-          std::string xtc_stem = dir_entry.path().stem();
-          std::string ext = dir_entry.path().extension().string();
-
-          std::string smd_path;
-          if (ext == ".xtc") {
-            smd_path = xtc_dir + "/smalldata/" + xtc_stem + ".smd.xtc";
-          } else {
-            smd_path = xtc_dir + "/smalldata/" + xtc_stem + ".smd.xtc2";
-          }
-
-          Config stream_cfg = base_cfg;
-          safe_strncpy(stream_cfg.smd_path, smd_path.c_str(), smd_path.size() + 1);
-          safe_strncpy(stream_cfg.xtc_path, xtc_path.c_str(), xtc_path.size() + 1);
-
-          // NOTE: add_data_stream increments m_num_data_streams
-          add_data_stream(stream_cfg);
-        }
-      }
-
-      return m_num_data_streams > 0;
+      return FTraits::make_stream_brokers(*this, ds_params, base_cfg);
     }
 
     // TODO: RECONSIDER WHERE INDEX_STREAM IS CALLED!!
@@ -214,13 +181,13 @@ namespace sbio {
         auto ptn = static_cast<typename FTraits::DataAccessPtn>(pass);
         for (std::size_t i = 0; i < m_num_data_streams && n_streams_found < MaxSegments; ++i) {
           char dettype[FTraits::MaxNameSize] = "unknown";
-          n_streams_found += FTraits::find_detector_segments(m_data_streams[i].metadata(),
-                                                             name,
-                                                             &segments[n_streams_found],
-                                                             MaxSegments - n_streams_found,
-                                                             &m_data_streams[i],
-                                                             dettype,
-                                                             ptn);
+          n_streams_found += FTraits::find_group_segments(m_data_streams[i].metadata(),
+                                                          name,
+                                                          &segments[n_streams_found],
+                                                          MaxSegments - n_streams_found,
+                                                          &m_data_streams[i],
+                                                          dettype,
+                                                          ptn);
 
           if constexpr (FTraits::PartitioningStrategy ==
                         StreamPartitioningStrategy::Chronological) {

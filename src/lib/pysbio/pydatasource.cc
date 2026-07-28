@@ -34,10 +34,72 @@
 #endif
 #include <pybind11/pybind11.h>
 
+#include <initializer_list>
 #include <string>
 #include <variant>
 
 namespace py = pybind11;
+
+namespace {
+  // Simple Execution policy configuration
+  // The more technically inclined can use the full bindings via pysbio/execution
+
+  sbio::ThreadedExecution::Config parse_threaded_config(const py::dict& d) {
+    sbio::ThreadedExecution::Config cfg;
+    if (d.contains("num_threads")) {
+      cfg.num_threads = d["num_threads"].cast<std::size_t>();
+    }
+    if (d.contains("cpu_affinities")) {
+      cfg.cpu_affinities = d["cpu_affinities"].cast<std::initializer_list<int>>();
+    }
+
+    return cfg;
+  }
+
+#ifdef SBIO_HAS_MPI
+  sbio::MPIExecution::Config parse_mpi_config(const py::dict& d) {
+    sbio::MPIExecution::Config cfg;
+    if (d.contains("active_ranks")) {
+      cfg.active_ranks = d["active_ranks"].cast<std::initializer_list<int>>();
+    }
+
+    if (d.contains("main_rank")) {
+      cfg.main_rank = d["main_rank"].cast<int>();
+    }
+
+    if (d.contains("main_rank_loops")) {
+      cfg.main_rank_loops = d["main_rank_loops"].cast<bool>();
+    }
+    return cfg;
+  }
+
+  sbio::MPIThreadedExecution::Config parse_mpi_threaded_config(const py::dict& d) {
+    sbio::MPIThreadedExecution::Config cfg;
+    if (d.contains("num_threads")) {
+      cfg.num_threads = d["num_threads"].cast<std::size_t>();
+    }
+
+    if (d.contains("cpu_affinities")) {
+      cfg.cpu_affinities = d["cpu_affinities"].cast<std::initializer_list<int>>();
+    }
+
+    if (d.contains("active_ranks")) {
+      cfg.active_ranks = d["active_ranks"].cast<std::initializer_list<int>>();
+    }
+
+    if (d.contains("main_rank")) {
+      cfg.main_rank = d["main_rank"].cast<int>();
+    }
+
+    if (d.contains("main_rank_loops")) {
+      cfg.main_rank_loops = d["main_rank_loops"].cast<bool>();
+    }
+
+    return cfg;
+  }
+#endif
+} // anonymous namespace
+
 
 namespace pysbio {
   PyDataSource::PyDataSource(std::string exp,
@@ -45,7 +107,8 @@ namespace pysbio {
                              int evt_per_read,
                              int dgram_size,
                              unsigned xtc_ver,
-                             std::string type)
+                             std::string type,
+                             py::dict exec_cfg)
     : m_exp(exp)
     , m_run(run)
   {
@@ -56,12 +119,13 @@ namespace pysbio {
       base_cfg.max_dgram_size = dgram_size;
       if (type == "serial") {
         SerialDataSource1 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (type == "threads") {
-        ThreadedDataSource1 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        auto ecfg = parse_threaded_config(exec_cfg);
+        ThreadedDataSource1 ds(ecfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (type == "mpi") {
@@ -76,8 +140,9 @@ namespace pysbio {
           MPI_Init(&argc, &argv);
         }
 
-        MPIDataSource1 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        auto ecfg = parse_mpi_config(exec_cfg);
+        MPIDataSource1 ds(ecfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else
@@ -101,8 +166,9 @@ namespace pysbio {
           }
         }
 
-        ThreadedMPIDataSource1 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        auto ecfg = parse_mpi_threaded_config(exec_cfg);
+        ThreadedMPIDataSource1 ds(ecfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else
@@ -122,12 +188,13 @@ namespace pysbio {
 
       if (type == "serial") {
         SerialDataSource2 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (type == "threads") {
-        ThreadedDataSource2 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        auto ecfg = parse_threaded_config(exec_cfg);
+        ThreadedDataSource2 ds(ecfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (type == "mpi") {
@@ -142,8 +209,9 @@ namespace pysbio {
           MPI_Init(&argc, &argv);
         }
 
-        MPIDataSource2 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        auto ecfg = parse_mpi_config(exec_cfg);
+        MPIDataSource2 ds(ecfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else
@@ -167,8 +235,9 @@ namespace pysbio {
           }
         }
 
-        ThreadedMPIDataSource2 ds;
-        ds.load_run(exp.c_str(), run, base_cfg);
+        auto ecfg = parse_mpi_threaded_config(exec_cfg);
+        ThreadedMPIDataSource2 ds(ecfg);
+        ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else

@@ -27,10 +27,8 @@
 #include "sbio/core/utility.hh"
 #include "sbio/formats/format_traits.hh"
 
-#ifdef SBIO_HAS_CUDA
-#include <cuda_runtime.h>
-#endif
 #include <ncarray/ncarrays.hh>
+#include <ncarray/soarrays.hh>
 
 #include <concepts>
 #include <cstddef>
@@ -49,9 +47,7 @@ namespace sbio {
     using EPolicy = typename BrokerType::ExecutionPolicy;
     using PtrTableRequirements =
       TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
-      //TypeList<BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>>;
     using PtrStorageT = Storage<PtrTableRequirements, EPolicy>;
-    using StorageT = Storage<typename FTraits::GroupBufferRequirements, EPolicy>;
     using DataAccessPtn = typename FTraits::DataAccessPtn;
     using DataResult = typename FTraits::DataResult;
     using DataRequest = typename FTraits::DataRequest;
@@ -73,27 +69,12 @@ namespace sbio {
     BrokerGroup() {
       m_name[0] = '\0';
       m_type[0] = '\0';
-#ifdef SBIO_HAS_CUDA
-      cudaMalloc(&m_dev_ptrs, MaxSegments * sizeof(void*));
-#endif
     }
-
-#ifdef SBIO_HAS_CUDA
-    ~BrokerGroup() {
-      if (m_dev_ptrs) {
-        cudaFree(m_dev_ptrs);
-      }
-    }
-#endif
 
     BrokerGroup(const char* name,
                 const char* type,
                 std::size_t num_segments,
                 DataSegmentRef* segments) {
-#ifdef SBIO_HAS_CUDA
-      cudaMalloc(&m_dev_ptrs, MaxSegments * sizeof(void*));
-#endif
-
       m_num_segments = num_segments;
 
       std::size_t i { 0 };
@@ -128,9 +109,14 @@ namespace sbio {
         }
       }
 
+      std::size_t max_batch_count { 1 };
+      if (m_num_brokers > 0 && m_segments[0].broker != nullptr) {
+        max_batch_count = FTraits::max_batch_count(m_segments[0].broker->config());
+      }
+
       using IOType = typename BrokerType::IOType;
       m_ptr_storage = EPolicy::template allocate_group_storage<IOType, FTraits>(m_num_segments,
-                                                                                /*max_batch_count=*/10);
+                                                                                max_batch_count);
     }
 
     const char* group_name() const { return m_name; }
@@ -161,13 +147,14 @@ namespace sbio {
     template <class CBType>
     inline DataResult get_data_for(DataRequest& req,
                                    std::size_t segment_no,
-                                   CBType&& callback) const {
+                                   CBType&& callback,
+                                   std::size_t batch_idx = 0) const {
       req.segment_number = m_segments[segment_no].segment_no;
 
       auto* stream_broker = m_segments[segment_no].broker;
       auto& access_ptn = m_segments[segment_no].access_ptn;
 
-      auto res = stream_broker->get_data_in_buffer(req, access_ptn);
+      auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
 
       if constexpr (requires { callback(res, segment_no); }) {
         callback(res, segment_no);
@@ -177,13 +164,15 @@ namespace sbio {
       return res;
     }
 
-    inline DataResult get_data_for(DataRequest& req, std::size_t segment_no) const {
+    inline DataResult get_data_for(DataRequest& req,
+                                   std::size_t segment_no,
+                                   std::size_t batch_idx = 0) const {
       req.segment_number = m_segments[segment_no].segment_no;
 
       auto* stream_broker = m_segments[segment_no].broker;
       auto& access_ptn = m_segments[segment_no].access_ptn;
 
-      auto res = stream_broker->get_data_in_buffer(req, access_ptn);
+      auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
       return res;
     }
 
@@ -238,11 +227,11 @@ namespace sbio {
       auto get_data_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           auto active_stream_idx { step_idx % m_num_segments };
+
           auto res = get_data_for(req,
                                   active_stream_idx,
                                   std::forward<CBType>(callback));
 
-          //m_ptrs[0] = const_cast<void*>(res.data);
           ptr_tbl[0] = const_cast<void*>(res.data);
           // This assumes all segments are same shape...
           ref_res.data = res.data;
@@ -290,14 +279,7 @@ namespace sbio {
                                           get_data_cb,
                                           num_segments);
 
-      //const void** ptr_table { m_ptrs };
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
-      if constexpr (std::is_same_v<MemTag, ncarray::DevTag>) {
-#ifdef SBIO_HAS_CUDA
-        cudaMemcpy(m_dev_ptrs, ptr_tbl, num_segments * sizeof(void*), cudaMemcpyHostToDevice);
-        ptr_table = const_cast<const void**>(reinterpret_cast<void**>(m_dev_ptrs));
-#endif
-      }
 
       return as_ncarray<MemTag>(ptr_table, num_segments, ref_res);
     }
@@ -347,7 +329,6 @@ namespace sbio {
           auto active_stream_idx { step_idx % m_num_segments };
           auto res = get_data_for(req, active_stream_idx);
 
-          // m_ptrs[0] = const_cast<void*>(res.data);
           ptr_tbl[0] = const_cast<void*>(res.data);
           //  This assumes all segments are same shape...
           ref_res.data = res.data;
@@ -363,7 +344,6 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          //m_ptrs[req.segment_number] = const_cast<void*>(res.data);
           ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
@@ -429,7 +409,8 @@ namespace sbio {
         } else {
           auto res = get_data_for(req,
                                   i,
-                                  std::forward<CBType>(callback));
+                                  std::forward<CBType>(callback),
+                                  cnt);
 
           std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
@@ -463,12 +444,6 @@ namespace sbio {
                                                 num_segments);
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
-      if constexpr (std::is_same_v<MemTag, ncarray::DevTag>) {
-#ifdef SBIO_HAS_CUDA
-        cudaMemcpy(m_dev_ptrs, ptr_tbl, num_segments * sizeof(void*), cudaMemcpyHostToDevice);
-        ptr_table = const_cast<const void**>(reinterpret_cast<void**>(m_dev_ptrs));
-#endif
-      }
 
       return as_ncarray<MemTag>(ptr_table, num_segments, ref_res, count);
     }
@@ -502,7 +477,7 @@ namespace sbio {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           // TODO: Setup Chronological
         } else {
-          auto res = get_data_for(req, i);
+          auto res = get_data_for(req, i, cnt);
 
           std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
@@ -551,11 +526,6 @@ namespace sbio {
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
 
-#ifdef SBIO_HAS_CUDA
-    mutable const void** m_dev_ptrs { nullptr };
-#endif
-
-    StorageT m_storage;
     mutable PtrStorageT m_ptr_storage;
   };
 } // namespace sbio

@@ -33,6 +33,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <bitset>
 #include <initializer_list>
 #include <memory>
 #include <type_traits>
@@ -76,6 +77,10 @@ namespace sbio {
       int main_rank { 0 };
       bool main_rank_loops { true };
     };
+
+    static constexpr std::bitset<
+      static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
+    > ParallelSupport { 0x2 }; // 0b10 - MPI
 
     static void configure_impl(const Config& config) {
       if (m_world_comm != MPI_COMM_NULL) {
@@ -174,6 +179,12 @@ namespace sbio {
       static int new_win_tag { 100 }; // Tag each MPI window to distinguish them
       Storage<TypeList<Descriptors...>, MPIExecution> s;
       std::size_t i { 0 };
+
+      if (m_active_comm == MPI_COMM_NULL) {
+        // Configuration was forgotten - force a default config now or will seg fault
+        Config def_cfg {};
+        configure(def_cfg);
+      }
 
       // Move pack expansion into a lambda for legibility
       auto make_window_or_local = [&](auto DescTag) {

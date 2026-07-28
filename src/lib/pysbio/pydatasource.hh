@@ -148,7 +148,8 @@ namespace pysbio {
                  int evt_per_read,
                  int dgram_size,
                  unsigned xtc_ver = 2,
-                 std::string type = "mpi");
+                 std::string type = "mpi",
+                 py::dict exec_cfg = py::dict());
 
     py::object detector(py::module& m, const char* name);
 

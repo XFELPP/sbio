@@ -502,17 +502,19 @@ namespace sbio {
      * @param[in] req A data-format-dependent struct with a parse request.
      * @param[in] ptn A data-format-dependent access pattern for formats that can
      *            be read in different ways.
+     * @param[in] batch_idx If reading by batches, the index for which of the steps
+     *            in the batch to be resolved.
      * @returns A data-format-dependent result object with the requested data.
      */
     SBIO_HD inline DataResult
     get_data_in_buffer(const DataRequest& req,
-                       const DataAccessPtn ptn) {
-
+                       const DataAccessPtn ptn,
+                       std::size_t batch_idx = 0) {
       if constexpr (!std::is_void_v<Derived>) {
-        return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn);
+        return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn, batch_idx);
       } else {
         StorageView<StorageT, EPolicy> sv(m_storage);
-        return FTraits::get_data_in_buffer(sv, m_metadata_inv, req, ptn);
+        return FTraits::get_data_in_buffer(sv, m_metadata_inv, req, ptn, batch_idx);
       }
     }
 
@@ -526,6 +528,14 @@ namespace sbio {
      */
     SBIO_HD inline MetadataInventory& metadata() { return m_metadata_inv; }
     SBIO_HD inline const MetadataInventory& metadata() const { return m_metadata_inv; }
+
+    /**
+     * The set of StreamParameters configuration used to instantiate the broker.
+     *
+     * @returns The StreamParameters configuration.
+     */
+    SBIO_HD inline Config& config() { return m_config; }
+    SBIO_HD inline const Config& config() const { return m_config; }
 
     /**
      * Configure the Broker with a set of metadata.

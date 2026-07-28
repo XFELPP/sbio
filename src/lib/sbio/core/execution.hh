@@ -5,21 +5,46 @@
 #include "sbio/core/storage.hh"
 #include "sbio/formats/format_traits.hh"
 
-#include <atomic>
-#include <concepts>
-#include <iostream>
-#include <mutex>
-#include <type_traits>
+#ifdef __CUDACC__
+
+#include <cuda/std/bitset>
+#include <cuda/std/cstddef>
+#include <cuda/std/cstdint>
+#include <cuda/std/initializer_list>
+#include <cuda/std/utility>
+
+namespace hd_std = cuda::std;
 
 #ifndef SBIO_HD
-#ifdef __CUDACC__
 #define SBIO_HD __host__ __device__
+#endif
+
 #else
+
+#include <bitset>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <utility>
+
+namespace hd_std = std;
+
+#ifndef SBIO_HD
 #define SBIO_HD
 #endif
+
 #endif
 
 namespace sbio {
+  enum class ParallelizationMethods : hd_std::uint8_t {
+    THREADS       = 0, ///< Support for multi-threaded programs
+    MPI           = 1, ///< Support for MPI programs
+    CUDA          = 2, ///< Support for single GPU-coprocessor with CUDA
+    CUDA_MULTIGPU = 3, ///< Support for multiple GPUs (per process) with CUDA
+    CUDA_FROMDEV  = 4, ///< Support for being invoked from inside CUDA device code
+    NUM_METHODS   = 5
+  };
+
   /**
    * The execution model is the central control point for the management of Broker
    * life-cycle (transitioning through state machines), as well as coordination of
@@ -98,6 +123,10 @@ namespace sbio {
     using BufferTypeFor = void;
 
     struct DefaultConfig {};
+
+    static constexpr hd_std::bitset<
+      static_cast<hd_std::size_t>(ParallelizationMethods::NUM_METHODS)
+    > ParallelSupport { 0x0 };
 
     // --- Execution Policy Configuration (if applicable) --- //
     // ------------------------------------------------------ //
@@ -212,7 +241,7 @@ namespace sbio {
           Derived::template post_update_impl<Role, StorageT>(storage, sync_vars, status);
         }) {
         Derived::template post_update_impl<Role, StorageT>(storage,
-                                                           std::forward<SyncT>(sync_vars),
+                                                           hd_std::forward<SyncT>(sync_vars),
                                                            status);
       }
     }
@@ -244,8 +273,8 @@ namespace sbio {
     // ---------------------------------- //
     template <class IO, class FTraits>
     requires FormatTraits<FTraits, IO, Derived>
-    SBIO_HD static auto allocate_group_storage(std::size_t num_segments,
-                                               std::size_t max_batch_count = 1) {
+    SBIO_HD static auto allocate_group_storage(hd_std::size_t num_segments,
+                                               hd_std::size_t max_batch_count = 1) {
       using PtrTableRequirements = TypeList<
         BufferDescriptor<TableRole, 0, sizeof(void*)>
       >;
@@ -267,26 +296,26 @@ namespace sbio {
     template <class FTraits, class FetchCBType, class GetCBType>
     SBIO_HD static IOStatus get_data(typename FTraits::StepIdxType step_idx,
                                      FetchCBType&& unit_fetcher,
-                                     std::size_t num_fetches,
+                                     hd_std::size_t num_fetches,
                                      GetCBType&& unit_get_data,
-                                     std::size_t num_accesses) {
+                                     hd_std::size_t num_accesses) {
       if constexpr (requires {
           Derived::template get_data_impl<FTraits>(step_idx,
-                                                   std::forward<FetchCBType>(unit_fetcher),
+                                                   hd_std::forward<FetchCBType>(unit_fetcher),
                                                    num_fetches,
-                                                   std::forward<GetCBType>(unit_get_data),
+                                                   hd_std::forward<GetCBType>(unit_get_data),
                                                    num_accesses);
         }) {
         return Derived::template get_data_impl<FTraits>(step_idx,
-                                                        std::forward<FetchCBType>(unit_fetcher),
+                                                        hd_std::forward<FetchCBType>(unit_fetcher),
                                                         num_fetches,
-                                                        std::forward<GetCBType>(unit_get_data),
+                                                        hd_std::forward<GetCBType>(unit_get_data),
                                                         num_accesses);
       } else {
         // By default, we will do IO for all units (segments)
         // Then afterwards we will do data retrieval.
         IOStatus status = IOStatus::Success;
-        for (std::size_t i = 0; i < num_fetches; ++i) {
+        for (hd_std::size_t i = 0; i < num_fetches; ++i) {
           IOStatus s = unit_fetcher(i);
           if (s != IOStatus::Success) {
             status = s;
@@ -294,7 +323,7 @@ namespace sbio {
           }
         }
         if (status == IOStatus::Success) {
-          for (std::size_t i = 0; i < num_accesses; ++i) {
+          for (hd_std::size_t i = 0; i < num_accesses; ++i) {
             unit_get_data(i);
           }
         }
@@ -303,28 +332,28 @@ namespace sbio {
     }
 
     template <class FTraits, class FetchCBType, class GetCBType>
-    SBIO_HD static IOStatus get_data_steps(const std::initializer_list<typename FTraits::StepIdxType>& steps,
+    SBIO_HD static IOStatus get_data_steps(const hd_std::initializer_list<typename FTraits::StepIdxType>& steps,
                                            FetchCBType&& unit_fetcher,
-                                           std::size_t num_fetches,
+                                           hd_std::size_t num_fetches,
                                            GetCBType&& unit_get_data,
-                                           std::size_t num_accesses) {
+                                           hd_std::size_t num_accesses) {
       if constexpr (requires {
           Derived::template get_data_steps_impl<FTraits>(steps,
-                                                         std::forward<FetchCBType>(unit_fetcher),
+                                                         hd_std::forward<FetchCBType>(unit_fetcher),
                                                          num_fetches,
-                                                         std::forward<GetCBType>(unit_get_data),
+                                                         hd_std::forward<GetCBType>(unit_get_data),
                                                          num_accesses);
         }) {
         return Derived::template get_data_steps_impl<FTraits>(steps,
-                                                              std::forward<FetchCBType>(unit_fetcher),
+                                                              hd_std::forward<FetchCBType>(unit_fetcher),
                                                               num_fetches,
-                                                              std::forward<GetCBType>(unit_get_data),
+                                                              hd_std::forward<GetCBType>(unit_get_data),
                                                               num_accesses);
       } else {
         // By default, we will do IO for all units (segments)
         // Then afterwards we will do data retrieval.
         IOStatus status = IOStatus::Success;
-        for (std::size_t i = 0; i < num_fetches; ++i) {
+        for (hd_std::size_t i = 0; i < num_fetches; ++i) {
           IOStatus s = unit_fetcher(i);
           if (s != IOStatus::Success) {
             status = s;
@@ -338,11 +367,11 @@ namespace sbio {
             passed_step ? *(steps.end() - 2) : *(steps.end() - 1)
           };
           typename FTraits::StepIdxType count {
-            (last > first) ? static_cast<std::size_t>(last - first) : 1
+            (last > first) ? static_cast<hd_std::size_t>(last - first) : 1
           };
 
-          for (std::size_t cnt = 0; cnt < static_cast<std::size_t>(count); ++cnt) {
-            for (std::size_t i = 0; i < num_accesses; ++i) {
+          for (hd_std::size_t cnt = 0; cnt < static_cast<hd_std::size_t>(count); ++cnt) {
+            for (hd_std::size_t i = 0; i < num_accesses; ++i) {
               unit_get_data(i, cnt);
             }
           }
@@ -359,11 +388,11 @@ namespace sbio {
     next(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
       if constexpr (requires {
           Derived::template next_impl<FTraits>(max_capacity,
-                                               std::forward<IndexTrigger>(trigger));
+                                               hd_std::forward<IndexTrigger>(trigger));
         }) {
         return
           Derived::template next_impl<FTraits>(max_capacity,
-                                               std::forward<IndexTrigger>(trigger));
+                                               hd_std::forward<IndexTrigger>(trigger));
       }
     }
   };

@@ -84,21 +84,21 @@ namespace pysbio {
   }
 
   ncarray::SOViewFor<ncarray::HostTag>
-  DetectorWrapper::get_data(std::size_t step, const char* alg, const char* field) {
-    auto getter = [&](auto& det) {
+  BrokerGroupWrapper::get_data(std::size_t step, const char* alg, const char* field) {
+    auto getter = [&](auto& grp) {
 
-      return det.get_data(step, alg, field);
+      return grp.get_data(step, alg, field);
     };
 
-    return std::visit(getter, this->det);
+    return std::visit(getter, this->grp);
   }
 
   ncarray::SOViewFor<ncarray::HostTag>
-  DetectorWrapper::get_multi_data(std::initializer_list<std::size_t> steps,
-                                  const char* alg,
-                                  const char* field) {
-    auto getter = [&](auto& det) { return det.get_multi_data(steps, alg, field); };
+  BrokerGroupWrapper::get_multi_data(std::initializer_list<std::size_t> steps,
+                                     const char* alg,
+                                     const char* field) {
+    auto getter = [&](auto& grp) { return grp.get_multi_data(steps, alg, field); };
 
-    return std::visit(getter, this->det);
-  }
+    return std::visit(getter, this->grp);
+  }x
 } // namespace pysbio

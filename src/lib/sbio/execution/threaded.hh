@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <concepts>
 #include <initializer_list>
 #include <memory>
@@ -64,6 +65,10 @@ namespace sbio {
       std::size_t num_threads { 0 };
       std::initializer_list<int> cpu_affinities {};
     };
+
+    static constexpr std::bitset<
+      static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
+    > ParallelSupport { 0x1 }; // 0b01 - THREADS
 
     static void configure_impl(const Config& config) {
       m_num_threads = config.num_threads;

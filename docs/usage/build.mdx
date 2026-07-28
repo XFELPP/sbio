@@ -1,5 +1,5 @@
 ---
-title: Building from Source
+title: Building and Building Against sbio
 description: "Stream Broker IO: sbio"
 sidebar:
   order: 1
@@ -67,6 +67,16 @@ meson setup <builddir> -Dbuild_core=true -Dbuild_python=false -Dbuild_mpi=auto
 ```
 
 You can use any build directory of your choosing for `<builddir>`
+
+<Aside type="caution" title="Feature Flags and Your Own Projects">
+Currently, the meson feature flags for incorporating data formats, or MPI support, e.g. are implemented as macro defines internally. This can pose an issue when including headers in your own project. E.g. a build of sbio with MPI support has a `SBIO_HAS_MPI` macro internally - it may be required to define the macro yourself as well if including headers. This is a clear experience problem and is being worked on for future releases.
+
+Defining the following headers yourself, in the meantime, will avoid problems if you built `sbio` with these features and are including headers in your own projects:
+- `SBIO_HAS_XTC1` : For the XTC1 data format
+- `SBIO_HAS_XTC2` : For the XTC2 data format
+- `SBIO_HAS_MPI` : For MPI support
+- `SBIO_HAS_CUDA` : For CUDA support
+</Aside>
 
 ## Compilation
 

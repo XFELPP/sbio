@@ -36,6 +36,14 @@
 #endif
 #endif
 
+#include <cstddef>
+#include <filesystem>
+#include <sstream>
+#include <string>
+#include <string_view>
+
+namespace fs = std::filesystem;
+
 namespace sbio {
   struct XTC2Traits : public BaseTraits {
     // Sizeof dgram header
@@ -72,9 +80,71 @@ namespace sbio {
     struct StreamParameters {
       char smd_path[MaxNameSize];
       char xtc_path[MaxNameSize];
-      std::size_t max_dgram_size;
-      std::size_t events_per_read;
+      std::size_t max_dgram_size { 0x4000000 };
+      std::size_t max_dgram_batch { 1 };
+      std::size_t events_per_read { 43200 };
     };
+
+    struct DataSourceParameters {
+#ifndef __CUDA_ARCH__
+      DataSourceParameters(const std::string& exp, unsigned run_) {
+        safe_strncpy(experiment, exp.c_str(), exp.size());
+        run = run_;
+      }
+#endif
+      DataSourceParameters() = default;
+
+      char experiment[MaxNameSize];
+      unsigned run;
+    };
+
+    template <typename DS>
+    static bool make_stream_brokers(DS& ds,
+                                    const DataSourceParameters& ds_params,
+                                    StreamParameters& base_cfg) {
+#ifndef __CUDA_ARCH__
+      std::string SIT_PSDM_DATA = std::getenv("SIT_PSDM_DATA");
+      if (SIT_PSDM_DATA.empty()) {
+        SIT_PSDM_DATA = "/sdf/data/lcls/ds";
+      }
+
+      unsigned run { ds_params.run };
+      std::string exp(ds_params.experiment);
+      std::string hutch { exp.substr(0,3) };
+      std::ostringstream dir_oss;
+      dir_oss << SIT_PSDM_DATA << "/" << hutch << "/" << exp << "/xtc";
+      std::string xtc_dir = dir_oss.str();
+
+      std::ostringstream oss;
+      oss << exp << "-r" << std::setw(4) << std::setfill('0') << run;
+      std::string file_base_ptn = oss.str();
+      for (auto const& dir_entry : fs::directory_iterator(xtc_dir)) {
+        std::string xtc_path = dir_entry.path();
+        if (xtc_path.find(file_base_ptn) != std::string::npos) {
+          std::string xtc_stem = dir_entry.path().stem();
+          std::string ext = dir_entry.path().extension().string();
+
+          std::string smd_path;
+          if (ext == ".xtc") {
+            smd_path = xtc_dir + "/smalldata/" + xtc_stem + ".smd.xtc";
+          } else {
+            smd_path = xtc_dir + "/smalldata/" + xtc_stem + ".smd.xtc2";
+          }
+
+          StreamParameters stream_cfg = base_cfg;
+          safe_strncpy(stream_cfg.smd_path, smd_path.c_str(), smd_path.size() + 1);
+          safe_strncpy(stream_cfg.xtc_path, xtc_path.c_str(), xtc_path.size() + 1);
+
+          // NOTE: add_data_stream increments m_num_data_streams
+          ds.add_data_stream(stream_cfg);
+        }
+      }
+
+      return ds.num_data_streams() > 0;
+#else
+      return false;
+#endif
+    }
 
     struct EventOffset {
       std::uint64_t offset;
@@ -105,12 +175,6 @@ namespace sbio {
       BufferDescriptor<DataRole, 0, sizeof(XTC2::Dgram)>,      /* Buffer for events */
       BufferDescriptor<IndexRole, 0, sizeof(EventOffset)>,     /* EventOffsets buffer */
       BufferDescriptor<IndexRole, 1, sizeof(TransitionOffset)> /* TransitionOffsets buffer */
-    >;
-
-    using GroupBufferRequirements = TypeList<
-      //BufferDescriptor<TableRole, 0, sizeof(void*)>,                 /* Buffer for pointers to segments */
-      //BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>,      /* Buffer for pointers to segments */
-      BufferDescriptor<GroupRole, 0, sizeof(XTC2::Dgram), Shareable> /* Buffer for constants */
     >;
 
     /**
@@ -186,13 +250,13 @@ namespace sbio {
 
     // Defined at end of the header, after MetadataInventory is completed
     template <class DataBrokerType, class SegmentRef>
-    SBIO_HD static std::size_t find_detector_segments(const MetadataInventory& inv,
-                                                      const char* name,
-                                                      SegmentRef* ref_out,
-                                                      std::size_t max_out,
-                                                      DataBrokerType* broker,
-                                                      char* dettype = nullptr,
-                                                      DataAccessPtn ptn = DataAccessPtn::L1Accept);
+    SBIO_HD static std::size_t find_group_segments(const MetadataInventory& inv,
+                                                   const char* name,
+                                                   SegmentRef* ref_out,
+                                                   std::size_t max_out,
+                                                   DataBrokerType* broker,
+                                                   char* dettype = nullptr,
+                                                   DataAccessPtn ptn = DataAccessPtn::L1Accept);
 
     SBIO_HD static inline std::size_t get_payload_size(void* buf) {
       return reinterpret_cast<XTC2::Dgram*>(buf)->xtc.sizeofPayload();
@@ -229,15 +293,19 @@ namespace sbio {
 
     SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(StreamParameters& cfg) {
       AllocationRequest<XTC2Traits> request;
-      request.size_requests[0] = cfg.max_dgram_size; // Transition buf
+      request.size_requests[0] = cfg.max_dgram_size * cfg.max_dgram_batch; // Transition buf
       request.size_requests[1] = // Scratch buffer for reading ahead in smd file
         cfg.events_per_read * (sizeof(XTC2::Dgram) + 80);
-      request.size_requests[2] = cfg.max_dgram_size; // Event buf
+      request.size_requests[2] = cfg.max_dgram_size * cfg.max_dgram_batch; // Event buf
       request.size_requests[3] = cfg.events_per_read * sizeof(XTC2Traits::EventOffset);
       request.size_requests[4] =
         cfg.events_per_read * sizeof(XTC2Traits::TransitionOffset);
 
       return request;
+    }
+
+    SBIO_HD static std::size_t max_batch_count(StreamParameters& cfg) {
+      return cfg.max_dgram_batch;
     }
 
     template <IOTraits IO>
@@ -510,8 +578,39 @@ namespace sbio {
         std::size_t file_offset { start_offset.offset };
         std::size_t read_size { (end_offset.offset + end_offset.size) - file_offset };
 
+        std::size_t bd_buf_size { storage.template size<DataRole, 0>() };
         auto* bd_buf = storage.template acquire<DataRole, 0>();
-        IOStatus status = streams[BD].read_at(bd_buf, file_offset, read_size);
+
+        IOStatus status { IOStatus::Success };
+        if (read_size <= bd_buf_size) {
+          status = streams[BD].read_at(bd_buf, file_offset, read_size);
+        } else {
+          // First case, we have interspersed transitions in a batched read.
+          // If that's true, see if reading only the events in will get us under
+          // the limit
+          std::size_t l1s_size { 0 };
+          for (std::size_t i = start_index; i <= end_index; ++i) {
+            l1s_size += l1_offsets[i].size;
+          }
+
+          if (l1s_size <= bd_buf_size) {
+            // Must read in chunks
+            std::size_t dst_offset { 0 };
+            for (std::size_t i = start_index; i <= end_index; ++i) {
+              char* dst_ptr { reinterpret_cast<char*>(bd_buf) + dst_offset };
+              status = streams[BD].read_at(dst_ptr, l1_offsets[i].offset, l1_offsets[i].size);
+
+              if (status != IOStatus::Success) {
+                break;
+              }
+
+              dst_offset += l1_offsets[i].size;
+            }
+          } else {
+            // Too big sadly.
+            status = IOStatus::TruncatedRead;
+          }
+        }
 
         if (status == IOStatus::Success) {
           std::size_t read_count = streams[BD].read_count();
@@ -557,65 +656,89 @@ namespace sbio {
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
                                                  const MetadataInventory& inv,
                                                  const DataRequest& req,
-                                                 DataAccessPtn ptn) {
+                                                 DataAccessPtn ptn,
+                                                 std::size_t batch_idx = 0) {
+      DataRequest corrected_req { req };
+      XTC2::TransitionId target_service;
+      void* bd_buf { nullptr };
+      XTC2::Dgram* dg { nullptr };
       if (ptn == DataAccessPtn::L1Accept) {
-        auto* bd_buf = storage.template acquire<DataRole, 0>();
-        DataResult res = XTC2Traits::resolve_data(bd_buf, inv, req);
-        storage.template release<DataRole, 0>(bd_buf, res);
-        return res;
-      } else if (ptn == DataAccessPtn::SlowUpdate) {
-        // Semantic Mapping: Requested name is actually a PV field in "epics"
-        DataRequest epics_req { req };
-        const char* epics_det_name { "epics" };
-        std::size_t i { 0 };
-        for (; i < 5; ++i) {
-          epics_req.detector_name[i] = epics_det_name[i];
-        }
-        epics_req.detector_name[i] = '\0';
+        bd_buf = storage.template acquire<DataRole, 0>();
+        dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
 
-        i = 0;
-        for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
-          epics_req.field_name[i] = req.detector_name[i];
-        }
-        epics_req.field_name[i] = '\0';
+        target_service = XTC2::TransitionId::L1Accept;
+      } else {
+        if (ptn == DataAccessPtn::SlowUpdate) {
+          target_service = XTC2::TransitionId::SlowUpdate;
 
-        auto* bd_buf = storage.template acquire<MetadataRole, 0>();
-        DataResult res = XTC2Traits::resolve_data(bd_buf, inv, epics_req);
-        storage.template release<MetadataRole, 0>(bd_buf, res);
-        return res;
-      } else if (ptn == DataAccessPtn::BeginStep) {
-        // `scan` should be like a "normal" detector. However, it must be read from
-        // the BeginStep transition buffers.
-        // Those buffers will have:
-        // - `step_value`     : INT64
-        // - `step_docstring` : CHARSTR, optional (but usually present)
-        // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
-        // We also allow for people to pass `scan_var_namexxx` as the name directly
-        // So in the case we have Scan type access, but the name is not "scan" we must
-        // do a rewrite
-        DataRequest scan_req { req };
-
-        if (std::strcmp(scan_req.detector_name, "scan") != 0) {
-          const char* scan_det_name { "scan" };
+          // Semantic Mapping: Requested name is actually a PV field in "epics"
+          const char* epics_det_name { "epics" };
           std::size_t i { 0 };
-          for (; i < 4; ++i) {
-            scan_req.detector_name[i] = scan_det_name[i];
+          for (; i < 5; ++i) {
+            corrected_req.detector_name[i] = epics_det_name[i];
           }
-          scan_req.detector_name[i] = '\0';
+          corrected_req.detector_name[i] = '\0';
 
           i = 0;
           for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
-            scan_req.field_name[i] = req.detector_name[i];
+            corrected_req.field_name[i] = req.detector_name[i];
           }
-          scan_req.field_name[i] = '\0';
+          corrected_req.field_name[i] = '\0';
+        } else if (ptn == DataAccessPtn::BeginStep) {
+          target_service = XTC2::TransitionId::BeginStep;
+
+          // `scan` should be like a "normal" detector. However, it must be read from
+          // the BeginStep transition buffers.
+          // Those buffers will have:
+          // - `step_value`     : INT64
+          // - `step_docstring` : CHARSTR, optional (but usually present)
+          // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
+          // We also allow for people to pass `scan_var_namexxx` as the name directly
+          // So in the case we have Scan type access, but the name is not "scan" we must
+          // do a rewrite
+          if (std::strcmp(corrected_req.detector_name, "scan") != 0) {
+            const char* scan_det_name { "scan" };
+            std::size_t i { 0 };
+            for (; i < 4; ++i) {
+              corrected_req.detector_name[i] = scan_det_name[i];
+            }
+            corrected_req.detector_name[i] = '\0';
+
+            i = 0;
+            for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
+              corrected_req.field_name[i] = req.detector_name[i];
+            }
+            corrected_req.field_name[i] = '\0';
+          }
         }
 
-        auto* bd_buf = storage.template acquire<MetadataRole, 0>();
-        DataResult res = XTC2Traits::resolve_data(bd_buf, inv, scan_req);
-        storage.template release<MetadataRole, 0>(bd_buf, res);
-        return res;
+        bd_buf = storage.template acquire<MetadataRole, 0>();
+        dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
       }
-      return {};
+
+
+      if (batch_idx > 0) {
+        std::size_t matched_count { 0 };
+        while (matched_count < batch_idx) {
+          // When reading batches, to simplify we allow reading a massive chunk that
+          // may include intervening transitions.
+          if (dg->service() == target_service) {
+            matched_count++;
+          }
+          std::size_t dgram_size { sizeof(XTC2::Dgram) + dg->xtc.sizeofPayload() };
+          dg = reinterpret_cast<XTC2::Dgram*>(reinterpret_cast<char*>(dg) + dgram_size);
+        }
+      }
+
+      DataResult res = XTC2Traits::resolve_data(dg, inv, corrected_req);
+
+      if (ptn == DataAccessPtn::L1Accept) {
+        storage.template release<DataRole, 0>(bd_buf, res);
+      } else {
+        storage.template release<MetadataRole, 0>(bd_buf, res);
+      }
+
+      return res;
     }
 
     template <class StorageViewT>
@@ -766,13 +889,13 @@ namespace sbio {
   };
 
   template <class DataBrokerType, class SegmentRef>
-  SBIO_HD inline std::size_t XTC2Traits::find_detector_segments(const XTC2Traits::MetadataInventory& inv,
-                                                                const char* name,
-                                                                SegmentRef* ref_out,
-                                                                std::size_t max_out,
-                                                                DataBrokerType* broker,
-                                                                char* dettype,
-                                                                XTC2Traits::DataAccessPtn ptn) {
+  SBIO_HD inline std::size_t XTC2Traits::find_group_segments(const XTC2Traits::MetadataInventory& inv,
+                                                             const char* name,
+                                                             SegmentRef* ref_out,
+                                                             std::size_t max_out,
+                                                             DataBrokerType* broker,
+                                                             char* dettype,
+                                                             XTC2Traits::DataAccessPtn ptn) {
     std::size_t n_found { 0 };
 
     if (ptn == DataAccessPtn::L1Accept) {

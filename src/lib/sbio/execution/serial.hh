@@ -31,6 +31,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <bitset>
 #include <cstddef>
 #include <memory>
 #include <type_traits>
@@ -53,6 +54,10 @@ namespace sbio {
     using BufferTypeFor = HostBuffer;
 
     struct Config {};
+
+    static constexpr std::bitset<
+      static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
+    > ParallelSupport { 0x0 }; // 0b00 - NONE
 
     static void configure_impl(const Config&) {}
 

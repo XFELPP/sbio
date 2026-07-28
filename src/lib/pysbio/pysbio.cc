@@ -48,7 +48,9 @@ Args:
 
     xtc_ver (int): The version of XTC data (1 or 2).
 
-    ds_type (str): The desired DataSource type - currently supported are `serial` and `mpi`.)a";
+    ds_type (str): The desired DataSource type - currently supported are `serial` and `mpi`.
+
+    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).)a";
 } // anonymous namespace
 
 PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
@@ -75,21 +77,18 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def_property_readonly("serial_number", &DetectorWrapper::get_serial_number)
     .def("get_data", &DetectorWrapper::get_data)
     .def("get_multi_data", &DetectorWrapper::get_multi_data);
-    //.def("get_multi_data",
-    //     [](DetectorWrapper& self, std::initializer_list<std::size_t> steps, const char* alg, const char* field) {
-    //       return self.get_multi_data(steps, alg, field);
-    //     });
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
 
   py::classh<PyDataSource>(pysbio_module, "DataSource")
-    .def(py::init<std::string, unsigned, int, int, unsigned, std::string>(),
+    .def(py::init<std::string, unsigned, int, int, unsigned, std::string, py::dict>(),
          py::arg("exp"),
          py::arg("run"),
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("xtc_ver") = 2,
          py::arg("ds_type") = "mpi",
+         py::arg("exec_cfg") = py::dict(),
          ds_doc)
     .def("detector", [&](PyDataSource& self, const char* name) {
       return self.detector(pysbio_module, name);

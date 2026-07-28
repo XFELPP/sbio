@@ -1,0 +1,102 @@
+---
+title: Architecture Overview
+description: "Stream Broker IO: sbio"
+sidebar:
+  order: 1
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The `sbio` framework is designed to be composable for maximum reuse and flexibility. The highest level division occurs between "data-format-specific" code and the remaining components, which drive the IO in a format-agnostic manner. This division means that incorporating support for a new data format requires specification of a struct of format traits (conforming to a `concept` -- see below), but otherwise does not involve modification of any of the actual driving code. Likewise, a change to add support for a new parallelization strategy does not involve any data-format-specific code modifications. The following overview will focus mainly on the latter, generic, IO engine architecture, as the data-format specific code is well-defined by a single a struct and concept, which is provided at the end.
+
+## Layers of Abstraction: From Byte Stream to DataSource
+
+`sbio` components are arranged in a semi-hierarchical fashion, with increasing logical abstraction as you progress among the layers. I.e., the bottom components below are "closer" to the raw data, dealing with bytes. By the end, the `DataSource` is essentially a purely logical construction, providing an organizational object that makes sense only in the context of the specific data format being read.
+
+Progressing from the bottom to top, the components are roughly:
+
+<Steps>
+
+1. `Stream` : A light-weight wrapper over the raw bytes. Coupled with an `IO` policy class, the `Stream` provides the low-level access to the raw bytes of incoming data.
+2. `StreamBroker` : A `StreamBroker` manages one, or more, `Stream`s. At this point, the Execution policy and data format classes are introduced. This makes the `StreamBroker` the central unit for retrieving the **smallest** logical units from a `Stream`. I.e., when a unit of data is requested, the `StreamBroker` is responsible for pulling this request from the `Stream`(s) it manages, or returning why a request cannot be filled. There is a state machine governing this behaviour, described in more detail below.
+3. `BrokerGroup`: A grouping of various `StreamBroker`s. The individual broker components retrieve single logical units from the various streams, but in most cases, at the user level we care about information in a less granular manner. If the `StreamBroker` is the atom, the `BrokerGroup` is the molecule of interest. More concretely, when reading data of a specific format, the data may be partitioned over various streams. This may be true even for data originating from a single logical source (e.g., an image may be subdivided among streams, either with each stream receiving a piece of the image, or the stream receiving an image at different points in time). The `BrokerGroup` represents the complete logical source, and manages the underlying `StreamBroker`s. In most cases, this will be the lowest-level object interacted with directly from a user perspective.
+4. `DataSource`: Finally, the `DataSource` represents the sum-total grouping of all possible `Stream`s. It collects and finds the available `Stream`s for a given input configuration, and can be used to create `BrokerGroup`s. It is also used as a central point for managing the distribution of indices for data processing - though this is a convenience facility only, and not a requirement for any given library or application.
+
+</Steps>
+
+## The Execution Policy and Storage Class
+
+The preceeding abstractions are used for logical organization of the data. However, the actual drivers of all activities are the `Execution` policy and, through it, the `Storage` class. The `Execution` policy provides hooks which drive the transitions of all the logical abstractions at all points in time. Through it, various parallelization schemes are achieved, and the requisite synchronization is made possible by its central role.
+
+The main way that the policy implements this is via the `Storage` class. In itself, the `Storage` is a relatively simple object: it is a tagged and indexed container of buffers. The buffers it manages are those used by the `StreamBroker` and `BrokerGroup`, for instance, and are each tagged with specific roles. E.g., you have a `DataRole` which indicates a buffer is used for returning ... data. These are also indexed, as you may need more than one `DataRole`. The number of buffers, and their roles, is data-format-specific, and their specification is one of the main requirements for implementing support of a new data format.
+
+The Execution policy coupled with the Storage class provide a memory consistency model that allows for creating pluggable parallelization strategies. When any of the logical abstractions from the preceeding section goes to modify a buffer that is managed via its `Storage` class, it opens a transaction with the Execution policy. Depending on the particular parallelization strategy, this may not be allowed to proceed until certain conditions have been met (e.g., some time may be spent waiting for synchronization). When the transaction completes, it is committed, and the Execution policy then ensures that this is synchronized as needed among parallel units (processes, threads, etc.).
+
+Each Execution policy indicates the types of parallelization strategies that it supports. It may support multiple. E.g., a policy can support MPI, threads, or both simultaneously. If the policy indicates support for a particular strategy, that is a strong guarantee: when properly configured, the policy guarantees proper synchronization of all parallel units (as defined by the particular support level), and additionally that synchronization mechanisms used by the policy do NOT interfere with any user code running simultaneously, but outside the control of the policy.
+
+In general, the default configuration of a policy can be used - however, in some specific instances, explicit configuration may be needed. As a concrete example, consider an MPI-based program. By default, the MPI policy may consider all ranks as participating in the sbio framework; however, if this is not the case, the policy must be configured to understand which ranks do not participate. If this information is provided, the guarantee is then that the ranks which were indicated as not belonging to the "sbio MPI world" will not be interferred with by any actions taken by the Execution policy.
+
+## `StreamBroker` State Machine
+
+The Execution policy hooks are organized around a state machine for the principle logical unit in the framework, the `StreamBroker`. This will progress through various stages as controlled by the Execution policy to allow for efficient data access.
+
+The state machine is as follows:
+
+<Steps>
+
+1. `INIT` : Non-Stream broker setup. Essentially, object construction.
+2. `ALLOCATE` : `Storage` allocation. This stage sets up the buffers that will be used until the Streams are exhausted.
+3. `CONNECT` : `Stream`(s) are opened.
+4. `DISCOVERY` : The `Stream`(s) are interrogated to determine what is in the data.
+5. `READY` : Data access is now possible.
+6. `INDEXING`: This is the only optional state. A data format may implement an indexing protocol which allows for pre-determination of the location of specific steps in the stream. This is not required, nor is it always possible.
+7. `STREAMING`: Data is being retreived.
+8. `ERROR`: An error occurred (can be accessed from any of the other states).
+9. `DONE`: The `Stream`(s) were exhausted and there is no more data.
+
+</Steps>
+
+## Format Traits
+
+Data formats are specified using a struct of "traits", which conform to a specific set of requirements (technically implemented as a C++ concept).
+
+The specific set of requirements as defined by the concept is:
+
+```cpp
+
+  template <typename T, typename IO, typename EPolicy>
+  concept FormatTraits =
+    // Indicates size of headers, etc.
+    HasBoundedDataDimensions<T>                                                     &&
+    // Definition of "streamable" - Countable units, and indicates exhaustion:
+    HasCountableDataUnits<T>                                                        &&
+    CanFindAndConfigureStreams<T>                                                   &&
+    CanAllocateStorage<T>                                                           &&
+    HasDataRequest<T>                                                               &&
+    HasStreamState<
+      T,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+    CanOpenStreams<T, IO>                                                           &&
+    CanDiscoverMetadata<T> && CanFindGroupSegments<T>                               &&
+    CanFetchStreamData<
+      T,
+      IO,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+    // Simple data fetching API
+    CanResolveData<T>                                                               &&
+    // Advanced data fetching API
+    CanFillBuffer<
+      T,
+      IO,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>;
+
+```
+
+These are each individual concepts, the definitions of which are beyond the scope of this short introduction. However, in broad strokes the above concept enforces the following of the data format implementation:
+
+- The data format struct provides information on dimensions of data (size of headers, maximum string sizes, etc.)
+- It can help define how buffers should be sized to successfully read data.
+- It defines, if necessary, a struct that will be used to configure access to the data (e.g., how to lookup Streams).
+- It specifics a mechanism to request specific data: both a struct to use to do so, and one possible implementation of the lookup.
+- Given an IO policy, it will know which Streams to open.
+- And, it can use the data request mechanism to fill in a provided buffer.
