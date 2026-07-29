@@ -34,10 +34,10 @@
 #endif
 #include <pybind11/pybind11.h>
 
-#include <initializer_list>
 #include <string>
 #include <type_traits>
 #include <variant>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -51,7 +51,7 @@ namespace {
       cfg.num_threads = d["num_threads"].cast<std::size_t>();
     }
     if (d.contains("cpu_affinities")) {
-      cfg.cpu_affinities = d["cpu_affinities"].cast<std::initializer_list<int>>();
+      cfg.cpu_affinities = d["cpu_affinities"].cast<std::vector<int>>();
     }
 
     return cfg;
@@ -61,7 +61,7 @@ namespace {
   sbio::MPIExecution::Config parse_mpi_config(const py::dict& d) {
     sbio::MPIExecution::Config cfg;
     if (d.contains("active_ranks")) {
-      cfg.active_ranks = d["active_ranks"].cast<std::initializer_list<int>>();
+      cfg.active_ranks = d["active_ranks"].cast<std::vector<int>>();
     }
 
     if (d.contains("main_rank")) {
@@ -81,11 +81,11 @@ namespace {
     }
 
     if (d.contains("cpu_affinities")) {
-      cfg.cpu_affinities = d["cpu_affinities"].cast<std::initializer_list<int>>();
+      cfg.cpu_affinities = d["cpu_affinities"].cast<std::vector<int>>();
     }
 
     if (d.contains("active_ranks")) {
-      cfg.active_ranks = d["active_ranks"].cast<std::initializer_list<int>>();
+      cfg.active_ranks = d["active_ranks"].cast<std::vector<int>>();
     }
 
     if (d.contains("main_rank")) {

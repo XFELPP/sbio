@@ -39,6 +39,7 @@
 #include <memory>
 #include <mutex>
 #include <type_traits>
+#include <vector>
 
 namespace sbio {
   /**
@@ -63,7 +64,7 @@ namespace sbio {
 
     struct Config {
       std::size_t num_threads { 0 };
-      std::initializer_list<int> cpu_affinities {};
+      std::vector<int> cpu_affinities {};
     };
 
     static constexpr std::bitset<

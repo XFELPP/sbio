@@ -27,7 +27,8 @@
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
-#include "ncarray/ncarrays.hh"
+#include <ncarray/ncarrays.hh>
+#include <ncarray/soarrays.hh>
 
 #ifdef _WIN32
 #include <BaseTsd.h>
@@ -97,7 +98,7 @@ namespace sbio {
     std::size_t rank { shape.size() };
     ncarray::DType dtype { to_ncarray_dtype(res.dtype) };
 
-    ssize_t cur { ncarray::itemsize(dtype) };
+    ssize_t cur { static_cast<ssize_t>(ncarray::itemsize(dtype)) };
     std::vector<ssize_t> strides(rank, cur); // Axis (rank - 1) has stride itemsize
     int first_data { 1 };
     if (batch_cnt > 1) {
@@ -191,7 +192,7 @@ namespace sbio {
     std::size_t rank { shape.size() };
     ncarray::DType dtype { to_ncarray_dtype(res.dtype) };
 
-    ssize_t cur { ncarray::itemsize(dtype) };
+    ssize_t cur { static_cast<ssize_t>(ncarray::itemsize(dtype)) };
     std::vector<ssize_t> strides(rank, cur); // Axis (rank - 1) has stride itemsize
     int first_data { 1 };
     if (batch_cnt > 1) {

@@ -204,6 +204,7 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   using MPIThreadedExec = sbio::MPIThreadedExecution;
 
   py::classh<MPICfg>(exec_module, "MPIExecutionConfig")
+    .def(py::init<>())
     .def("communicator", [](MPICfg& self, int comm_f) {
       MPI_Comm comm = MPI_Comm_f2c(comm_f);
       self.communicator = comm;
@@ -216,6 +217,7 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   bind_epolicy_functions<MPIExec>(mpiexec_cls);
 
   py::classh<MPIThreadedCfg>(exec_module, "MPIThreadedExecutionConfig")
+    .def(py::init<>())
     .def("communicator", [](MPIThreadedCfg& self, int comm_f) {
       MPI_Comm comm = MPI_Comm_f2c(comm_f);
       self.communicator = comm;
@@ -236,12 +238,14 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   using ThreadedCfg = sbio::ThreadedExecution::Config;
   using ThreadedExec = sbio::ThreadedExecution;
 
-  py::classh<SerialCfg>(exec_module, "SerialExecutionConfig");
+  py::classh<SerialCfg>(exec_module, "SerialExecutionConfig")
+    .def(py::init<>());
 
   auto serialexec_cls = py::classh<SerialExec>(exec_module, "SerialExecution");
   bind_epolicy_functions<SerialExec>(serialexec_cls);
 
   py::classh<ThreadedCfg>(exec_module, "ThreadedExecutionConfig")
+    .def(py::init<>())
     .def_readwrite("num_threads", &ThreadedCfg::num_threads)
     .def_readwrite("cpu_affinities", &ThreadedCfg::cpu_affinities);
 

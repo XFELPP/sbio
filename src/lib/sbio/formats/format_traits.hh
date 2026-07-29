@@ -312,7 +312,7 @@ namespace sbio {
    *                                           SegmentRef* ref_out,
    *                                           std::size_t max_out,
    *                                           DataBrokerType* broker,
-   *                                           char* dettype = nullptr,
+   *                                           char* grouptype = nullptr,
    *                                           DataAccessPtn ptn = DataAccessPtn::L1Accept);
    *
    *   // CanIndexStreams  [[ OPTIONAL ]]

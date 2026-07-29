@@ -38,6 +38,7 @@
 #include <atomic>
 #include <bitset>
 #include <cstddef>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <type_traits>
@@ -80,12 +81,12 @@ namespace sbio {
 
     struct Config {
       MPI_Comm communicator { MPI_COMM_WORLD };
-      std::initializer_list<int> active_ranks {};
+      std::vector<int> active_ranks {};
       int main_rank { 0 };
       bool main_rank_loops { true };
 
       std::size_t num_threads { 0 };
-      std::initializer_list<int> cpu_affinities {};
+      std::vector<int> cpu_affinities {};
     };
 
     static constexpr std::bitset<

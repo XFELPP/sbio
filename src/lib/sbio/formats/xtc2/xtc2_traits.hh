@@ -95,7 +95,7 @@ namespace sbio {
     struct DataSourceParameters {
 #ifndef __CUDA_ARCH__
       DataSourceParameters(const std::string& exp, unsigned run_) {
-        safe_strncpy(experiment, exp.c_str(), exp.size());
+        safe_strncpy(experiment, exp.c_str(), exp.size() + 1);
         run = run_;
       }
 #endif
@@ -465,7 +465,7 @@ namespace sbio {
         storage.template release<DataRole, 0>(bd_buf, status);
         return status;
       } else {
-        XTC2::TransitionId transition_id;
+        XTC2::TransitionId transition_id { XTC2::TransitionId::Unused_11 };
         if (ptn == DataAccessPtn::SlowUpdate) {
           transition_id = XTC2::TransitionId::SlowUpdate;
         } else if (ptn == DataAccessPtn::BeginStep) {
@@ -666,7 +666,7 @@ namespace sbio {
                                                  DataAccessPtn ptn,
                                                  std::size_t batch_idx = 0) {
       DataRequest corrected_req { req };
-      XTC2::TransitionId target_service;
+      XTC2::TransitionId target_service { XTC2::TransitionId::L1Accept };
       void* bd_buf { nullptr };
       XTC2::Dgram* dg { nullptr };
       if (ptn == DataAccessPtn::L1Accept) {

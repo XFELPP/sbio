@@ -73,7 +73,7 @@ namespace sbio {
 
     struct Config {
       MPI_Comm communicator { MPI_COMM_WORLD };
-      std::initializer_list<int> active_ranks {};
+      std::vector<int> active_ranks {};
       int main_rank { 0 };
       bool main_rank_loops { true };
     };
