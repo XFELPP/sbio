@@ -17,6 +17,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "pysbio/binding_builders.hh"
+
 #include "sbio/core/broker.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
@@ -36,23 +38,6 @@
 
 namespace py = pybind11;
 
-namespace {
-  template <typename BrokerT, typename PyBroker>
-  void bind_broker_functions(PyBroker& broker_cls) {
-    broker_cls.def(py::init<>())
-      .def("prepare", &BrokerT::prepare)
-      .def("index_stream", &BrokerT::index_stream)
-      .def("capacity", &BrokerT::capacity)
-      .def("metadata", [](const BrokerT& self) {
-        return self.metadata();
-      })
-      .def("set_metadata", &BrokerT::set_metadata)
-      .def("fetch_step", &BrokerT::fetch_step)
-      .def("fetch_steps", &BrokerT::fetch_steps)
-      .def("get_data_in_buffer", &BrokerT::get_data_in_buffer);
-  }
-} // anonymous namespace
-
 PYBIND11_MODULE(pybrokers, broker_module, py::mod_gil_not_used()) {
   broker_module.doc() = "sbio Python bindings for Stream Brokers.";
 
@@ -71,11 +56,11 @@ PYBIND11_MODULE(pybrokers, broker_module, py::mod_gil_not_used()) {
 
   auto serial_xtc1 =
     py::classh<XTC1SerialBroker>(broker_module, "XTC1SerialStreamBroker");
-  bind_broker_functions<XTC1SerialBroker>(serial_xtc1);
+  pysbio::impl::bind_broker_functions<XTC1SerialBroker>(serial_xtc1);
 
   auto threaded_xtc1 =
     py::classh<XTC1ThreadedBroker>(broker_module, "XTC1ThreadedStreamBroker");
-  bind_broker_functions<XTC1ThreadedBroker>(threaded_xtc1);
+  pysbio::impl::bind_broker_functions<XTC1ThreadedBroker>(threaded_xtc1);
 
 #ifdef SBIO_HAS_MPI
   using XTC1MPIBroker = sbio::StreamBroker<
@@ -91,11 +76,11 @@ PYBIND11_MODULE(pybrokers, broker_module, py::mod_gil_not_used()) {
   >;
 
   auto mpi_xtc1 = py::classh<XTC1MPIBroker>(broker_module, "XTC1MPIStreamBroker");
-  bind_broker_functions<XTC1MPIBroker>(mpi_xtc1);
+  pysbio::impl::bind_broker_functions<XTC1MPIBroker>(mpi_xtc1);
 
   auto mpi_threaded_xtc1 =
     py::classh<XTC1ThreadedMPIBroker>(broker_module, "XTC1ThreadedMPIStreamBroker");
-  bind_broker_functions<XTC1ThreadedMPIBroker>(mpi_threaded_xtc1);
+  pysbio::impl::bind_broker_functions<XTC1ThreadedMPIBroker>(mpi_threaded_xtc1);
 
 #endif
 #endif
@@ -115,11 +100,11 @@ PYBIND11_MODULE(pybrokers, broker_module, py::mod_gil_not_used()) {
 
   auto serial_xtc2 =
     py::classh<XTC2SerialBroker>(broker_module, "XTC2SerialStreamBroker");
-  bind_broker_functions<XTC2SerialBroker>(serial_xtc2);
+  pysbio::impl::bind_broker_functions<XTC2SerialBroker>(serial_xtc2);
 
   auto threaded_xtc2 =
     py::classh<XTC2ThreadedBroker>(broker_module, "XTC2ThreadedStreamBroker");
-  bind_broker_functions<XTC2ThreadedBroker>(threaded_xtc2);
+  pysbio::impl::bind_broker_functions<XTC2ThreadedBroker>(threaded_xtc2);
 
 #ifdef SBIO_HAS_MPI
   using XTC2MPIBroker = sbio::StreamBroker<
@@ -135,11 +120,11 @@ PYBIND11_MODULE(pybrokers, broker_module, py::mod_gil_not_used()) {
   >;
 
   auto mpi_xtc2 = py::classh<XTC2MPIBroker>(broker_module, "XTC2MPIStreamBroker");
-  bind_broker_functions<XTC2MPIBroker>(mpi_xtc2);
+  pysbio::impl::bind_broker_functions<XTC2MPIBroker>(mpi_xtc2);
 
   auto mpi_threaded_xtc2 =
     py::classh<XTC2ThreadedMPIBroker>(broker_module, "XTC2ThreadedMPIStreamBroker");
-  bind_broker_functions<XTC2ThreadedMPIBroker>(mpi_threaded_xtc2);
+  pysbio::impl::bind_broker_functions<XTC2ThreadedMPIBroker>(mpi_threaded_xtc2);
 
 #endif
 #endif

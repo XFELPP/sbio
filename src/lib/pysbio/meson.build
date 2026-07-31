@@ -21,6 +21,7 @@ if build_python_opt
 endif # build_python_opt
 
 installed_py_bindings_headers = [
+    'binding_builders.hh',
     'pybroker_group.hh',
     'pydatasource.hh',
     'utilities.hh',
