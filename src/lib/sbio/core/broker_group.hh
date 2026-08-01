@@ -23,6 +23,7 @@
 #include "sbio/core/broker.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/core/sync.hh"
 #include "sbio/core/utility.hh"
 #include "sbio/formats/format_traits.hh"
@@ -37,23 +38,112 @@
 #include <utility>
 
 namespace sbio {
+  /**
+   * The logical grouping of StreamBrokers which should be queried together.
+   *
+   * While the StreamBroker represents the smallest *logical* unit that makes
+   * sense to query data for, the BrokerGroup represents the combination of
+   * various StreamBrokers. Frequently, it makes more sense at higher levels of
+   * abstraction to consider a group of StreamBrokers together as a single unit.
+   * For example, each StreamBroker may be managing only a portion of a larger
+   * data construct (a part of an image, e.g.). The BrokerGroup then provides
+   * a single interface to query all logically related StreamBrokers simulatneously.
+   * Note that a StreamBroker may belong to multiple BrokerGroups.
+   *
+   * @tparam BrokerType The type of the underlying StreamBroker in the group.
+   * @tparam FTraits The data format being read.
+   * @tparam MaxSegments The maximum number of members in the group.
+   */
   template <
     IsStreamBroker BrokerType,
-    FormatTraits<typename BrokerType::IOType, typename BrokerType::ExecutionPolicy> FTraits,
+    FormatTraits<
+      typename BrokerType::IOPolicy, typename BrokerType::ExecutionPolicy
+    > FTraits,
     std::size_t MaxSegments = 128
   >
   class BrokerGroup {
   public:
-    using EPolicy = typename BrokerType::ExecutionPolicy;
-    using PtrTableRequirements =
-      TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
-    using PtrStorageT = Storage<PtrTableRequirements, EPolicy>;
+    /**
+     * The type of the IO strategy being used.
+     */
+    using IOPolicy = typename BrokerType::IOPolicy;
+    /**
+     * The Execution policy type.
+     */
+    using ExecutionPolicy = typename BrokerType::ExecutionPolicy;
+    /**
+     * The type of data being read.
+     */
+    using DataFormat = FTraits;
+
+    /**
+     * The type of Stream: I.e., the IO strategy and data format being read.
+     */
+    using StreamType = Stream<IOPolicy, FTraits>;
+
+    /**
+     * The type of the StreamBroker's Storage.
+     */
+    using SBStorageType = Storage<
+      typename FTraits::BrokerBufferRequirements,
+      ExecutionPolicy
+    >;
+
+    /**
+     * The Execution policy configuration object type.
+     *
+     * `epolicy_config` objects configure the global behaviour of the Execution policy
+     * being used. The Execution policy must be configured before any Streams are
+     * opened as it controls all aspects of IO down to the allocation of Storage.
+     */
+    using EPolicyConfig = typename ExecutionPolicy::Config;
+    /**
+     * The individual Stream configuration object type.
+     *
+     * `stream_config` objects are used to set up each individual Stream so that
+     * it can connect and read from its individual data.
+     */
+    using StreamConfig = typename FTraits::StreamParameters;
+    /**
+     * The DataSource configuration object type.
+     *
+     * `ds_config` objects are used for initial discovery and connection of the
+     * full set of Streams.
+     */
+    using DSConfig = typename FTraits::DataSourceParameters;
+
+    /**
+     * The type of state tracking object for the data format's Stream.
+     */
+    using StreamState = typename FTraits::DiscoveryState;
+    /**
+     * The type of the general metadata object for the data format's Stream.
+     */
+    using StreamMetadata = typename FTraits::MetadataInventory;
+
+    /**
+     * The type of the enumerator used to specify access patterns used for the format.
+     */
     using DataAccessPtn = typename FTraits::DataAccessPtn;
-    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type of a request object used to query for data.
+     */
     using DataRequest = typename FTraits::DataRequest;
+    /**
+     * The type of a result object received as a response when querying for data.
+     */
+    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type used to request a specific step from the Stream.
+     *
+     * This type is required and guaranteed to be convertible std::size_t; however,
+     * different data format's may use different underlying types.
+     */
     using StepIdxType = typename FTraits::StepIdxType;
 
-    using BrokerGroupFTraits = FTraits;
+    using PtrTableRequirements =
+      TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
+    using PtrStorageType = Storage<PtrTableRequirements, ExecutionPolicy>;
 
     /**
      * A reference to a specific piece of data, a numerical identifier, and pointer to its broker.
@@ -116,9 +206,9 @@ namespace sbio {
         max_batch_count = FTraits::max_batch_count(m_segments[0].broker->config());
       }
 
-      using IOType = typename BrokerType::IOType;
-      m_ptr_storage = EPolicy::template allocate_group_storage<IOType, FTraits>(m_num_segments,
-                                                                                max_batch_count);
+      m_ptr_storage =
+        ExecutionPolicy::template allocate_group_storage<IOPolicy, FTraits>(m_num_segments,
+                                                                            max_batch_count);
     }
 
     const char* group_name() const { return m_name; }
@@ -275,11 +365,11 @@ namespace sbio {
         num_segments = 1;
       }
 
-      EPolicy::template get_data<FTraits>(step_idx,
-                                          read_cb,
-                                          num_brokers,
-                                          get_data_cb,
-                                          num_segments);
+      ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                  read_cb,
+                                                  num_brokers,
+                                                  get_data_cb,
+                                                  num_segments);
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
 
@@ -369,11 +459,11 @@ namespace sbio {
         num_segments = 1;
       }
 
-      EPolicy::template get_data<FTraits>(step_idx,
-                                          read_cb,
-                                          num_brokers,
-                                          get_data_cb,
-                                          num_segments);
+      ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                  read_cb,
+                                                  num_brokers,
+                                                  get_data_cb,
+                                                  num_segments);
 
       return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res);
     }
@@ -439,11 +529,11 @@ namespace sbio {
         num_segments = 1;
       }
 
-      EPolicy::template get_data_steps<FTraits>(steps,
-                                                read_cb,
-                                                num_brokers,
-                                                get_data_cb,
-                                                num_segments);
+      ExecutionPolicy::template get_data_steps<FTraits>(steps,
+                                                        read_cb,
+                                                        num_brokers,
+                                                        get_data_cb,
+                                                        num_segments);
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
 
@@ -506,11 +596,11 @@ namespace sbio {
         num_segments = 1;
       }
 
-      EPolicy::template get_data_steps<FTraits>(steps,
-                                                read_cb,
-                                                num_brokers,
-                                                get_data_cb,
-                                                num_segments);
+      ExecutionPolicy::template get_data_steps<FTraits>(steps,
+                                                        read_cb,
+                                                        num_brokers,
+                                                        get_data_cb,
+                                                        num_segments);
 
       return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res, count);
     }
@@ -528,7 +618,7 @@ namespace sbio {
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
 
-    mutable PtrStorageT m_ptr_storage;
+    mutable PtrStorageType m_ptr_storage;
   };
 } // namespace sbio
 

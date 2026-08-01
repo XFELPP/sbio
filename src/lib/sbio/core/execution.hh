@@ -36,6 +36,11 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
+  /**
+   * The set of parallelization methods that may be supported by Execution policies.
+   *
+   * A given policy may support one or more of the following parallelization strategies.
+   */
   enum class ParallelizationMethods : hd_std::uint8_t {
     THREADS       = 0, ///< Support for multi-threaded programs
     MPI           = 1, ///< Support for MPI programs
@@ -46,29 +51,26 @@ namespace sbio {
   };
 
   /**
-   * The execution model is the central control point for the management of Broker
-   * life-cycle (transitioning through state machines), as well as coordination of
-   * higher level abstractions.
+   * The Execution policy is the central point for the management of IO activity.
    *
-   * The model provides hooks that control the movement between various states, as
-   * well as providing the means to allocate storage solutions appropriate to the
-   * model, and the mechanisms to synchronize concurrently running instances.
+   * The policy is used to control the StreamBroker life-cycle (transitioning through
+   * state machines), as well as the coordination of higher level abstractions, like
+   * the `BrokerGroup` and `DataSource`.
    *
-   * The model provides control over Brokers, BrokerGroups, and DataSources.
+   * The policy has two overarching roles:
+   * 1. It builds open the state machine of the StreamBroker to control transitioning
+   *    between various states. This leads to the definition of "hooks" that are close
+   *    to one-to-one with the StreamBroker states, with some additional functionality
+   *    incorporated to address the higher-level abstractions.
+   * 2. Coupled with a Storage class the policy provides for synchronization when using
+   *    different parallelization strategies by defining a memory consistency model.
+   *    When using an Execution policy for the parallelization strategies it supports,
+   *    there is a guarantee that the data will be well syncrhonized and the program
+   *    will be well formed.
    *
-   * In general, the stages requiring management at the Broker level are:
-   * 1. Resource allocation
-   * 2. Connection
-   * 3. Metadata discovery
-   * 4. Indexing (if applicable) - to make traversal faster
-   * 5. Data streaming and retrieval
-   *
-   * The Execution defines a model that allows for abstracting the control of these
-   * stages out of the stream broker itself. It also provides hooks which can be used
-   * to synchronize resources before and after state transitions.
-   *
-   * The Execution model works in tandem with the base class for the broker. The latter
-   * ensures that the execution model gets called.
+   * For a simpler overview, to address the first role, we can consider that the policy
+   * defines hooks (in the form of static functions) to address the following state
+   * transitions of a StreamBroker:
    *
    * The execution model defines the following hooks for customization corresponding
    * to the broker stages above:
@@ -86,19 +88,6 @@ namespace sbio {
    * 5. For data access the policy defines 1 hook that controls whether the
    *    broker should proceed with retrieval (like stage 4 indexing above).
    *
-   * In addition to the above, the policy has two powerful functions:
-   * - pre_update
-   * - post_update
-   *
-   * These are used for resource synchronization immediately before and after
-   * a broker will touch any execution model managed memory. They can be used
-   * for synchronization when the policy is managing parallel processing units.
-   * E.g. for an MPI model, it may be used to implement fences and syncs on shared
-   * buffers across ranks.
-   *
-   * Note: Hooks are optional (with the exception of storage allocation). They are
-   * called via compile time constexpr checks - so a no-op is just a no-op.
-   *
    * At the level of the BrokerGroup, the model provides control mechanisms for:
    * 1. Allocation of BrokerGroup memory - principally, tables required for the
    *    management of the various Brokers under the umbrella of the Group.
@@ -106,12 +95,27 @@ namespace sbio {
    *    retrieval operations among potentially multiple brokers. A Detector may
    *    be gathering data together from multiple streams. This hook can control
    *    whether you read from all first, and then inspect for data, or proceed
-   *    in order reading and inspecting, as an example.
+   *    in order reading and inspecting, as an example. There is an equivalent
+   *    function for requesting batches of data.
    *
    * Finally, at the level of the DataSource, the following control points exist:
    * 1. The execution model can determine how a DataSource distributes
    *    event/step indexing among parallel resources. (In whatever unit makes sense
    *    for the file format).
+   *
+   * In addition to the above logical decisions, to address the second role, the policy
+   * has two main functions:
+   * - pre_update
+   * - post_update
+   *
+   * These are used for resource synchronization immediately before and after
+   * a broker will touch any execution model managed memory. They can be used
+   * for synchronization when the policy is managing parallel processing units.
+   * E.g. for an MPI model, it may be used to implement fences and syncs on shared
+   * buffers across ranks. These are also used in conjunction with the concept of the
+   * StorageView which may invoke these automatically.
+   *
+   * @tparam Derived The type of the sub-class Execution policy.
    */
   template <typename Derived>
   class Execution {
@@ -124,6 +128,9 @@ namespace sbio {
 
     struct DefaultConfig {};
 
+    /**
+     * The set of parallelization methods supported by the Execution policy.
+     */
     static constexpr hd_std::bitset<
       static_cast<hd_std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x0 };
@@ -162,11 +169,15 @@ namespace sbio {
     }
 
     /**
-     * The stage 2 hooks - provide the mechanism for metadata synchronization across
-     * the various parallel processors.
+     * An opportunity to provide explicit synchronization prior to metadata discovery.
+     *
+     * @tparam BrokerType The type of the StreamBroker being used.
+     * @tparam FTraits The data format type.
+     * @param[in] broker The StreamBroker being used.
+     * @param[in] inv The StreamBroker's metadata inventory.
      */
     template <class BrokerType, class FTraits>
-    requires FormatTraits<FTraits, typename BrokerType::IOType, Derived>
+    requires FormatTraits<FTraits, typename BrokerType::IOPolicy, Derived>
     SBIO_HD static void pre_discovery(BrokerType& broker,
                                       typename FTraits::MetadataInventory& inv) {
       if constexpr (requires {
@@ -176,8 +187,17 @@ namespace sbio {
       }
     }
 
+    /**
+     * An opportunity to provide explicit synchronization immediately after metadata discovery.
+     *
+     * @tparam BrokerType The type of the StreamBroker being used.
+     * @tparam FTraits The data format type.
+     * @param[in] broker The StreamBroker being used.
+     * @param[in] inv The StreamBroker's metadata inventory.
+     * @param[in] status The IOStatus result from the metadata discovery step.
+     */
     template <class BrokerType, class FTraits>
-    requires FormatTraits<FTraits, typename BrokerType::IOType, Derived>
+    requires FormatTraits<FTraits, typename BrokerType::IOPolicy, Derived>
     SBIO_HD static void on_discovery(BrokerType& broker,
                                      typename FTraits::MetadataInventory& inv,
                                      IOStatus status) {
@@ -189,8 +209,9 @@ namespace sbio {
     }
 
     /**
-     * The stage 3 hook - provide the decision making when doing bulk data processing.
-     * Each parallel processor needs to know what to process.
+     * Decide whether or not this StreamBroker should proceed to the indexing state.
+     *
+     * @returns Whether the StreamBroker should proceed to the indexing state.
      */
     SBIO_HD static bool should_index() {
       if constexpr (requires { Derived::should_index_impl(); }) {
@@ -200,6 +221,13 @@ namespace sbio {
       }
     }
 
+    /**
+     * Decide whether or not this StreamBroker should process this particular step.
+     *
+     * @tparam FTraits The data format type.
+     * @param[in] step_idx The step to make the decision about.
+     * @returns Whether the StreamBroker should process this step.
+     */
     template <class FTraits>
     SBIO_HD static bool should_process(typename FTraits::StepIdxType& step_idx) {
       if constexpr (requires { Derived::template should_process_impl<FTraits>(step_idx); }) {
@@ -210,19 +238,20 @@ namespace sbio {
     }
 
     /**
-     * The stage 4 hook - provide any necessary resource management after data
-     * fetches.
+     * An opportunity to provide explicit synchronization immediately after every step.
+     *
+     * @param[in] buffer The underlying buffer which was filled by the step.
      */
     SBIO_HD static void on_step(void* buffer) {
       Derived::on_step(buffer);
     }
-    /**
-     * Stages as yet to be named...
-     */
 
     /**
-     * pre_update: Hook called before a broker writes to a metadata/index buffer.
-     * In MPI, this implements the window acquisition (e.g., lock or fence).
+     * An opportunity to provide explicit synchronization before any Storage changes.
+     *
+     * @tparam Role The type of the buffer to be modified from the Storage.
+     * @tparam StorageT The final derived type of the complet StreamBroker Storage.
+     * @param[in] storage The StreamBroker's storage which will be modified.
      */
     template <class Role, class StorageT>
     SBIO_HD static void pre_update(StorageT& storage) {
@@ -232,8 +261,17 @@ namespace sbio {
     }
 
     /**
-     * post_update: Hook called after a broker finishes writing to a buffer.
-     * In MPI, this handles the flush and window release (e.g., unlock).
+     * An opportunity to provide explicit synchronization after any Storage changes.
+     *
+     * For example, a policy may release locks, flush data, synchronize Windows etc.
+     *
+     * @tparam Role The type of the buffer to be modified from the Storage.
+     * @tparam StorageT The final derived type of the complet StreamBroker Storage.
+     * @tparam SyncT The type of the sync_vars SyncGroup.
+     * @param[in] storage The StreamBroker's storage which will be modified.
+     * @param[in] sync_vars Additional variables from a StreamBroker which may need
+     *            synchronization.
+     * @param[in] status The IOStatus result from the preceeding update.
      */
     template <class Role, class StorageT, class SyncT>
     SBIO_HD static void post_update(StorageT& storage, SyncT&& sync_vars, IOStatus status) {
@@ -293,6 +331,29 @@ namespace sbio {
       }
     }
 
+    /**
+     * Run the data fetching and then querying of the filled buffers.
+     *
+     * If the Derived class has not defined an implementation, in this case, the default
+     * behaviour will be to run all the fetch callbacks to fill the buffers, and then
+     * if all succeeded run each data retrieval in order afterwards.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam FetchCBType The type for a callback to run on each IO fetch.
+     * @tparam GetCBType The type for a callback to run when inspecting each
+     *         fetched buffer.
+     * @param[in] step_idx The step to fetch data for.
+     * @param[in] unit_fetcher The callback used to perform an IO fetch for a single
+     *            StreamBroker.
+     * @param[in] num_fetches The total number of fetches to perform.
+     * @param[in] unit_get_data The callback used to read from a buffer after the
+     *            fetch has been performed. Note that a single StreamBroker may
+     *            end up being used multiple times via this callback if it must
+     *            read from the buffer in different places.
+     * @param[in] num_accesses The total number of calls to unit_get_data to perform.
+     * @returns The final IOStatus after having fetched all data and run the querying
+     *          callbacks afterwards.
+     */
     template <class FTraits, class FetchCBType, class GetCBType>
     SBIO_HD static IOStatus get_data(typename FTraits::StepIdxType step_idx,
                                      FetchCBType&& unit_fetcher,
@@ -331,6 +392,29 @@ namespace sbio {
       }
     }
 
+    /**
+     * Run the data fetching and then querying of the filled buffers, for a BATCh of steps.
+     *
+     * If the Derived class has not defined an implementation, in this case, the default
+     * behaviour will be to run all the fetch callbacks to fill the buffers, and then
+     * if all succeeded run each data retrieval in order afterwards.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam FetchCBType The type for a callback to run on each IO fetch.
+     * @tparam GetCBType The type for a callback to run when inspecting each
+     *         fetched buffer.
+     * @param[in] steps The batch of steps to fetch data for.
+     * @param[in] unit_fetcher The callback used to perform an IO fetch for a single
+     *            StreamBroker.
+     * @param[in] num_fetches The total number of fetches to perform.
+     * @param[in] unit_get_data The callback used to read from a buffer after the
+     *            fetch has been performed. Note that a single StreamBroker may
+     *            end up being used multiple times via this callback if it must
+     *            read from the buffer in different places.
+     * @param[in] num_accesses The total number of calls to unit_get_data to perform.
+     * @returns The final IOStatus after having fetched all data and run the querying
+     *          callbacks afterwards.
+     */
     template <class FTraits, class FetchCBType, class GetCBType>
     SBIO_HD static IOStatus get_data_steps(const hd_std::initializer_list<typename FTraits::StepIdxType>& steps,
                                            FetchCBType&& unit_fetcher,
@@ -383,6 +467,20 @@ namespace sbio {
 
     // --- DataSource level policies --- //
     // --------------------------------- //
+    /**
+     * Request the next step index to read data for.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IndexTrigger The type of the callback to be run on reaching the
+     *         current maximum capacity.
+     * @param[in] max_capacity The current max capacity that the StreamBroker has
+     *            before reindexing is required. For data formats that do not
+     *            support indexing, the max capacity will always be 1, and the
+     *            reindexing callback may be a noop.
+     * @param[in] trigger The callback to run to reindex upon reaching max_capacity,
+     *            if applicable.
+     * @returns The index of the next step to read data for.
+     */
     template <class FTraits, class IndexTrigger>
     SBIO_HD static typename FTraits::StepIdxType
     next(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {

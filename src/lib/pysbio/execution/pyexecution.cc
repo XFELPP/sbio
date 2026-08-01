@@ -17,6 +17,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "pysbio/execution/pyexecution.hh"
+
 #include "pysbio/formats/pyformat_traits.hh"
 
 #ifdef SBIO_HAS_MPI
@@ -36,6 +38,7 @@
 #include <mpi.h>
 #endif
 
+#include <pybind11/native_enum.h>
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
@@ -196,6 +199,17 @@ namespace {
 
 PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   exec_module.doc() = "sbio Python bindings for Execution policies.";
+
+  py::native_enum<pysbio::ExecutionPolicy>(exec_module,
+                                           "ExecutionPolicy",
+                                           "enum.Enum",
+                                           "Enumerators for selecting Execution policies.")
+    .value("Serial", pysbio::ExecutionPolicy::Serial)
+    .value("Threaded", pysbio::ExecutionPolicy::Threaded)
+    .value("MPI", pysbio::ExecutionPolicy::MPI)
+    .value("MPIThreaded", pysbio::ExecutionPolicy::MPIThreaded)
+    .export_values()
+    .finalize();
 
 #ifdef SBIO_HAS_MPI
   using MPICfg = sbio::MPIExecution::Config;

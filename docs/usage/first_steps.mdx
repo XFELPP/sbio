@@ -1,0 +1,257 @@
+---
+title: Getting Started
+description: "Stream Broker IO: sbio"
+sidebar:
+  order: 2
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+`sbio`'s modular and composable APIs afford uses a lot of power and flexlibility. It can, however, be a bit difficult to decide at first what approach to use, given the large number of choices available. To that end, the APIs are designed in a tiered fashion. Both in C++ and Python, a more limited set of initial constructs can be used before needing to dive into the full details and intricacies of all the underlying architecture. Limited in this case refers only to restrictions on the customizability - using the strategies below are no less powerful than building from scratch with the basic building blocks. In many cases, these will cover all the necessities.
+
+To start out, the main objects to be aware of are the `DataSource` and the `BrokerGroup`. The `DataSource` can be used to find all relevant data streams. It can then create `BrokerGroup`s which are the logical units of interest for accessing data at a high level. Data is accessed by index, referred to as a `step`. The `DataSource` can be queried to generate the next **step index** to use. Passing this to a `BrokerGroup`, along with a request for a specific data field will access the data for that field, and step. Beyond this, there are more low-level objects, but with these two, you can likely cover 90% of use cases.
+
+## `C++`
+
+In C++, the `DataSource` is created with template parameters for selecting an IO strategy, Execution policy (which determines how to parallelize) and the data format to read.
+
+Each data format has a number of configuration paramters - this varies depending on the specific format. In general, though, the simplest workflow could be:
+
+<Steps>
+
+1. Create a `DataSource`.
+2. Setup the configuration objects for the `DataSource`.
+3. Run the load routine.
+4. Create a `BrokerGroup`
+5. Iterate until receiving an `ExhaustedSentinel`.
+
+</Steps>
+
+
+```cpp
+#include <sbio/core/datasource.hh>          // Will create a DataSource
+#include <sbio/execution/mpi.hh>            // Will use an MPI execution policy
+#include <sbio/formats/xtc2/xtc2_traits.hh> // Will read XTC2 data
+#include <sbio/io/posix.hh>                 // Will read using POSIX APIs to start
+
+// For simplicity, we will expose the `sbio` namespace. Nearly everything of
+// interest is at the top-level `sbio::` namespace.
+
+using namespace sbio;
+
+// DataSource to read XTC2 using POSIX APIs that is MPI-aware
+using MPIDataSource = DataSource<
+  SyncPOSIXIO,
+  MPIExecution,
+  XTC2Traits
+>;
+
+
+// ---- Setup configuration for the IO DataSource ---- //
+
+MPIDataSource ds;
+
+// Setup options for the reading
+XTC2Traits::StreamParameters base_cfg;
+base_cfg.events_per_read = 43200;
+base_cfg.max_dgram_size = 0x4000000;
+
+std::string experiment { "abcd1234" };
+unsigned run_num { 99 };
+
+bool load_successful = ds.load_run(base_cfg, experiment, run_num);
+
+if (load_successful) {
+  // Can continue on now!
+  auto status = ds.discover_metadata();
+  if (status != IOStatus::Success) {
+    // Something went wrong!
+  }
+  auto grp = ds.get_stream_group("group_name"); // For XTC2 this would be a "detector" name
+
+  // Now can iterate.
+  // Note, there are many other ways to construct htis. The DataSource also has
+  // iterators, etc.
+  for (auto step = ds.next(); step != XTC2Traits::ExhaustedSentinel; step = ds.next()) {
+    auto data = grp.get_data(step, "alg", "field"); // E.g.: get_data(step, "raw", "raw");
+  }
+}
+```
+
+There is also the ability to pass in callbacks to be run automatically for each data fetch. NOTE: A single `BrokerGroup` may manage multiple "segment" references. I.e., the callback may run multiple times for each `step`! This should be kept in mind when designing one.
+
+```cpp
+  // Iterating with a callback
+  using DataResult = typename MPIDataSource::DataResult; // Refer to the type aliases docs for more info
+  for (auto step = ds.next(); step != XTC2Traits::ExhaustedSentinel; step = ds.next()) {
+    auto cb = [&](DataResult res) {
+      if (step % 50 == 0) {
+        std::cout << "Processing step: " << step << std::endl;
+      }
+    };
+
+    auto data = grp.get_data(step, cb, "alg", "field"); // E.g.: get_data(step, "raw", "raw");
+  }
+```
+
+## Python
+
+For the Python side, the APIs have been split into 3 tiers from simplest to most configurable.
+
+<Steps>
+
+1. **Tier 1**: A single variant-based wrapper for the `DataSource` and `BrokerGroup`. Configuration is done via keyword arguments passed to the `DataSource` initializer to select which of the template variants is desired.
+2. **Tier 2**: Bindings are provided for each of the concrete specializations that are supported. This API most closely mirrors the C++ API example above. You instantitate a specific fully-templated `DataSource` and go from there.
+3. **Tier 3**: A trampoline class is provided for overriding the `Execution` policy with a sub-class and building your own functionality at the Python layer.
+
+</Steps>
+
+### Tier 1
+
+From the top level of the `sbio` package, a `DataSource` object can be used to access the basic variant-based bindings. The `DataSource` takes a number of keyword arguments that are used to select which of the concrete specializations is desired (i.e., which of the template parameter configurations you would use, had it been C++).
+
+The bridge to the template parameters in C++ is provided by a small set of enumerator classes on the Python side:
+
+<Steps>
+
+1. `sbio.FTraits`: Selects which data format to use.
+2. `sbio.ExecutionPolicy`: Selects which Execution policy to use.
+3. `sbio.IOPolicy`: Selects which IO policy to use (POSIX, cuFile, etc.)
+
+</Steps>
+
+These are provided as arguments to the initializer to select the correct specialization. From there, all objects created from the `DataSource` itself are fully detemrined, so no further specification is required.
+
+```py
+import sbio
+
+
+exp: str = "abcd1234"
+run_num: int = 99
+ds: sbio.DataSource = sbio.DataSource(
+    ds_type=ds_type,
+    exp=exp,
+    run=run_num,
+    events_per_read=43200,
+    max_dgram_size=0x4000000,
+    # These are defaults
+    # data_fmt=sbio.FTraits.XTC2,
+    # epolicy=sbio.ExecutionPolicy.MPI,
+    # exec_cfg={},
+    # io_policy=sbio.IOPolicy.SyncPOSIXIO,
+)
+
+grp: sbio.BrokerGroupWrapper = ds.group("group_name")
+
+for nstep, step in enumerate(ds.steps()):
+    data = grp.get_data(step, "alg", "field")
+    # For XTC2 can also use:
+    # grp.alg.field(step)
+```
+
+### Tier 2
+
+The tier 2 API looks very similar to the C++ example.
+
+<Tabs>
+  <TabItem label="Python" icon="seti:python">
+  ```py
+  import sbio
+
+  ds: sbio.datasources.pydatasources.XTC2MPIDataSource = sbio.datasources.XTC2MPIDataSource()
+
+  # Setup options for the reading
+  base_cfg = sbio.formats.XTC2StreamParameters()
+  base_cfg.events_per_read = 43200
+  base_cfg.max_dgram_size = 0x4000000;
+
+  exp: str = "abcd1234"
+  run_num: int = 99
+
+  load_successful: bool = ds.load_run(params, exp, run_num)
+  if load_successful:
+      status: sbio.IOStatus = ds.discover_metadata()
+      if status != sbio.IOStatus.Success:
+          # Something went wrong!
+          ...
+
+      grp: "XTC2MPIBrokerGroup" = ds.get_stream_group("group_name") # For XTC2 this would be a "detector" name
+
+      # Now can iterate - many ways to set this up
+      while True:
+          step: int = ds.next()
+          data = grp.get_data(step, "alg", "field") # E.g.: get_data(step, "raw", "raw")
+  </TabItem>
+
+  <TabItem label="C++" icon="seti:cpp">
+  ```cpp
+  using MPIDataSource = DataSource<
+    SyncPOSIXIO,
+    MPIExecution,
+    XTC2Traits
+  >;
+
+  MPIDataSource ds;
+
+  // Setup options for the reading
+  XTC2Traits::StreamParameters base_cfg;
+  base_cfg.events_per_read = 43200;
+  base_cfg.max_dgram_size = 0x4000000;
+
+  std::string experiment { "abcd1234" };
+  unsigned run_num { 99 };
+
+  bool load_successful = ds.load_run(base_cfg, experiment, run_num);
+
+  if (load_successful) {
+    // Can continue on now!
+    auto status = ds.discover_metadata();
+    if (status != IOStatus::Success) {
+      // Something went wrong!
+    }
+    auto grp = ds.get_stream_group("group_name"); // For XTC2 this would be a "detector" name
+
+    // Now can iterate.
+    // Note, there are many other ways to construct htis. The DataSource also has
+    // iterators, etc.
+    for (auto step = ds.next(); step != XTC2Traits::ExhaustedSentinel; step = ds.next()) {
+      auto data = grp.get_data(step, "alg", "field"); // E.g.: get_data(step, "raw", "raw");
+    }
+  }
+  ```
+  </TabItem>
+</Tabs>
+
+Just like with C++, it is possible to provide a callback to be run on each step:
+
+```py
+    def per_panel_callback(res):
+        print("IN CALLBACK")
+        return res
+
+      # Now can iterate - many ways to set this up
+      while True:
+          step: int = ds.next()
+          data = grp.get_data(step, per_panel_callback, "alg", "field")
+```
+
+### Tier 3
+
+Finally, it is possible to extend the current implementations with functionality developed on the Python side.
+
+Within the `sbio.core._core` module, a number of trampoline classes have been constructed from the existing C++ Execution policies. These allow overriding the implementations of the major Execution policy hooks (`should_index`, `should_process`, `next`, `pre_update`, `post_update`, `get_data`, etc.). E.g.
+
+```py
+
+class MyMPIExecutionPolicy(sbio.core._core.PyMPIExecution):
+    def next(cls): ...
+
+```
+
+A full description of how to implement the overrides is beyond the scope of this brief introduction. The intent is just to highlight the possibility should it be needed.
+
+Since the Execution policy is used as a template parameter for the other objects in the sbio infrastructure, bindings are provided for all of these using the underlying class that implements the trampoline as the template paramter. The Execution policy must be implemented first and then instantiated. While the instantiation remains in scope, the rest of the objects can then be created and will use the overrides that have been added. If an override for a particular function is not provided, then the bindings class will fallback to the parent Execution policy's implementation.
+
+<Aside type="note" title="Overriding Other Classes">
+  Currently, only the Execution policy is overrdiable. Furthermore, it must be derived from one of the existing Execution policies to start with. This is due to the way the storage allocation machinery works - providing a mechanism to allocate the `Storage` classes from Python in a robust way is quite challenging. Likewise, overriding the other classes (e.g., the data format specifications, or the StreamBrokers) has limited benefit versus just implementing it in Python from the start.
+</Aside>

@@ -24,6 +24,8 @@
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/storage.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/util/string.hh"
 
@@ -48,6 +50,24 @@
 namespace fs = std::filesystem;
 
 namespace sbio {
+  /**
+   * The highest-level abstraction for defining the set of StreamBrokers that will be used.
+   *
+   * The DataSource is used to find and collect together the group of all StreamBrokers
+   * that will be relevant for the IO of a specific dataset. The DataSource can be used
+   * to spawn BrokerGroups to organize the StreamBrokers into logical groupings, and can
+   * be used to generate indices to distribute among said groups to order the way in which
+   * data is fetched and queried.
+   *
+   * @tparam IO The type of the IO strategy being used.
+   * @tparam EPolicy The Execution policy to use for reading data.
+   * @tparam FTraits The data format to read.
+   * @tparam BrokerType The type of the StreamBroker being used. In general, the
+   *         StreamBroker does not need to be subclassed, and can be instantiated
+   *         directly. In that case, this template parameter can be left on its
+   *         default value. Only if using a StreamBroker subclass does it need to be
+   *         changed.
+   */
   template <
     IOTraits IO,
     class EPolicy,
@@ -57,21 +77,115 @@ namespace sbio {
   >
   class DataSource {
   public:
-    using DSTraits = FTraits;
-    using Config = typename FTraits::StreamParameters;
+    /**
+     * The type of the IO strategy being used.
+     */
+    using IOPolicy = IO;
+    /**
+     * The Execution policy type.
+     */
+    using ExecutionPolicy = EPolicy;
+    /**
+     * The type of data being read.
+     */
+    using DataFormat = FTraits;
+
+    /**
+     * The type of Stream: I.e., the IO strategy and data format being read.
+     */
+    using StreamType = Stream<IO, FTraits>;
+
+    /**
+     * The type of the StreamBroker's Storage.
+     */
+    using SBStorageType = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
+
+    /**
+     * The Execution policy configuration object type.
+     *
+     * `epolicy_config` objects configure the global behaviour of the Execution policy
+     * being used. The Execution policy must be configured before any Streams are
+     * opened as it controls all aspects of IO down to the allocation of Storage.
+     */
     using EPolicyConfig = typename EPolicy::Config;
+    /**
+     * The individual Stream configuration object type.
+     *
+     * `stream_config` objects are used to set up each individual Stream so that
+     * it can connect and read from its individual data.
+     */
+    using StreamConfig = typename FTraits::StreamParameters;
+    /**
+     * The DataSource configuration object type.
+     *
+     * `ds_config` objects are used for initial discovery and connection of the
+     * full set of Streams.
+     */
+    using DSConfig = typename FTraits::DataSourceParameters;
+
+    /**
+     * The type of state tracking object for the data format's Stream.
+     */
+    using StreamState = typename FTraits::DiscoveryState;
+    /**
+     * The type of the general metadata object for the data format's Stream.
+     */
+    using StreamMetadata = typename FTraits::MetadataInventory;
+
+    /**
+     * The type of the enumerator used to specify access patterns used for the format.
+     */
+    using DataAccessPtn = typename FTraits::DataAccessPtn;
+    /**
+     * The type of a request object used to query for data.
+     */
+    using DataRequest = typename FTraits::DataRequest;
+    /**
+     * The type of a result object received as a response when querying for data.
+     */
+    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type used to request a specific step from the Stream.
+     *
+     * This type is required and guaranteed to be convertible std::size_t; however,
+     * different data format's may use different underlying types.
+     */
+    using StepIdxType = typename FTraits::StepIdxType;
 
     DataSource() = default;
 
+    /**
+     * Construct a DataSource and initialize the Execution policy.
+     *
+     * @param[in] ecfg The configuration for the Execution policy.
+     */
     explicit DataSource(const EPolicyConfig& ecfg) {
       configure_execution_policy(ecfg);
     }
 
+    /**
+     * Configure the Execution policy.
+     *
+     * The Execution policy must be configured before Streams are opened and read from
+     * as the policy controls the allocation of the buffers that will be read into.
+     *
+     * @param[in] ecfg The configuration for the Execution policy.
+     */
     inline void configure_execution_policy(const EPolicyConfig& ecfg) {
       EPolicy::configure(ecfg);
     }
 
-    SBIO_HD inline bool add_data_stream(const Config& cfg) {
+    /**
+     * Add a new StreamBroker to the set tracked by the DataSource.
+     *
+     * @param[in] cfg The base configuration for the StreamBroker's Stream(s).
+     *            This configuration may be modified slightly for the parameters
+     *            that are required by the Stream, but do not make sense to be
+     *            set directly by the user.
+     * @returns Whether the incorporation of the StreamBroker, and subsequent
+     *          configuration was successful.
+     */
+    SBIO_HD inline bool add_data_stream(const StreamConfig& cfg) {
       if (m_num_data_streams >= MaxDataStreams) {
         return false;
       }
@@ -87,13 +201,21 @@ namespace sbio {
      * all streams for a given experiment and run number.
      */
     template <typename... Args>
-    bool load_run(Config base_cfg, Args&&... args) {
+    bool load_run(StreamConfig base_cfg, Args&&... args) {
       auto ds_params = typename FTraits::DataSourceParameters(std::forward<Args>(args)...);
 
       return FTraits::make_stream_brokers(*this, ds_params, base_cfg);
     }
 
-    // TODO: RECONSIDER WHERE INDEX_STREAM IS CALLED!!
+    /**
+     * After finding StreamBrokers and opening connections, determine available metadata.
+     *
+     * The metadata discovery stage is crucial to be able to organize StreamBrokers into
+     * their logical BrokerGroups. The metadata informs the rest of the infrastructure
+     * what kind of data is available in the set of Streams beign read from.
+     *
+     * @returns The IOStatus result from performing metadata discovery.
+     */
     SBIO_HD inline IOStatus discover_metadata() {
       std::size_t steps_capacity { std::numeric_limits<std::size_t>::lowest() };
       for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
@@ -124,7 +246,17 @@ namespace sbio {
       return IOStatus::Success;
     }
 
-    SBIO_HD inline typename FTraits::StepIdxType next() {
+    /**
+     * Request the next index for a step to read data for.
+     *
+     * The step indices are used to request data for a specific step/event. In general,
+     * this corresponds to chronological ordering (i.e. a step is mappable to a time
+     * point); however, this is by no means a requirement.
+     *
+     * @returns The next step index to fetch and query data for, or the ExhaustedSentinel if
+     *          no more data is available.
+     */
+    SBIO_HD inline typename FTraits::StepIdxType next() const {
       using StepIdx = typename FTraits::StepIdxType;
 
       auto trigger_reindexing = [&] () {
@@ -163,6 +295,19 @@ namespace sbio {
       return EPolicy::template next<FTraits>(m_steps_capacity, trigger_reindexing);
     }
 
+    /**
+     * Construct a BrokerGroup by name from the set of StreamBrokers.
+     *
+     * @note The metadata discovery step MUST have been passed through for BrokerGroup
+     *       construction to work. A group cannot be formed until it is known what data
+     *       is available from the set of Streams.
+     *
+     * @tparam MaxSegments The maximum number of segments (components) that will be
+     *         allowed in the BrokerGroup.
+     * @returns The BrokerGroup of the given name. The success of the group formation
+     *          can be checked by inspecting the number of segments the returned
+     *          group has (0 indicating no group could be formed).
+     */
     template <std::size_t MaxSegments = 128>
     SBIO_HD inline BrokerGroup<BrokerType, FTraits, MaxSegments>
     get_stream_group(const char* name) {
@@ -263,13 +408,52 @@ namespace sbio {
       }
     }
 
+    /**
+     * The number of data Streams in the DataSource's set.
+     */
     SBIO_HD inline std::size_t num_data_streams() const { return m_num_data_streams; }
 
-    SBIO_HD inline const BrokerType* data_streams() const { return m_data_streams[0]; }
-    SBIO_HD inline BrokerType* data_streams() { return m_data_streams[0]; }
+    /**
+     * A pointer to the first StreamBroker of the set.
+     *
+     * @returns A pointer to the first StreamBroker of the set.
+     */
+    SBIO_HD inline const BrokerType* data_streams() const { return &m_data_streams[0]; }
+    /**
+     * A pointer to the first StreamBroker of the set.
+     *
+     * @returns A pointer to the first StreamBroker of the set.
+     */
+    SBIO_HD inline BrokerType* data_streams() { return &m_data_streams[0]; }
+    /**
+     * The requested StreamBroker.
+     *
+     * @note This function does not bounds check! Be sure to inspect the number of
+     *       data streams before indexing out of bounds!
+     *
+     * @param[in] i The StreamBroker to return.
+     * @returns The requested StreamBroker.
+     */
     SBIO_HD inline const BrokerType& data_stream(std::size_t i) const { return m_data_streams[i]; }
+    /**
+     * The requested StreamBroker.
+     *
+     * @note This function does not bounds check! Be sure to inspect the number of
+     *       data streams before indexing out of bounds!
+     *
+     * @param[in] i The StreamBroker to return.
+     * @returns The requested StreamBroker.
+     */
     SBIO_HD inline BrokerType& data_stream(std::size_t i) { return m_data_streams[i]; }
 
+    /**
+     * An iterator implementation to allow generating step indices from the DataSource.
+     *
+     * The iterator on a DataSource is used to automatically generate new step indices
+     * until an ExhaustedSentinel is returned.
+     *
+     * @tparam DS The DataSource to iterate over.
+     */
     template <class DS>
     class IteratorImpl {
     public:
@@ -324,17 +508,35 @@ namespace sbio {
     using Iterator = IteratorImpl<DataSource>;
     using ConstIterator = IteratorImpl<const DataSource>;
 
+    /**
+     * Return an iterator at the first step index.
+     *
+     * @returns An iterator at the first step index.
+     */
     Iterator begin() { return Iterator(*this, 0); }
+    /**
+     * Return an iterator pointing to the ExhasutedSentinel.
+     *
+     * @returns An iterator pointing to the ExhaustedSentinel.
+     */
     Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
 
-    // ConstIterator needs some rework on the DataSource::next function to properly work
-    // ConstIterator begin() const { return ConstIterator(*this, 0); }
-    // ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
+    ConstIterator begin() const { return ConstIterator(*this, 0); }
+    ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
   private:
-    BrokerType m_data_streams[MaxDataStreams];
+    /**
+     * The set of StreamBrokers in the DataSource
+     */
+    mutable BrokerType m_data_streams[MaxDataStreams];
+    /**
+     * The total number of StreamBrokers in the DataSource
+     */
     std::size_t m_num_data_streams { 0 };
-    std::size_t m_steps_capacity { 0 };
+    /**
+     * The current steps capacity before reindexing is required.
+     */
+    mutable std::size_t m_steps_capacity { 0 };
   };
 } // namespace sbio
 

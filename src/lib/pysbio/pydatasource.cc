@@ -19,6 +19,9 @@
 
 #include "pysbio/pydatasource.hh"
 
+#include "pysbio/execution/pyexecution.hh"
+#include "pysbio/formats/pyformat_traits.hh"
+#include "pysbio/io/pyio.hh"
 #include "pysbio/pybroker_group.hh"
 
 #ifdef SBIO_HAS_XTC1
@@ -107,29 +110,30 @@ namespace pysbio {
                              unsigned run,
                              int evt_per_read,
                              int dgram_size,
-                             unsigned xtc_ver,
-                             std::string type,
-                             py::dict exec_cfg)
+                             pysbio::FTraits data_fmt,
+                             pysbio::ExecutionPolicy epolicy,
+                             py::dict exec_cfg,
+                             pysbio::IOPolicy io_policy)
     : m_exp(exp)
     , m_run(run)
   {
-    if (xtc_ver == 1) {
+    if (data_fmt == pysbio::FTraits::XTC1) {
 #ifdef SBIO_HAS_XTC1
       sbio::XTC1Traits::StreamParameters base_cfg;
       base_cfg.events_per_read = evt_per_read;
       base_cfg.max_dgram_size = dgram_size;
-      if (type == "serial") {
+      if (epolicy == pysbio::ExecutionPolicy::Serial) {
         SerialDataSource1 ds;
         ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
-      } else if (type == "threads") {
+      } else if (epolicy == pysbio::ExecutionPolicy::Threaded) {
         auto ecfg = parse_threaded_config(exec_cfg);
         ThreadedDataSource1 ds(ecfg);
         ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
-      } else if (type == "mpi") {
+      } else if (epolicy == pysbio::ExecutionPolicy::MPI) {
 #ifdef SBIO_HAS_MPI
         // If MPI hasn't been initialized, we'll do it for the user here
         int initialized { 0 };
@@ -149,7 +153,7 @@ namespace pysbio {
 #else
         throw std::runtime_error("Requiested MPI DataSource, but sbio built without MPI support!");
 #endif
-      } else if (type == "mpi_threads") {
+      } else if (epolicy == pysbio::ExecutionPolicy::MPIThreaded) {
 #ifdef SBIO_HAS_MPI
         int initialized { 0 };
         MPI_Initialized(&initialized);
@@ -176,29 +180,30 @@ namespace pysbio {
         throw std::runtime_error("Requested Threaded MPI DataSource, but sbio built without MPI!");
 #endif
       } else {
-        throw std::runtime_error("Unsupported DataSource type: " + type + "!");
+        throw std::runtime_error("Unsupported DataSource type: " +
+                                 std::to_string(static_cast<int>(epolicy)) + "!");
       }
 #else
       throw std::runtime_error("Requested XTC1 DataSource, but sbio built without XTC1 support!");
 #endif
-    } else if (xtc_ver == 2){
+    } else if (data_fmt == pysbio::FTraits::XTC2){
 #ifdef SBIO_HAS_XTC2
       sbio::XTC2Traits::StreamParameters base_cfg;
       base_cfg.events_per_read = evt_per_read;
       base_cfg.max_dgram_size = dgram_size;
 
-      if (type == "serial") {
+      if (epolicy == pysbio::ExecutionPolicy::Serial) {
         SerialDataSource2 ds;
         ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
-      } else if (type == "threads") {
+      } else if (epolicy == pysbio::ExecutionPolicy::Threaded) {
         auto ecfg = parse_threaded_config(exec_cfg);
         ThreadedDataSource2 ds(ecfg);
         ds.load_run(base_cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
-      } else if (type == "mpi") {
+      } else if (epolicy == pysbio::ExecutionPolicy::MPI) {
 #ifdef SBIO_HAS_MPI
         // If MPI hasn't been initialized, we'll do it for the user here
         int initialized { 0 };
@@ -218,7 +223,7 @@ namespace pysbio {
 #else
         throw std::runtime_error("Requiested MPI DataSource, but sbio built without MPI support!");
 #endif
-      } else if (type == "mpi_threads") {
+      } else if (epolicy == pysbio::ExecutionPolicy::MPIThreaded) {
 #ifdef SBIO_HAS_MPI
         int initialized { 0 };
         MPI_Initialized(&initialized);
@@ -245,13 +250,14 @@ namespace pysbio {
         throw std::runtime_error("Requested Threaded MPI DataSource, but sbio built without MPI!");
 #endif
       } else {
-        throw std::runtime_error("Unsupported DataSource type: " + type + "!");
+        throw std::runtime_error("Unsupported DataSource type: " +
+                                 std::to_string(static_cast<int>(epolicy)) + "!");
       }
 #else
       throw std::runtime_error("Requested XTC2 DataSource, but sbio built without XTC2 support!");
 #endif
     } else {
-      throw std::runtime_error("Unrecognized XTC version: " + std::to_string(xtc_ver));
+      throw std::runtime_error("Unrecognized format specifier: " + std::to_string(static_cast<int>(data_fmt)));
     }
   }
 
@@ -262,14 +268,14 @@ namespace pysbio {
     auto group_maker = [&](auto& ds) -> py::object {
       auto grp = ds.get_stream_group(name);
 
-      using BGFTraits = typename decltype(grp)::BrokerGroupFTraits;
+      using DataFormat = typename decltype(grp)::DataFormat;
 
       constexpr bool use_wrapper =
 #ifdef SBIO_HAS_XTC1
-        std::is_same_v<BGFTraits, sbio::XTC1Traits> ||
+        std::is_same_v<DataFormat, sbio::XTC1Traits> ||
 #endif
 #ifdef SBIO_HAS_XTC2
-        std::is_same_v<BGFTraits, sbio::XTC2Traits> ||
+        std::is_same_v<DataFormat, sbio::XTC2Traits> ||
 #endif
         false;
 

@@ -17,8 +17,9 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "sbio/core/io.hh"
+#include "pysbio/io/pyio.hh"
 
+#include "sbio/core/io.hh"
 #include "sbio/io/posix.hh"
 
 #include <pybind11/native_enum.h>
@@ -28,6 +29,14 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(pyio, io_module, py::mod_gil_not_used()) {
   io_module.doc() = "sbio Python bindings for IO drivers.";
+
+  py::native_enum<pysbio::IOPolicy>(io_module,
+                                    "IOPolicy",
+                                    "enum.Enum",
+                                    "Enumerators for selecting IO policies.")
+    .value("SyncPOSIXIO", pysbio::IOPolicy::SyncPOSIXIO)
+    .export_values()
+    .finalize();
 
   py::native_enum<sbio::IOStatus>(io_module,
                                   "IOStatus",

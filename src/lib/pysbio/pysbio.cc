@@ -17,6 +17,9 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "pysbio/execution/pyexecution.hh"
+#include "pysbio/formats/pyformat_traits.hh"
+#include "pysbio/io/pyio.hh"
 #include "pysbio/pybroker_group.hh"
 #include "pysbio/pydatasource.hh"
 
@@ -46,11 +49,13 @@ Args:
 
     max_dgram_size (int): The maximum size of a Datagram to accept.
 
-    xtc_ver (int): The version of XTC data (1 or 2).
+    data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
 
-    ds_type (str): The desired DataSource type - currently supported are `serial` and `mpi`.
+    epolicy (pysbio.ExecutionPolicy): The Execution policy to use (Serial, MPI, Threaded, etc.)
 
-    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).)a";
+    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).
+
+    io_policy (pysbio.IOPolicy): The IO policy to use (POSIX, cuFile, etc).)a";
 } // anonymous namespace
 
 PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
@@ -83,14 +88,24 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
 
   py::classh<PyDataSource>(pysbio_module, "DataSource")
-    .def(py::init<std::string, unsigned, int, int, unsigned, std::string, py::dict>(),
+    .def(py::init<
+           std::string,
+           unsigned,
+           int,
+           int,
+           pysbio::FTraits,
+           pysbio::ExecutionPolicy,
+           py::dict,
+           pysbio::IOPolicy
+         >(),
          py::arg("exp"),
          py::arg("run"),
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
-         py::arg("xtc_ver") = 2,
-         py::arg("ds_type") = "mpi",
+         py::arg("data_fmt") = pysbio::FTraits::XTC2,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
          py::arg("exec_cfg") = py::dict(),
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIXIO,
          ds_doc)
     .def("group", [&](PyDataSource& self, const char* name) {
       return self.group(pysbio_module, name);
@@ -108,7 +123,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       return std::visit(iterator_maker, self.ds());
     },
       py::keep_alive<0, 1>())
-    .def("events", [](PyDataSource& self) {
+    .def("steps", [](PyDataSource& self) {
       // This is just another name for the iter function, for API similarity
       auto iterator_maker = [](auto& ds) {
         return py::make_iterator(ds.begin(), ds.end());

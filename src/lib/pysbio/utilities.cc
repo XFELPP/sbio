@@ -44,8 +44,8 @@ namespace pysbio {
 
     auto broker_visitor = [&](auto& brokers) {
       for (std::size_t i = 0; i < num_brokers; ++i) {
-        using BrokerT = std::decay_t<decltype(*brokers[i])>;
-        using InvT = typename BrokerT::MetadataInventory;
+        using BrokerType = std::decay_t<decltype(*brokers[i])>;
+        using InvT = typename BrokerType::StreamMetadata;
         // Access the broker's inventory
         auto& inv {
           const_cast<const InvT&>(brokers[i]->metadata())

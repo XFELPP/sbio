@@ -16,3 +16,20 @@ if build_python_opt
         # link_args: py_mod_link_args,
     )
 endif # build_python_opt
+
+installed_py_bindings_io_headers = [
+    'pyio.hh',
+]
+
+if not sbio_as_wheel_opt and build_core_opt
+    install_headers(
+        installed_py_bindings_io_headers,
+        install_dir: header_install_dir / 'pysbio/io',
+    )
+else
+    py3.install_sources(
+        installed_py_bindings_io_headers,
+        pure: false,
+        subdir: 'sbio/include/pysbio/io',
+    )
+endif # not sbio_as_wheel_opt and build_core_opt

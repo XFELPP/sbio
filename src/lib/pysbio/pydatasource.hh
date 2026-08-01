@@ -20,6 +20,10 @@
 #ifndef PYSBIO_PYDATASOURCE_HH
 #define PYSBIO_PYDATASOURCE_HH
 
+#include "pysbio/execution/pyexecution.hh"
+#include "pysbio/formats/pyformat_traits.hh"
+#include "pysbio/io/pyio.hh"
+
 #include "sbio/core/datasource.hh"
 #include "sbio/execution/serial.hh"
 #ifdef SBIO_HAS_MPI
@@ -147,9 +151,10 @@ namespace pysbio {
                  unsigned run,
                  int evt_per_read,
                  int dgram_size,
-                 unsigned xtc_ver = 2,
-                 std::string type = "mpi",
-                 py::dict exec_cfg = py::dict());
+                 pysbio::FTraits data_fmt = pysbio::FTraits::XTC2,
+                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPI,
+                 py::dict exec_cfg = py::dict(),
+                 pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIXIO);
 
     py::object group(py::module& m, const char* name);
 

@@ -107,7 +107,7 @@ namespace pysbio::impl {
              // explicitly... I don't know an elegant way atm to handle the
              // forwarding otherwise.
 
-             using DataResult = typename BrokerGroupT::BrokerGroupFTraits::DataResult;
+             using DataResult = typename BrokerGroupT::DataResult;
 
              auto cpp_cb = [&](DataResult res) {
                py::gil_scoped_acquire acquire;
@@ -161,7 +161,7 @@ namespace pysbio::impl {
              // explicitly... I don't know an elegant way atm to handle the
              // forwarding otherwise.
 
-             using DataResult = typename BrokerGroupT::BrokerGroupFTraits::DataResult;
+             using DataResult = typename BrokerGroupT::DataResult;
 
              auto cpp_cb = [&](DataResult res) {
                py::gil_scoped_acquire acquire;
@@ -224,7 +224,9 @@ namespace pysbio::impl {
            &DataSourceT::configure_execution_policy,
            py::arg("epolicy_cfg"))
       .def("load_run",
-           [](DataSourceT& self, typename DataSourceT::Config base_cfg, py::args args) {
+           [](DataSourceT& self,
+              typename DataSourceT::StreamConfig base_cfg,
+              py::args args) {
              if (args.size() == 0) {
                throw std::runtime_error("Must provide at least base StreamParameters for "
                                         "file format to configure and load run of "

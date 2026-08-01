@@ -17,7 +17,6 @@ if build_python_opt
     )
 endif # build_python_opt
 
-
 installed_py_bindings_core_headers = [
     'execution.hh',
 ]

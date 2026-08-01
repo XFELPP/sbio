@@ -93,27 +93,17 @@ namespace sbio {
   };
 
   /**
-   * A StreamBroker organizes Streams (types and quantities defined by FTraits).
-   * The StreamBroker has state machines and exposes FTraits based metadata
+   * A StreamBroker organizes Streams and mediates data requests.
+   *
+   * The StreamBroker has a state machine and exposes data-format dependent metadata
    * and data buffers.
    *
-   * Execution Policies take the StreamBroker
-   * -> Can generically receive the metadata and data buffers exposed by Broker
-   *    and defined by the FTraits
-   * -> Execution policy has opportunity to perform synchronization steps as it
-   *    moves the broker through the state machine
-   * -> Broker can also accept inputs to set metadata and so on.
-   *
-   * The Execution Policy will also incorporate Storage
-   * -> The types of buffers that must be provided should be provided by the FTraits
-   *    but the actual implementation of the storage is configurable
-   * -> The brokers must have a way to set storage so that the policy can pass it in
-   * -> This resolves the coupling of policy/storage
-   *    -> The Execution Policy can be stricter on the concepts for allowable storage
-   *       (E.g. if an MPI-type policy requires a sharable buffer)
-   *
-   * Given a good set of states and buffer types (e.g. metadata, data, etc.)
-   * I suspect this can genericaly expose the required interfaces.
+   * @tparam IO The type of the IO strategy being used.
+   * @tparam EPolicy The Execution policy to use for reading data.
+   * @tparam FTraits The data format to read.
+   * @tparam Derived The sub-class type if defined. All functionality can be exposed
+   *         purely from the FTraits template parameter, so sub-classing is not
+   *         strictly necessary. I.e., this class can be instantiated directly.
    */
   template <
     IOTraits IO,
@@ -123,22 +113,82 @@ namespace sbio {
   >
   class StreamBroker {
   public:
+    /**
+     * The type of the IO strategy being used.
+     */
+    using IOPolicy = IO;
+    /**
+     * The Execution policy type.
+     */
+    using ExecutionPolicy = EPolicy;
+    /**
+     * The type of data being read.
+     */
+    using DataFormat = FTraits;
+
+    /**
+     * The type of Stream: I.e., the IO strategy and data format being read.
+     */
     using StreamType = Stream<IO, FTraits>;
-    static constexpr std::size_t StreamCount = FTraits::RoleCount;
 
-    using StorageT = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
-    using Config = typename FTraits::StreamParameters;
-    using DiscoveryState = typename FTraits::DiscoveryState;
-    using MetadataInventory = typename FTraits::MetadataInventory;
+    /**
+     * The type of the StreamBroker's Storage.
+     */
+    using SBStorageType = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
 
+    /**
+     * The Execution policy configuration object type.
+     *
+     * `epolicy_config` objects configure the global behaviour of the Execution policy
+     * being used. The Execution policy must be configured before any Streams are
+     * opened as it controls all aspects of IO down to the allocation of Storage.
+     */
+    using EPolicyConfig = typename EPolicy::Config;
+    /**
+     * The individual Stream configuration object type.
+     *
+     * `stream_config` objects are used to set up each individual Stream so that
+     * it can connect and read from its individual data.
+     */
+    using StreamConfig = typename FTraits::StreamParameters;
+    /**
+     * The DataSource configuration object type.
+     *
+     * `ds_config` objects are used for initial discovery and connection of the
+     * full set of Streams.
+     */
+    using DSConfig = typename FTraits::DataSourceParameters;
+
+    /**
+     * The type of state tracking object for the data format's Stream.
+     */
+    using StreamState = typename FTraits::DiscoveryState;
+    /**
+     * The type of the general metadata object for the data format's Stream.
+     */
+    using StreamMetadata = typename FTraits::MetadataInventory;
+
+    /**
+     * The type of the enumerator used to specify access patterns used for the format.
+     */
     using DataAccessPtn = typename FTraits::DataAccessPtn;
-    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type of a request object used to query for data.
+     */
     using DataRequest = typename FTraits::DataRequest;
+    /**
+     * The type of a result object received as a response when querying for data.
+     */
+    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type used to request a specific step from the Stream.
+     *
+     * This type is required and guaranteed to be convertible std::size_t; however,
+     * different data format's may use different underlying types.
+     */
     using StepIdxType = typename FTraits::StepIdxType;
 
-    // Surface the execution policy for use by higher levels (Detector, e.g.)
-    using ExecutionPolicy = EPolicy;
-    using IOType = IO;
+    static constexpr std::size_t StreamCount = FTraits::RoleCount;
 
     /**
      * A default constructor is provided for simplicity.
@@ -155,7 +205,7 @@ namespace sbio {
      *
      * @param[in] cfg The data-format-dependent configuration parameters.
      */
-    StreamBroker(const Config& cfg)
+    StreamBroker(const StreamConfig& cfg)
       : m_config(cfg)
       , m_broker_state(BrokerState::INIT)
     {}
@@ -168,7 +218,7 @@ namespace sbio {
      *
      * @param[in] cfg The data format specif configuration parameters.
      */
-    SBIO_HD inline void configure_broker(const Config& cfg) {
+    SBIO_HD inline void configure_broker(const StreamConfig& cfg) {
       m_config = cfg;
       m_broker_state = BrokerState::INIT;
     }
@@ -202,6 +252,8 @@ namespace sbio {
      * Connect and open brokered Streams.
      *
      * This corresponds to the CONNECT stage of the state machine.
+     *
+     * @returns The IOStatus result from connecting.
      */
     SBIO_HD inline IOStatus open_data_stream() {
       m_broker_state = BrokerState::CONNECT;
@@ -220,7 +272,7 @@ namespace sbio {
      * This information is then available to the caller (or higher-level abstractions).
      *
      * This corresponds to the DISCOVERY stage of the state machine.
-     * @returns An IOStatus for whether metadata reads were successful.
+     * @returns The IOStatus result for whether metadata reads were successful.
      */
     SBIO_HD inline IOStatus discover_metadata() {
       m_broker_state = BrokerState::DISCOVERY;
@@ -231,7 +283,7 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         status = static_cast<Derived*>(this)->discover_metadata_impl();
       } else {
-        StorageView<StorageT, EPolicy> sv(m_storage);
+        StorageView<SBStorageType, EPolicy> sv(m_storage);
         status = FTraits::discover_metadata(m_streams, sv, m_metadata_inv);
       }
 
@@ -243,9 +295,16 @@ namespace sbio {
       return status;
     }
 
-    // A higher-level wrapper for the INIT -> READY stages
-    // In general, you will want to allocate, connect and discover in one swoop.
-    // The low-level breakdown is available if you need more precise control, though.
+    /**
+     * Run through the initial allocate, connect, discover steps in one.
+     *
+     * This is simply a convenience wrapper instead of calling each of the early
+     * state transitions independently. The down-side is the status will be cummulative
+     * so a failure may possibly not be immediately clear as originiating from one step
+     * or another.
+     *
+     * @returns The IOStatus result from all 3 steps.
+     */
     SBIO_HD inline IOStatus prepare() {
       IOStatus status { IOStatus::Success };
       if constexpr (!std::is_void_v<Derived>) {
@@ -293,7 +352,7 @@ namespace sbio {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->index_stream_impl();
         } else {
-          StorageView<StorageT, EPolicy> sv(m_storage);
+          StorageView<SBStorageType, EPolicy> sv(m_storage);
 
           // Must ensure that the signatures match to avoid silent failures
           const auto& cfg { m_config };
@@ -317,7 +376,6 @@ namespace sbio {
       return status;
     }
 
-    // Associated to STREAMING stage
     /**
      * Retrieve data for the specified index using the provided lookup pattern.
      *
@@ -340,7 +398,7 @@ namespace sbio {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->fetch_step_impl(step_idx, ptn);
         } else {
-          StorageView<StorageT, EPolicy> sv(m_storage);
+          StorageView<SBStorageType, EPolicy> sv(m_storage);
           status =
             FTraits::fetch_step(m_streams, sv, m_stream_state, m_config, step_idx, ptn);
         }
@@ -380,7 +438,7 @@ namespace sbio {
           } else {
 
 
-            StorageView<StorageT, EPolicy> sv(m_storage);
+            StorageView<SBStorageType, EPolicy> sv(m_storage);
             status = FTraits::fetch_multi_steps(m_streams,
                                                 sv,
                                                 m_stream_state,
@@ -437,20 +495,20 @@ namespace sbio {
      */
     SBIO_HD inline BrokerState state() const { return m_broker_state; }
     /**
-     * Return the underlying DiscoveryState of the brokered stream(s).
+     * Return the underlying StreamState of the brokered stream(s).
      *
-     * The DiscoveryState tracks data format-specific information about the streamed
+     * The StreamState tracks data format-specific information about the streamed
      * data. This may include information such as counters, whether certain transitions
      * have been encountered, or whether the stream has been exhausted/will be soon.
      * Refer to the specific FormatTraits for the format of interest for more
      * information.
      *
      * In cases where the broker manages multiple Streams, there is still one
-     * shared DiscoveryState which encompasses all of them.
+     * shared StreamState which encompasses all of them.
      *
-     * @returns The current Stream(s) DiscoveryState.
+     * @returns The current Stream(s) StreamState.
      */
-    SBIO_HD inline DiscoveryState stream_state() const { return m_stream_state; }
+    SBIO_HD inline StreamState stream_state() const { return m_stream_state; }
 
     /**
      * Return the current capacity for data formats that support indexing.
@@ -466,7 +524,7 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<const Derived*>(this)->capacity();
       } else {
-        const StorageView<const StorageT, EPolicy> sv(m_storage);
+        const StorageView<const SBStorageType, EPolicy> sv(m_storage);
         return FTraits::capacity(sv, m_stream_state);
       }
     }
@@ -488,7 +546,7 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->current_buffer();
       } else {
-        StorageView<StorageT, EPolicy> sv(m_storage);
+        StorageView<SBStorageType, EPolicy> sv(m_storage);
         return FTraits::current_buffer(sv, m_stream_state);
       }
     }
@@ -513,7 +571,7 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn, batch_idx);
       } else {
-        StorageView<StorageT, EPolicy> sv(m_storage);
+        StorageView<SBStorageType, EPolicy> sv(m_storage);
         return FTraits::get_data_in_buffer(sv, m_metadata_inv, req, ptn, batch_idx);
       }
     }
@@ -526,16 +584,29 @@ namespace sbio {
      *
      * @returns The compiled metadata from the brokered Stream(s).
      */
-    SBIO_HD inline MetadataInventory& metadata() { return m_metadata_inv; }
-    SBIO_HD inline const MetadataInventory& metadata() const { return m_metadata_inv; }
+    SBIO_HD inline StreamMetadata& metadata() { return m_metadata_inv; }
+    /**
+     * The compiled metadata from the brokered Stream(s).
+     *
+     * This function should only be used after having passed the DISCOVERY state,
+     * or having set the metadata explicitly.
+     *
+     * @returns The compiled metadata from the brokered Stream(s).
+     */
+    SBIO_HD inline const StreamMetadata& metadata() const { return m_metadata_inv; }
 
     /**
      * The set of StreamParameters configuration used to instantiate the broker.
      *
      * @returns The StreamParameters configuration.
      */
-    SBIO_HD inline Config& config() { return m_config; }
-    SBIO_HD inline const Config& config() const { return m_config; }
+    SBIO_HD inline StreamConfig& config() { return m_config; }
+    /**
+     * The set of StreamParameters configuration used to instantiate the broker.
+     *
+     * @returns The StreamParameters configuration.
+     */
+    SBIO_HD inline const StreamConfig& config() const { return m_config; }
 
     /**
      * Configure the Broker with a set of metadata.
@@ -551,7 +622,7 @@ namespace sbio {
      *
      * @param[in] The metadata to provide the Broker with.
      */
-    SBIO_HD inline void set_metadata(MetadataInventory& metadata) {
+    SBIO_HD inline void set_metadata(StreamMetadata& metadata) {
       m_metadata_inv = metadata;
     }
 
@@ -577,11 +648,11 @@ namespace sbio {
 
   protected:
     StreamType m_streams[StreamCount];
-    Config m_config;
+    StreamConfig m_config;
     BrokerState m_broker_state;
-    DiscoveryState m_stream_state;
-    MetadataInventory m_metadata_inv;
-    StorageT m_storage;
+    StreamState m_stream_state;
+    StreamMetadata m_metadata_inv;
+    SBStorageType m_storage;
   };
 } // namespace sbio
 
