@@ -63,6 +63,7 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .finalize();
 
   py::classh<sbio::XTC1Traits::StreamParameters>(ftraits_module, "XTC1StreamParameters")
+    .def(py::init<>())
     .def_property("smd_path",
                   [](const sbio::XTC1Traits::StreamParameters& self) -> std::string {
                     return self.smd_path;
@@ -174,7 +175,7 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
                   })
     .def_readwrite("dtype", &sbio::XTC1::DataResult::dtype);
 
-#endif
+#endif // SBIO_HAS_XTC1
 
 #ifdef SBIO_HAS_XTC2
 
@@ -189,6 +190,7 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .finalize();
 
   py::classh<sbio::XTC2Traits::StreamParameters>(ftraits_module, "XTC2StreamParameters")
+    .def(py::init<>())
     .def_property("smd_path",
                   [](const sbio::XTC2Traits::StreamParameters& self) -> std::string {
                     return self.smd_path;
@@ -298,6 +300,5 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
                     }
                   })
     .def_readwrite("dtype", &sbio::XTC2::DataResult::dtype);
-#endif
-
+#endif // SBIO_HAS_XTC2
 } // ftraits_module
