@@ -38,7 +38,9 @@ jobs:
           npm install -g moxygen
           npm install fast-xml-parser
           doxygen Doxyfile
-          moxygen --frontmatter --pages --classes --html-anchors --output docs/api/md/api-%s.md docs/api/xml
+          # Not currently using pages.
+          # moxygen --frontmatter --pages --classes --html-anchors --output docs/api/md/api-%s.md docs/api/xml
+          moxygen --frontmatter --classes --html-anchors --output docs/api/md/api-%s.md docs/api/xml
           # Script runs inplace in the docs/md folder
           node utilities/organize-api-docs.mjs
 
