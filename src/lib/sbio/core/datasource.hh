@@ -267,8 +267,8 @@ namespace sbio {
 
     SBIO_HD inline const BrokerType* data_streams() const { return m_data_streams[0]; }
     SBIO_HD inline BrokerType* data_streams() { return m_data_streams[0]; }
-    SBIO_HD inline const BrokerType* data_stream(std::size_t i) const { return m_data_streams[i]; }
-    SBIO_HD inline BrokerType* data_stream(std::size_t i) { return m_data_streams[i]; }
+    SBIO_HD inline const BrokerType& data_stream(std::size_t i) const { return m_data_streams[i]; }
+    SBIO_HD inline BrokerType& data_stream(std::size_t i) { return m_data_streams[i]; }
 
     template <class DS>
     class IteratorImpl {

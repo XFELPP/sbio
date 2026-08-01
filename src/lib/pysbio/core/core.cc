@@ -22,6 +22,7 @@
 
 #include "sbio/core/broker.hh"
 #include "sbio/core/broker_group.hh"
+#include "sbio/core/datasource.hh"
 #ifdef SBIO_HAS_MPI
 #include "sbio/execution/mpi.hh"
 #include "sbio/execution/mpi_threaded.hh"
@@ -48,6 +49,7 @@ namespace py = pybind11;
 PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
   core_module.doc() = "sbio Python trampolines for core class overriding.";
 
+  // Execution policies
   using PySerialExec = pysbio::PyExecution<sbio::SerialExecution>;
   py::classh<PySerialExec>(core_module, "PySerialExecution")
     .def(py::init<>());
@@ -57,6 +59,7 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     .def(py::init<>());
 
 #ifdef SBIO_HAS_XTC1
+  // Brokers
   using PyXTC1SerialBroker = sbio::StreamBroker<
     sbio::SyncPOSIXIO,
     PySerialExec,
@@ -76,6 +79,7 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     py::classh<PyXTC1ThreadedBroker>(core_module, "PyXTC1ThreadedStreamBroker");
   pysbio::impl::bind_broker_functions<PyXTC1ThreadedBroker>(pythreaded_xtc1);
 
+  // Broker Groups
   using PyXTC1SerialBrokerGroup = sbio::BrokerGroup<
     PyXTC1SerialBroker,
     sbio::XTC1Traits
@@ -101,9 +105,30 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     PyXTC1ThreadedBrokerGroup, XTC1ThreadedBGRef
   >(pythreaded_bg_xtc1);
 
+  // DataSources
+  using PyXTC1SerialDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PySerialExec,
+    sbio::XTC1Traits
+  >;
+  using PyXTC1ThreadedDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PyThreadedExec,
+    sbio::XTC1Traits
+  >;
+
+  auto pyserial_ds_xtc1 =
+    py::classh<PyXTC1SerialDataSource>(core_module, "PyXTC1SerialDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC1SerialDataSource>(pyserial_ds_xtc1);
+
+  auto pythreaded_ds_xtc1 =
+      py::classh<PyXTC1ThreadedDataSource>(core_module, "PyXTC1ThreadedDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC1ThreadedDataSource>(pythreaded_ds_xtc1);
+
 #endif
 
 #ifdef SBIO_HAS_XTC2
+  // Brokers
   using PyXTC2SerialBroker = sbio::StreamBroker<
     sbio::SyncPOSIXIO,
     PySerialExec,
@@ -123,6 +148,7 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
       py::classh<PyXTC2ThreadedBroker>(core_module, "PyXTC2ThreadedStreamBroker");
   pysbio::impl::bind_broker_functions<PyXTC2ThreadedBroker>(pythreaded_xtc2);
 
+  // Broker Groups
   using PyXTC2SerialBrokerGroup = sbio::BrokerGroup<
     PyXTC2SerialBroker,
     sbio::XTC2Traits
@@ -148,9 +174,30 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     PyXTC2ThreadedBrokerGroup, XTC2ThreadedBGRef
   >(pythreaded_bg_xtc2);
 
+  // DataSources
+  using PyXTC2SerialDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PySerialExec,
+    sbio::XTC2Traits
+  >;
+  using PyXTC2ThreadedDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PyThreadedExec,
+    sbio::XTC2Traits
+  >;
+
+  auto pyserial_ds_xtc2 =
+    py::classh<PyXTC2SerialDataSource>(core_module, "PyXTC2SerialDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC2SerialDataSource>(pyserial_ds_xtc2);
+
+  auto pythreaded_ds_xtc2 =
+    py::classh<PyXTC2ThreadedDataSource>(core_module, "PyXTC2ThreadedDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC2ThreadedDataSource>(pythreaded_ds_xtc2);
+
 #endif
 
 #ifdef SBIO_HAS_MPI
+  // Execution Policies
   using PyMPIExec = pysbio::PyExecution<sbio::MPIExecution>;
   py::classh<PyMPIExec>(core_module, "PyMPIExecution")
     .def(py::init<>());
@@ -160,6 +207,7 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     .def(py::init<>());
 
 #ifdef SBIO_HAS_XTC1
+  // Brokers
   using PyXTC1MPIBroker = sbio::StreamBroker<
     sbio::SyncPOSIXIO,
     PyMPIExec,
@@ -179,6 +227,7 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     py::classh<PyXTC1ThreadedMPIBroker>(core_module, "PyXTC1ThreadedMPIStreamBroker");
   pysbio::impl::bind_broker_functions<PyXTC1ThreadedMPIBroker>(pympi_threaded_xtc1);
 
+  // BrokerGroups
   using PyXTC1MPIBrokerGroup = sbio::BrokerGroup<
     PyXTC1MPIBroker,
     sbio::XTC1Traits
@@ -204,9 +253,29 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
     PyXTC1ThreadedMPIBrokerGroup, XTC1ThreadedMPIBGRef
   >(pympi_threaded_bg_xtc1);
 
+  // DataSources
+  using PyXTC1MPIDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PyMPIExec,
+    sbio::XTC1Traits
+  >;
+  using PyXTC1ThreadedMPIDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PyThreadedMPIExec,
+    sbio::XTC1Traits
+  >;
+
+  auto pympi_ds_xtc1 = py::classh<PyXTC1MPIDataSource>(core_module, "PyXTC1MPIDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC1MPIDataSource>(pympi_ds_xtc1);
+
+  auto pympi_threaded_ds_xtc1 =
+      py::classh<PyXTC1ThreadedMPIDataSource>(core_module, "PyXTC1ThreadedMPIDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC1ThreadedMPIDataSource>(pympi_threaded_ds_xtc1);
+
 #endif
 
 #ifdef SBIO_HAS_XTC2
+  // Brokers
   using PyXTC2MPIBroker = sbio::StreamBroker<
     sbio::SyncPOSIXIO,
     PyMPIExec,
@@ -226,6 +295,7 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
       py::classh<PyXTC2ThreadedMPIBroker>(core_module, "PyXTC2ThreadedMPIStreamBroker");
   pysbio::impl::bind_broker_functions<PyXTC2ThreadedMPIBroker>(pympi_threaded_xtc2);
 
+  // Broker Groups
   using PyXTC2MPIBrokerGroup = sbio::BrokerGroup<
     PyXTC2MPIBroker,
     sbio::XTC2Traits
@@ -248,6 +318,26 @@ PYBIND11_MODULE(_core, core_module, py::mod_gil_not_used()) {
   pysbio::impl::bind_broker_group_functions<
     PyXTC2ThreadedMPIBrokerGroup, XTC2ThreadedMPIBGRef
   >(pympi_threaded_bg_xtc2);
+
+
+  // DataSources
+  using PyXTC2MPIDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PyMPIExec,
+    sbio::XTC2Traits
+  >;
+  using PyXTC2ThreadedMPIDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    PyThreadedMPIExec,
+    sbio::XTC2Traits
+  >;
+
+  auto pympi_ds_xtc2 = py::classh<PyXTC2MPIDataSource>(core_module, "PyXTC2MPIDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC2MPIDataSource>(pympi_ds_xtc2);
+
+  auto pympi_threaded_ds_xtc2 =
+      py::classh<PyXTC2ThreadedMPIDataSource>(core_module, "PyXTC2ThreadedMPIDataSource");
+  pysbio::impl::bind_datasource_functions<PyXTC2ThreadedMPIDataSource>(pympi_threaded_ds_xtc2);
 
 #endif
 
