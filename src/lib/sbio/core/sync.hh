@@ -25,7 +25,6 @@
 #include "sbio/formats/format_traits.hh"
 
 #include <concepts>
-#include <iostream>
 #include <type_traits>
 
 #ifndef SBIO_HD

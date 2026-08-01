@@ -202,15 +202,23 @@ else
     endforeach
 endif
 
+# Export a list of the enabled data formats for downstream projects to link properly
+enabled_formats = []
+
 if sbio_build_xtc1
     add_project_arguments('-DSBIO_HAS_XTC1', language: ['cpp', 'cuda'])
     message('Will build XTC1 data format support.')
+    enabled_formats += ['xtc1']
 endif
 if sbio_build_xtc2
     add_project_arguments('-DSBIO_HAS_XTC2', language: ['cpp', 'cuda'])
     message('Will build XTC2 data format support.')
+    enabled_formats += ['xtc2']
 endif
 
+sbio_enabled_formats = {
+    'formats': enabled_formats,
+}
 #### Main Python Setup ####
 ###########################
 
@@ -232,15 +240,38 @@ python_site_packages = 'lib' / 'python' + py_ver / 'site-packages'
 ###########################
 deps_for_sbio = []
 
+#### CUDA setup
+if sbio_has_cuda
+    # CUDA driver and nvrtc are both for JIT
+    cuda_dep = dependency('cuda', modules: ['cuda', 'cufile', 'cudart'])
+    deps_for_sbio += cuda_dep
+endif
+
 #### ncarray
 libncarray = cpp.find_library('ncarray', required: false)
 if libncarray.found()
     ncarray_dep = libncarray
 else
     message('ncarray not found via `find_library` - checking via Python')
+    nc_libs_cmd = '''
+import glob
+import os
+from typing import List, Set
+
+import ncarray
+
+d: str = ncarray.get_lib_dir()
+files: Set[str] = set(glob.glob(os.path.join(d, "libnc*")) + glob.glob(os.path.join(d, "ncarray*")))
+libs: List[str] = [f for f in files if f.endswith((".so", ".dylib", ".dll", ".lib")) or ".so." in f]
+
+if any(f.endswith(".lib") for f in libs):
+    libs = [f for f in libs if not f.endswith(".dll")]
+print("\\n".join(libs))
+'''
+
     nc_libs_raw = run_command(
         py3, '-c',
-        'import glob, ncarray; print("\\n".join(glob.glob(f"{ncarray.get_lib_dir()}/libnc*")))',
+        nc_libs_cmd,
         check: false,
     ).stdout().strip().split('\n')
 
@@ -252,12 +283,18 @@ else
         fs = import('fs')
         nc_link_args = []
         foreach lib : nc_libs_raw
-            libdir = fs.parent(lib)
-            libname = fs.name(lib)
-            nc_link_args += [
-                '-L' + libdir,
-                '-l:' + libname,
-            ]
+            if lib != ''
+                libdir = fs.parent(lib)
+                libname = fs.name(lib)
+                if host_machine.system() == 'windows'
+                    nc_link_args += [lib]
+                else
+                    nc_link_args += [
+                        '-L' + libdir,
+                        '-l:' + libname,
+                    ]
+                endif
+            endif
         endforeach
 
         nc_inc = run_command(
@@ -336,47 +373,13 @@ if build_python_opt
     endif # pybind11 not found
 endif
 
-
-#### XAlgosPP
-libxalgospp = cpp.find_library('xalgospp', required: false)
-if libxalgospp.found()
-    xalgospp_dep = libxalgospp
-else
-    message('XAlgosPP not found via `find_library` - checking via Python')
-    xalg_libs_raw = run_command(
-        py3, '-c',
-        'import glob, xalgospp; print("\\n".join(glob.glob(f"{xalgospp.get_lib_dir()}/lib*xalgo*")))',
-        check: false,
-    ).stdout().strip().split('\n')
-
-    if (xalg_libs_raw.length() == 0) or (xalg_libs_raw.length() == 1  and xalg_libs_raw[0] == '')
-        message('XAlgosPP not found via Python - will use subproject.')
-        xalg_proj = subproject('xalgospp')
-        xalgospp_dep = xalg_proj.get_variable('xalgospp_dep')
-    else
-        fs = import('fs')
-        xalg_link_args = []
-        foreach lib : xalg_libs_raw
-            libdir = fs.parent(lib)
-            libname = fs.name(lib)
-            xalg_link_args += [
-                '-L' + libdir,
-                '-l:' + libname,
-            ]
-        endforeach
-
-        xalg_inc = run_command(
-            py3, '-c', 'import xalgospp; print(xalgospp.get_include())',
-            check: false,
-        ).stdout().strip()
-
-        xalgospp_dep = declare_dependency(
-            link_args: xalg_link_args,
-            include_directories: include_directories(xalg_inc),
-        )
-    endif # if sbio_libs_raw empty (Python search for XAlgosPP)
+spdlog_dep = dependency('spdlog', required: false)
+if not spdlog_dep.found()
+    message('spdlog not found - using subproject')
+    spdlog_proj = subproject('spdlog')
+    spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
 endif
-deps_for_sbio += xalgospp_dep
+deps_for_sbio += spdlog_dep
 
 #### Path Setup ####
 ####################
@@ -384,6 +387,7 @@ deps_for_sbio += xalgospp_dep
 py_install_dir = py3.get_install_dir(pure: false)
 
 pysbio_install_dir = py_install_dir / 'sbio/core'
+pysbio_fmts_install_dir = py_install_dir / 'sbio/formats'
 
 if sbio_as_wheel_opt
     # Install C++ libraries inside the wheel structure
@@ -439,264 +443,17 @@ endif
 #### SBIO ####
 ###############
 
-installed_headers = []
-
-installed_core_headers = [
-    'src/lib/sbio/core/access_style.hh',
-    'src/lib/sbio/core/broker_group.hh',
-    'src/lib/sbio/core/broker.hh',
-    'src/lib/sbio/core/datasource.hh',
-    'src/lib/sbio/core/execution.hh',
-    'src/lib/sbio/core/io.hh',
-    'src/lib/sbio/core/pipeline.hh',
-    'src/lib/sbio/core/storage.hh',
-    'src/lib/sbio/core/stream.hh',
-    'src/lib/sbio/core/sync.hh',
-    'src/lib/sbio/core/utility.hh',
-]
-
-# installed_cuda_headers = [
-#     'src/lib/sbio/cuda/execution.hh',
-#     'src/lib/sbio/cuda/storage.hh',
-# ]
-
-installed_formats_headers = [
-    'src/lib/sbio/formats/format_traits.hh',
-]
-
-installed_formats_xtc1_headers = [
-    'src/lib/sbio/formats/xtc1/registry.hh',
-    'src/lib/sbio/formats/xtc1/traversal.hh',
-    'src/lib/sbio/formats/xtc1/xtc1.hh',
-    'src/lib/sbio/formats/xtc1/xtc1_schemas.hh',
-    'src/lib/sbio/formats/xtc1/xtc1_traits.hh',
-]
-
-installed_formats_xtc2_headers = [
-    'src/lib/sbio/formats/xtc2/traversal.hh',
-    'src/lib/sbio/formats/xtc2/xtc2.hh',
-    'src/lib/sbio/formats/xtc2/xtc2_traits.hh',
-]
-
-installed_mpi_headers = [
-    'src/lib/sbio/mpi/execution.hh',
-    'src/lib/sbio/mpi/storage.hh',
-]
-
-installed_py_bindings_headers = [
-    'src/lib/pysbio/pydatasource.hh',
-    'src/lib/pysbio/pydetector.hh',
-    'src/lib/pysbio/utilities.hh',
-]
-
-#### Core Library and Definitions
-
 # Headers are always fully qualified using `sbio/core/...` `sbio/formats/...`
 # We therfore set the include path to the top of the lib sub-directory
 sbio_headers = include_directories('src/lib')
 
-if build_core_opt
-    core_sources = ['src/lib/sbio/posix_io.cc']
+# Traverse the main source first so the dependency objects are available
+# for examples and tests
+subdir('src')
 
-    if sbio_build_xtc1
-        libxtc1slim = shared_library(
-            'xtc1slim',
-            [
-                'src/lib/sbio/formats/xtc1/xtc1.cc',
-                'src/lib/sbio/formats/xtc1/traversal.cc',
-            ],
-            include_directories: sbio_headers,
-            install: true,
-            install_dir: libsbio_install_dir,
-            install_rpath: lib_install_rpath,
-            version: '1',
-            soversion: '1',
-        )
+# Build example programs
+# subdir('examples')
 
-        xtc1slim_dep = declare_dependency(
-            link_with: [
-                libxtc1slim,
-            ],
-            include_directories: sbio_headers,
-        )
-        deps_for_sbio += xtc1slim_dep
+# Build the test suite
+# subdir('tests')
 
-        core_sources += ['src/lib/sbio/formats/xtc1/xtc1_traits.cc']
-    endif
-
-    if sbio_build_xtc2
-        libxtc2slim = shared_library(
-            'xtc2slim',
-            [
-                'src/lib/sbio/formats/xtc2/xtc2.cc',
-                'src/lib/sbio/formats/xtc2/traversal.cc',
-            ],
-            include_directories: sbio_headers,
-            install: true,
-            install_dir: libsbio_install_dir,
-            install_rpath: lib_install_rpath,
-            version: '1',
-            soversion: '1',
-        )
-
-        xtc2slim_dep = declare_dependency(
-            link_with: [
-                libxtc2slim,
-            ],
-            include_directories: sbio_headers,
-        )
-        deps_for_sbio += xtc2slim_dep
-
-        core_sources += ['src/lib/sbio/formats/xtc2/xtc2_traits.cc']
-    endif
-
-    libsbio = shared_library(
-        'sbio',
-        core_sources,
-        dependencies: deps_for_sbio,
-        include_directories: sbio_headers,
-        install: true,
-        install_dir: libsbio_install_dir,
-        install_rpath: lib_install_rpath,
-        version: '1',
-        soversion: '1',
-    )
-
-    sbio_dep = declare_dependency(
-        link_with: [
-            libsbio,
-        ],
-        dependencies: deps_for_sbio,
-        include_directories: sbio_headers,
-    )
-
-    if not sbio_as_wheel_opt
-        install_headers(
-            installed_headers,
-            install_dir: header_install_dir / 'sbio',
-        )
-        install_headers(
-            installed_core_headers,
-            install_dir: header_install_dir / 'sbio/core',
-        )
-        # install_headers(
-        #     installed_cuda_headers,
-        #     install_dir: header_install_dir / 'sbio/cuda',
-        # )
-        install_headers(
-            installed_formats_headers,
-            install_dir: header_install_dir / 'sbio/formats',
-        )
-        # install_headers(
-        #     installed_formats_xtc1_headers,
-        #     install_dir: header_install_dir / 'sbio/formats/xtc1',
-        # )
-        install_headers(
-            installed_formats_xtc2_headers,
-            install_dir: header_install_dir / 'sbio/formats/xtc2',
-        )
-        install_headers(
-            installed_mpi_headers,
-            install_dir: header_install_dir / 'sbio/mpi',
-        )
-
-        # Python bindings headers - we'll always provide headers even without bindings
-        install_headers(
-            installed_py_bindings_headers,
-            install_dir: header_install_dir / 'pysbio',
-        )
-    endif # not nca_as_wheel_opt
-else
-    libsbio = cpp.find_library('sbio', required: true)
-    found_libs = [libsbio]
-    if sbio_build_xtc1
-        libxtc1slim = cpp.find_library('xtc1slim', required: true)
-        found_libs += [libxtc1slim]
-    endif
-    if sbio_build_xtc2
-        libxtc2slim = cpp.find_library('xtc2slim', required: true)
-        found_libs += [libxtc2slim]
-    endif
-    sbio_dep = declare_dependency(
-        dependencies: deps_for_sbio + found_libs,
-        include_directories: sbio_headers,
-    )
-endif # end build_core_opt
-
-#### Python module ####
-#######################
-
-if build_python_opt
-    # Figure out dependencies
-    deps_for_py_mod = deps_for_sbio + [pybind11_dep, py3_dep, sbio_dep]
-
-    # If building bindings as a wheel, install the headers into the package itself
-    # If not building as a wheel, then these should be installed in prefix/include when
-    # building the core libraries
-    if sbio_as_wheel_opt
-        py3.install_sources(
-            installed_headers,
-            pure: false,
-            subdir: 'sbio/include/sbio',
-        )
-        py3.install_sources(
-            installed_core_headers,
-            pure: false,
-            subdir: 'sbio/include/sbio/core',
-        )
-        # py3.install_sources(
-        #     installed_cuda_headers,
-        #     pure: false,
-        #     subdir: 'sbio/include/sbio/cuda',
-        # )
-        py3.install_sources(
-            installed_formats_headers,
-            pure: false,
-            subdir: 'sbio/include/sbio/formats',
-        )
-        # py3.install_sources(
-        #     installed_formats_xtc1_headers,
-        #     pure: false,
-        #     subdir: 'sbio/include/sbio/formats/xtc1',
-        # )
-        py3.install_sources(
-            installed_formats_xtc2_headers,
-            pure: false,
-            subdir: 'sbio/include/sbio/formats/xtc2',
-        )
-        py3.install_sources(
-            installed_mpi_headers,
-            pure: false,
-            subdir: 'sbio/include/sbio/mpi',
-        )
-
-        # Also add the headers for the bindings
-        py3.install_sources(
-            installed_py_bindings_headers,
-            pure: false,
-            subdir: 'sbio/include/pysbio',
-        )
-
-        # if bundle_mpi
-        #  ... do something to relink mpirun ....
-        # endif # bundle_mpi
-
-    endif # sbio_as_wheel_opt
-
-    py_mod = py3.extension_module(
-        '_pysbio',
-        [
-            'src/lib/pysbio/pydatasource.cc',
-            'src/lib/pysbio/pydetector.cc',
-            'src/lib/pysbio/pysbio.cc',
-            'src/lib/pysbio/utilities.cc',
-        ],
-        install: true,
-        install_dir: pysbio_install_dir,
-        include_directories: sbio_headers,
-        dependencies : deps_for_py_mod,
-        install_rpath: py_to_lib_install_rpath,
-        build_rpath: py_to_lib_install_rpath,
-        # link_args: py_mod_link_args,
-    )
-endif # build_python_opt

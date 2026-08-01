@@ -1,3 +1,22 @@
+/*
+ * sbio - Stream Broker IO
+ *
+ * Copyright (C) 2025-2026 Gabriel Dorlhiac
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU Affero General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #ifndef SBIO_CORE_STORAGE_HH
 #define SBIO_CORE_STORAGE_HH
 
@@ -11,7 +30,9 @@
 
 #include <concepts>
 #include <cstdint>
+#include <cstdlib>
 #include <type_traits>
+#include <vector>
 
 namespace sbio {
   // --- TypeList helper: Used by FormatTraits to specify buffer requirements --- //
@@ -20,11 +41,25 @@ namespace sbio {
     static constexpr std::size_t size = sizeof...(Ts);
   };
 
+  template <typename T>
+  struct is_type_list : std::false_type {};
+
+  template <typename... Ts>
+  struct is_type_list<TypeList<Ts...>> : std::true_type {};
+
+  template <typename T>
+  static constexpr bool is_type_list_v = is_type_list<T>::value;
+
+  template <typename List>
+  concept IsTypeList = is_type_list_v<List>;
+
   // --- Tags for roles that a buffer may play. --- //
   struct MetadataRole {};
   struct DataRole {};
   struct IndexRole {};
   struct CalibrationRole {};
+  struct GroupRole {};
+  struct TableRole {};
 
   // --- Tags for additional semantic hints as to what a buffer can do --- //
   struct Shareable {};      // Optimization: E.g., visible to MPI peers
@@ -33,8 +68,8 @@ namespace sbio {
 
   template <typename FTraits>
   struct AllocationRequest {
-    // One entry for every descriptor in the BufferRequirements TypeList
-    std::size_t size_requests[FTraits::BufferRequirements::size] { 0 };
+    // One entry for every descriptor in the BrokerBufferRequirements TypeList
+    std::size_t size_requests[FTraits::BrokerBufferRequirements::size] { 0 };
   };
 
   template <typename Role, typename BufferT>
@@ -50,29 +85,9 @@ namespace sbio {
   > // Pass a tag above
   struct BufferDescriptor {
     using role = Role;
+    using hint = Hint;
     static constexpr std::size_t id = Id;
     static constexpr std::size_t min_size = MinSize;
-  };
-
-  // --- Specific types of buffers --- //
-
-  struct HostBuffer {
-    SBIO_HD inline void* ptr() const {
-      return m_ptr;
-    }
-
-    SBIO_HD std::size_t size() const {
-      return m_size;
-    }
-
-    SBIO_HD inline void set_memory(void* ptr, std::size_t size) {
-      m_ptr = ptr;
-      m_size = size;
-    }
-
-  private:
-    void* m_ptr;
-    std::size_t m_size;
   };
 
   template <typename T>
@@ -106,6 +121,16 @@ namespace sbio {
   template <typename Role, std::size_t Id>
   struct FindDescriptor<Role, Id, TypeList<>> {
     using type = void;
+  };
+
+  template <typename T>
+  struct GetHint {
+    using type = void;
+  };
+
+  template <typename Role, std::size_t Id, std::size_t MinSize, typename Hint>
+  struct GetHint<BufferDescriptor<Role, Id, MinSize, Hint>> {
+    using type = Hint;
   };
 
   template <typename List, typename Policy>
@@ -145,5 +170,17 @@ namespace sbio {
       ( (std::is_same_v<class Roles::role, Role> ? callback(self.template get<Roles>()) : void()), ... );
     }
   };
+
+  template <typename T>
+  struct ExtractDescriptorsList;
+
+  template <typename List, typename Policy>
+  struct ExtractDescriptorsList<Storage<List, Policy>> {
+    using type = List;
+  };
+
+  template <typename T>
+  using ExtractDescriptorsListT = typename ExtractDescriptorsList<T>::type;
+
 } // namespace sbio
 #endif // SBIO_CORE_STORAGE_HH

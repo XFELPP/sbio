@@ -1,0 +1,52 @@
+---
+title: Accessing Configuration and Type Information
+description: "Stream Broker IO: sbio"
+sidebar:
+  order: 4
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+In general, beyond the configuration done by selecting appropriate components as template parameters, classes are further configurable at run time. Various config structs are defined for both data formats and Execution policies.
+
+The following are the most used used configuration objects; however, for convenience and maintaining as common style, it is recommended that they be instantiated and accessed using the type aliases described in the next subsection.
+
+<Steps>
+
+1. `Execution::Config` : The configuration for the Execution policy. It must be the FIRST thing to be configured, prior to opening connections to data streams, as the Execution policy controls all aspects of IO, down to the allocation of the Storage backing all the IO buffers.
+2. `FormatTraits::StreamParameters` : The configuration used per-StreamBroker. This will generally be filled partially by the user, allowing the DataSource, working with the data format, to fill in the rest. It specifies aspects of the per-StreamBroker IO behaviour, such as the location of the Streams, and information that can be used to allocate reasonably sized buffers.
+3. `FormatTraits::DataSourceParameters`: This top-level configuration is used by the DataSource to find the Streams initially. Like the StreamParameters, it will be data format-dependent, but it will usually be defining the scope of the IO problem. E.g., which set of Streams will be read for this execution of the program.
+
+</Steps>
+
+## Type Aliases
+
+As the preceeding configuration objects are tied to the data format and execution policy, there needs to be a stable way of accessing their types by name.
+
+Like most the STL, and many other libraries, `sbio` defines a number of aliases in the major classes that can always be used to determine the type of the configuration objects (as well as a number of other types as well). In particular, the following aliases are defined by the `StreamBroker`, `BrokerGroup`, and the `DataSource`, for convenience. They are grouped below into a number of categories:
+
+### Core Object Types
+
+- `IOPolicy`: The current IO policy/style/strategy being used. E.g. if using cuFile or POSIX IO.
+- `ExecutionPolicy`: The current Execution policy being used.
+- `DataFormat`: The current data format (FormatTraits) being used.
+- `StreamType`: The derived `Stream` type.
+- `SBStorageType`: The derived type of the underlying `Storage` object used by each `StreamBroker`.
+
+### Configuration Object Types
+
+- `EPolicyConfig`: The Execution policy configuration object. The configuration of the Execution policy must happen before Streams are opened and read from.
+- `StreamConfig`: The individual `StreamBroker` configuration type.
+- `DSConfig`: The top-level `DataSource` configuration type.
+
+### State Tracking
+
+- `StreamState`: The type for the object used by the data format to track progression through the Stream.
+- `StreamMetadata`: The type for the object used to understand the metadata from the Stream. This is used internally, for instance, to form `BrokerGroup` objects, or to determine what appropriate data requests may be.
+
+### Data Access
+
+- `DataAccessPtn`: The enumerator type for specifying which access pattern to use when requesting data from the `StreamBroker`.
+- `DataRequest`: The type for the object to use to query for data.
+- `DataResult`: The type for the object that will be received as a response for every data request.
+- `StepIdxType`: The type used to specify which step to read from the `Stream`, i.e. the event/step/chronological specifier. This type is required to be and guaranteed to be convertible in some manner to `std::size_t`; however, individual data formats may be implemented using different underlying types.

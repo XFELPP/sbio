@@ -20,7 +20,9 @@
 #ifndef SBIO_FORMATS_XTC2_TRAVERSAL_HH
 #define SBIO_FORMATS_XTC2_TRAVERSAL_HH
 
+#include "sbio/export_macro.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
+#include "sbio/util/string.hh"
 
 #ifdef _WIN32
 #include <BaseTsd.h>
@@ -45,25 +47,19 @@ typedef SSIZE_T ssize_t;
 
 namespace sbio {
   namespace XTC2 {
-    inline void safe_strncpy(char* dst, const char* src) {
-      std::size_t i { 0 };
-      for (; i < XTC2::MaxNameSize - 1 && src[i] != '\0'; ++i) {
-        dst[i] = src[i];
-      }
-      dst[i] = '\0';
-    }
-
-    struct MetadataCollector {
+    struct SBIO_API MetadataCollector {
     public:
       SBIO_HD inline void add_detector(std::uint32_t name_id,
                                        const char* name,
                                        const char* alg,
                                        const char* type,
+                                       const char* detId,
                                        unsigned segment,
                                        std::uint32_t offset) {
-        safe_strncpy(m_detectors[name_id].name, name);
-        safe_strncpy(m_detectors[name_id].type, type);
-        safe_strncpy(m_detectors[name_id].alg, alg);
+        safe_strncpy(m_detectors[name_id].name, name, XTC2::MaxNameSize);
+        safe_strncpy(m_detectors[name_id].type, type, XTC2::MaxNameSize);
+        safe_strncpy(m_detectors[name_id].alg, alg, XTC2::MaxNameSize);
+        safe_strncpy(m_detectors[name_id].detId, detId, XTC2::MaxNameSize);
         m_detectors[name_id].segment = segment;
         m_sd_offsets_discovered[name_id] = offset;
       }
@@ -95,17 +91,17 @@ namespace sbio {
       std::map<std::uint32_t, std::uint32_t> m_sd_offsets_discovered;
     };
 
-    SBIO_HD void handle_xtc2_names(XTC2::Names* names,
-                                   MetadataCollector& collector,
-                                   std::uint32_t offset);
+    SBIO_HD SBIO_API void handle_xtc2_names(XTC2::Names* names,
+                                            MetadataCollector& collector,
+                                            std::uint32_t offset);
 
-    SBIO_HD void handle_xtc2_shapes_data(XTC2::ShapesData* sd,
-                                         MetadataCollector& collector,
-                                         std::uint32_t current_offset);
+    SBIO_HD SBIO_API void handle_xtc2_shapes_data(XTC2::ShapesData* sd,
+                                                  MetadataCollector& collector,
+                                                  std::uint32_t current_offset);
 
-    SBIO_HD void inspect_xtc2(XTC2::Xtc* xtc,
-                              MetadataCollector& collector,
-                              std::uint32_t current_offset = 0);
+    SBIO_HD SBIO_API void inspect_xtc2(XTC2::Xtc* xtc,
+                                       MetadataCollector& collector,
+                                       std::uint32_t current_offset = 0);
   } // namespace XTC2
 };
 

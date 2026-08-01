@@ -23,10 +23,13 @@
 #include "sbio/core/broker.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/stream.hh"
+#include "sbio/core/sync.hh"
 #include "sbio/core/utility.hh"
 #include "sbio/formats/format_traits.hh"
 
-#include "ncarray/ncarrays.hh"
+#include <ncarray/ncarrays.hh>
+#include <ncarray/soarrays.hh>
 
 #include <concepts>
 #include <cstddef>
@@ -34,26 +37,113 @@
 #include <cstring>
 #include <utility>
 
-#ifndef SBIO_HD
-#ifdef __CUDACC__
-#define SBIO_HD __host__ __device__
-#else
-#define SBIO_HD
-#endif
-#endif
-
 namespace sbio {
+  /**
+   * The logical grouping of StreamBrokers which should be queried together.
+   *
+   * While the StreamBroker represents the smallest *logical* unit that makes
+   * sense to query data for, the BrokerGroup represents the combination of
+   * various StreamBrokers. Frequently, it makes more sense at higher levels of
+   * abstraction to consider a group of StreamBrokers together as a single unit.
+   * For example, each StreamBroker may be managing only a portion of a larger
+   * data construct (a part of an image, e.g.). The BrokerGroup then provides
+   * a single interface to query all logically related StreamBrokers simulatneously.
+   * Note that a StreamBroker may belong to multiple BrokerGroups.
+   *
+   * @tparam BrokerType The type of the underlying StreamBroker in the group.
+   * @tparam FTraits The data format being read.
+   * @tparam MaxSegments The maximum number of members in the group.
+   */
   template <
-    class BrokerType,
-    FormatTraits FTraits,
+    IsStreamBroker BrokerType,
+    FormatTraits<
+      typename BrokerType::IOPolicy, typename BrokerType::ExecutionPolicy
+    > FTraits,
     std::size_t MaxSegments = 128
   >
   class BrokerGroup {
   public:
+    /**
+     * The type of the IO strategy being used.
+     */
+    using IOPolicy = typename BrokerType::IOPolicy;
+    /**
+     * The Execution policy type.
+     */
+    using ExecutionPolicy = typename BrokerType::ExecutionPolicy;
+    /**
+     * The type of data being read.
+     */
+    using DataFormat = FTraits;
+
+    /**
+     * The type of Stream: I.e., the IO strategy and data format being read.
+     */
+    using StreamType = Stream<IOPolicy, FTraits>;
+
+    /**
+     * The type of the StreamBroker's Storage.
+     */
+    using SBStorageType = Storage<
+      typename FTraits::BrokerBufferRequirements,
+      ExecutionPolicy
+    >;
+
+    /**
+     * The Execution policy configuration object type.
+     *
+     * `epolicy_config` objects configure the global behaviour of the Execution policy
+     * being used. The Execution policy must be configured before any Streams are
+     * opened as it controls all aspects of IO down to the allocation of Storage.
+     */
+    using EPolicyConfig = typename ExecutionPolicy::Config;
+    /**
+     * The individual Stream configuration object type.
+     *
+     * `stream_config` objects are used to set up each individual Stream so that
+     * it can connect and read from its individual data.
+     */
+    using StreamConfig = typename FTraits::StreamParameters;
+    /**
+     * The DataSource configuration object type.
+     *
+     * `ds_config` objects are used for initial discovery and connection of the
+     * full set of Streams.
+     */
+    using DSConfig = typename FTraits::DataSourceParameters;
+
+    /**
+     * The type of state tracking object for the data format's Stream.
+     */
+    using StreamState = typename FTraits::DiscoveryState;
+    /**
+     * The type of the general metadata object for the data format's Stream.
+     */
+    using StreamMetadata = typename FTraits::MetadataInventory;
+
+    /**
+     * The type of the enumerator used to specify access patterns used for the format.
+     */
     using DataAccessPtn = typename FTraits::DataAccessPtn;
-    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type of a request object used to query for data.
+     */
     using DataRequest = typename FTraits::DataRequest;
+    /**
+     * The type of a result object received as a response when querying for data.
+     */
+    using DataResult = typename FTraits::DataResult;
+    /**
+     * The type used to request a specific step from the Stream.
+     *
+     * This type is required and guaranteed to be convertible std::size_t; however,
+     * different data format's may use different underlying types.
+     */
     using StepIdxType = typename FTraits::StepIdxType;
+
+    using PtrTableRequirements =
+      TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
+    using PtrStorageType = Storage<PtrTableRequirements, ExecutionPolicy>;
 
     /**
      * A reference to a specific piece of data, a numerical identifier, and pointer to its broker.
@@ -68,15 +158,15 @@ namespace sbio {
     };
 
     // Default constructor for DataSource abstraction
-    SBIO_HD BrokerGroup() {
+    BrokerGroup() {
       m_name[0] = '\0';
       m_type[0] = '\0';
     }
 
-    SBIO_HD BrokerGroup(const char* name,
-                        const char* type,
-                        std::size_t num_segments,
-                        DataSegmentRef* segments) {
+    BrokerGroup(const char* name,
+                const char* type,
+                std::size_t num_segments,
+                DataSegmentRef* segments) {
       m_num_segments = num_segments;
 
       std::size_t i { 0 };
@@ -110,50 +200,71 @@ namespace sbio {
           m_num_brokers++;
         }
       }
+
+      std::size_t max_batch_count { 1 };
+      if (m_num_brokers > 0 && m_segments[0].broker != nullptr) {
+        max_batch_count = FTraits::max_batch_count(m_segments[0].broker->config());
+      }
+
+      m_ptr_storage =
+        ExecutionPolicy::template allocate_group_storage<IOPolicy, FTraits>(m_num_segments,
+                                                                            max_batch_count);
     }
 
-    SBIO_HD const char* group_name() const { return m_name; }
-    SBIO_HD const char* group_type() const { return m_type; }
+    const char* group_name() const { return m_name; }
+    const char* group_type() const { return m_type; }
 
-    SBIO_HD inline std::size_t num_segments() const { return m_num_segments; }
-    SBIO_HD inline const DataSegmentRef* segments() const { return m_segments; }
-    SBIO_HD inline const DataSegmentRef& segment(std::size_t i) const {
-      return m_segments[i];
-    }
+    inline std::size_t num_segments() const { return m_num_segments; }
+    inline const DataSegmentRef* segments() const { return m_segments; }
+    inline const DataSegmentRef& segment(std::size_t i) const { return m_segments[i]; }
 
-    SBIO_HD inline BrokerType** stream_brokers() { return m_stream_brokers; }
-    SBIO_HD inline std::size_t num_stream_brokers() const { return m_num_brokers; }
+    inline BrokerType** stream_brokers() { return m_stream_brokers; }
+    inline std::size_t num_stream_brokers() const { return m_num_brokers; }
 
-    SBIO_HD inline IOStatus fetch_next_for(StepIdxType& step_idx,
-                                           std::size_t broker_no) const {
+    inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
       auto* stream_broker = m_stream_brokers[broker_no];
       auto& access_ptn = m_access_ptns[broker_no];
 
       return stream_broker->fetch_step(step_idx, access_ptn);
     }
 
+    inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
+                                    std::size_t broker_no) const {
+      auto* stream_broker = m_stream_brokers[broker_no];
+      auto& access_ptn = m_access_ptns[broker_no];
+
+      return stream_broker->fetch_steps(steps, access_ptn);
+    }
+
     template <class CBType>
-    SBIO_HD inline DataResult get_data_for(DataRequest& req,
-                                           std::size_t segment_no,
-                                           CBType&& callback) const {
+    inline DataResult get_data_for(DataRequest& req,
+                                   std::size_t segment_no,
+                                   CBType&& callback,
+                                   std::size_t batch_idx = 0) const {
       req.segment_number = m_segments[segment_no].segment_no;
 
       auto* stream_broker = m_segments[segment_no].broker;
       auto& access_ptn = m_segments[segment_no].access_ptn;
 
-      auto res = stream_broker->get_data_in_buffer(req, access_ptn);
-      callback(res);
+      auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
+
+      if constexpr (requires { callback(res, segment_no); }) {
+        callback(res, segment_no);
+      } else if constexpr (requires { callback(res); }) {
+        callback(res);
+      }
       return res;
     }
 
-    SBIO_HD inline DataResult get_data_for(DataRequest& req,
-                                           std::size_t segment_no) const {
+    inline DataResult get_data_for(DataRequest& req,
+                                   std::size_t segment_no,
+                                   std::size_t batch_idx = 0) const {
       req.segment_number = m_segments[segment_no].segment_no;
 
       auto* stream_broker = m_segments[segment_no].broker;
       auto& access_ptn = m_segments[segment_no].access_ptn;
 
-      auto res = stream_broker->get_data_in_buffer(req, access_ptn);
+      auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
       return res;
     }
 
@@ -181,13 +292,16 @@ namespace sbio {
      */
     template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
     requires std::invocable<CBType, DataResult>
-    SBIO_HD inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
-                                                       CBType&& callback,
-                                                       Args&&... args) const {
+    inline ncarray::SOViewFor<MemTag> get_data(StepIdxType& step_idx,
+                                               CBType&& callback,
+                                               Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
+
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
 
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
@@ -205,11 +319,12 @@ namespace sbio {
       auto get_data_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           auto active_stream_idx { step_idx % m_num_segments };
+
           auto res = get_data_for(req,
                                   active_stream_idx,
                                   std::forward<CBType>(callback));
 
-          m_ptrs[0] = const_cast<void*>(res.data);
+          ptr_tbl[0] = const_cast<void*>(res.data);
           // This assumes all segments are same shape...
           ref_res.data = res.data;
           ref_res.size = res.size;
@@ -226,7 +341,8 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          // m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
@@ -249,13 +365,15 @@ namespace sbio {
         num_segments = 1;
       }
 
-      BrokerType::ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                              read_cb,
-                                                              num_brokers,
-                                                              get_data_cb,
-                                                              num_segments);
+      ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                  read_cb,
+                                                  num_brokers,
+                                                  get_data_cb,
+                                                  num_segments);
 
-      return as_ncarray<MemTag>(m_ptrs, num_segments, ref_res);
+      const void** ptr_table { const_cast<const void**>(ptr_tbl) };
+
+      return as_ncarray<MemTag>(ptr_table, num_segments, ref_res);
     }
 
     /**
@@ -275,12 +393,15 @@ namespace sbio {
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <typename MemTag = ncarray::HostTag, typename... Args>
-    SBIO_HD inline ncarray::NCViewFor<MemTag> get_data(StepIdxType& step_idx,
-                                                       Args&&... args) const {
+    inline ncarray::SOViewFor<MemTag> get_data(StepIdxType& step_idx,
+                                               Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
+
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
 
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
@@ -300,8 +421,8 @@ namespace sbio {
           auto active_stream_idx { step_idx % m_num_segments };
           auto res = get_data_for(req, active_stream_idx);
 
-          m_ptrs[0] = const_cast<void*>(res.data);
-          // This assumes all segments are same shape...
+          ptr_tbl[0] = const_cast<void*>(res.data);
+          //  This assumes all segments are same shape...
           ref_res.data = res.data;
           ref_res.size = res.size;
           ref_res.rank = res.rank;
@@ -315,7 +436,7 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          m_ptrs[req.segment_number] = const_cast<void*>(res.data);
+          ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
@@ -338,14 +459,152 @@ namespace sbio {
         num_segments = 1;
       }
 
-      BrokerType::ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                              read_cb,
-                                                              num_brokers,
-                                                              get_data_cb,
-                                                              num_segments);
+      ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                  read_cb,
+                                                  num_brokers,
+                                                  get_data_cb,
+                                                  num_segments);
 
-      return as_ncarray<MemTag>(m_ptrs, num_segments, ref_res);
+      return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res);
     }
+
+    template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
+    requires std::invocable<CBType, DataResult>
+    inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,
+                                                     CBType&& callback,
+                                                     Args&&... args) const {
+      DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
+
+      bool passed_step { steps.size() == 3 };
+      StepIdxType first { *steps.begin() };
+      StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+      std::size_t count { (last > first) ? (last - first) : 1 };
+
+      // Save a result reference to capture the data in the lambdas
+      DataResult ref_res;
+
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+
+      auto read_cb = [&](std::size_t i) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          /// TODO: Setup Chronological
+        } else {
+          auto& access_ptn = m_access_ptns[i];
+          return m_stream_brokers[i]->fetch_steps(steps, access_ptn);
+        }
+      };
+
+      auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          /// TODO: Setup Chronological
+        } else {
+          auto res = get_data_for(req,
+                                  i,
+                                  std::forward<CBType>(callback),
+                                  cnt);
+
+          std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
+          ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+          if (i == 0) {
+            // This assumes all segments are same shape...
+            ref_res.data = res.data;
+            ref_res.size = res.size;
+            ref_res.rank = res.rank + 1;
+            ref_res.shape[0] = count;
+            // TODO: Consider ways to avoid copy....
+            for (std::uint16_t i = 0; i < res.rank - 1; ++i) {
+              ref_res.shape[i + 1] = res.shape[i];
+            }
+            ref_res.dtype = res.dtype;
+          }
+        }
+      };
+
+      std::size_t num_brokers { m_num_brokers };
+      std::size_t num_segments { m_num_segments };
+
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        num_brokers = 1;
+        num_segments = 1;
+      }
+
+      ExecutionPolicy::template get_data_steps<FTraits>(steps,
+                                                        read_cb,
+                                                        num_brokers,
+                                                        get_data_cb,
+                                                        num_segments);
+
+      const void** ptr_table { const_cast<const void**>(ptr_tbl) };
+
+      return as_ncarray<MemTag>(ptr_table, num_segments, ref_res, count);
+    }
+
+    template <typename MemTag = ncarray::HostTag, typename... Args>
+    inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,
+                                                     Args&&... args) const {
+      DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
+
+      bool passed_step { steps.size() == 3 };
+      StepIdxType first { *steps.begin() };
+      StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+      std::size_t count { (last > first) ? (last - first) : 1 };
+
+      // Save a result reference to capture the data in the lambdas
+      DataResult ref_res;
+
+      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+
+      auto read_cb = [&](std::size_t i) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          // TODO: Setup Chronological
+        } else {
+          auto& access_ptn = m_access_ptns[i];
+          return m_stream_brokers[i]->fetch_steps(steps, access_ptn);
+        }
+      };
+
+      auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          // TODO: Setup Chronological
+        } else {
+          auto res = get_data_for(req, i, cnt);
+
+          std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
+          ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+          if (i == 0 && cnt == 0) {
+            // This assumes all segments are same shape...
+            ref_res.data = res.data;
+            ref_res.size = res.size;
+            ref_res.rank = res.rank;
+            ref_res.shape[0] = count;
+            // TODO: Consider ways to avoid copy....
+            for (std::uint16_t i = 0; i < res.rank; ++i) {
+              ref_res.shape[i + 1] = res.shape[i];
+            }
+            ref_res.dtype = res.dtype;
+          }
+        }
+      };
+
+      std::size_t num_brokers { m_num_brokers };
+      std::size_t num_segments { m_num_segments };
+
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        num_brokers = 1;
+        num_segments = 1;
+      }
+
+      ExecutionPolicy::template get_data_steps<FTraits>(steps,
+                                                        read_cb,
+                                                        num_brokers,
+                                                        get_data_cb,
+                                                        num_segments);
+
+      return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res, count);
+    }
+
 
   private:
     char m_name[FTraits::MaxNameSize];
@@ -358,6 +617,8 @@ namespace sbio {
     mutable std::size_t m_num_brokers { 0 };
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
+
+    mutable PtrStorageType m_ptr_storage;
   };
 } // namespace sbio
 

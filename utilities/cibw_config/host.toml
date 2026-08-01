@@ -14,6 +14,7 @@ build-frontend = { name = "pip", args = ["--no-build-isolation"] }
 before-build = [
     "python -m pip install -U pip",
     "python -m pip install \"meson>=1.10.1\" meson-python ninja \"pybind11[global]\" setuptools cmake delvewheel",
+    "python -m pip install ncarray==0.7.1 --extra-index-url https://pypi.xfelpp.org/host"
 ]
 
 # For C++23 need a newer GCC coming from manylinux_2_28 (GCC 13) and later
@@ -41,6 +42,7 @@ before-all = [
 
     mkdir install
     /opt/python/cp310-cp310/bin/pip install meson ninja
+    /opt/python/cp310-cp310/bin/python -m pip install ncarray==0.7.1 --extra-index-url https://pypi.xfelpp.org/host || true
     export PATH="/opt/python/cp310-cp310/bin:$PATH"
     meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=auto --prefix={project}/install
     meson compile -j 2 -C builddir
@@ -62,6 +64,7 @@ LDFLAGS = "-L/project/install/lib -L/project/install/lib64"
 before-all = """
 brew install ccache ninja meson cmake || true
 ccache -z
+python3 -m pip install ncarray==0.7.1 --extra-index-url https://pypi.xfelpp.org/host || true
 meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=auto --prefix={project}/install
 meson compile -j 2 -C builddir
 meson install -C builddir
@@ -83,6 +86,7 @@ LDFLAGS = "-L$GITHUB_WORKSPACE/install/lib"
 config-settings = { "setup-args" = ["-Dcpp_compiler_launcher=", "-Dcuda_compiler_launcher=", "-Dbuild_core=false"] }
 before-all = [
     "python -m pip install meson ninja",
+    "python -m pip install ncarray==0.7.1 --extra-index-url https://pypi.xfelpp.org/host",
     "meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=auto --prefix=%CD%/install",
     "meson compile -j 2 -C builddir",
     "meson install -C builddir"

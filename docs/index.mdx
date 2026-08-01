@@ -1,0 +1,45 @@
+---
+title: sbio
+description: "Stream Broker IO: sbio"
+hero:
+  tagline: "Stream Broker IO: sbio"
+  #image:
+  #  #file: ../../assets/logo.webp
+  #  file: ../../assets/
+  actions:
+    - text: XFELPP
+      link: https://www.xfelpp.org
+      icon: external
+      #icon: right-arrow
+sidebar:
+  order: 0
+---
+
+import { Aside, Card, CardGrid, Icon, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+<Aside type="note">
+  This website and associated infrastructure is still under construction. Please bear with us as we bring everything online.
+</Aside>
+
+`sbio` is a modular framework for creating libraries and end-user applications involving IO of "streamable" data. I.e., data for which a coherent answer can be formulated for the request: "provide the next unit of data." In general, this may be most frequently associated to data streamed in time, but that is not a requirement of the framework.
+
+The framework provides a number of IO plugins, as well as execution policies out of the box, allowing users to select for the overall parallelization strategy and technologies that may be available for their specific applications (GPU-compute, Linux-only, etc.). This choice gives application builders a lot of power, but a simplified API is also available to get up and running immediately. Through the simple Python API, a selection of policies can be chosen from with the most important features bound. Beyond that, users at the Python level can opt to make extensions using pre-bound specializations of key policies and plugins, or use the trampoline classes for full control. Alternatively, the C++ API can be used for maximum performance.
+
+## Features
+
+Currently, `sbio` has support for:
+
+- POSIX IO
+- MPI
+- Multi-threading
+
+With the following features planned for an upcoming release:
+- CUDA Support
+- cuFile
+
+In the longer term, the goal is to extend coverage to include:
+
+- HIP
+- Completely device-bound implementations
+- iouring
+- and much more...
