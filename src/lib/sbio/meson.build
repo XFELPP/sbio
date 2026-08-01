@@ -21,6 +21,7 @@ if build_core_opt
     libsbio = shared_library(
         'sbio',
         core_sources,
+        cpp_args: ['-DSBIO_BUILD_API'],
         dependencies: deps_for_sbio,
         include_directories: sbio_headers,
         install: true,

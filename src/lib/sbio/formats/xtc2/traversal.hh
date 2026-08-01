@@ -20,6 +20,7 @@
 #ifndef SBIO_FORMATS_XTC2_TRAVERSAL_HH
 #define SBIO_FORMATS_XTC2_TRAVERSAL_HH
 
+#include "sbio/export_macro.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
 #include "sbio/util/string.hh"
 
@@ -46,7 +47,7 @@ typedef SSIZE_T ssize_t;
 
 namespace sbio {
   namespace XTC2 {
-    struct MetadataCollector {
+    struct SBIO_API MetadataCollector {
     public:
       SBIO_HD inline void add_detector(std::uint32_t name_id,
                                        const char* name,
@@ -90,17 +91,17 @@ namespace sbio {
       std::map<std::uint32_t, std::uint32_t> m_sd_offsets_discovered;
     };
 
-    SBIO_HD void handle_xtc2_names(XTC2::Names* names,
-                                   MetadataCollector& collector,
-                                   std::uint32_t offset);
+    SBIO_HD SBIO_API void handle_xtc2_names(XTC2::Names* names,
+                                            MetadataCollector& collector,
+                                            std::uint32_t offset);
 
-    SBIO_HD void handle_xtc2_shapes_data(XTC2::ShapesData* sd,
-                                         MetadataCollector& collector,
-                                         std::uint32_t current_offset);
+    SBIO_HD SBIO_API void handle_xtc2_shapes_data(XTC2::ShapesData* sd,
+                                                  MetadataCollector& collector,
+                                                  std::uint32_t current_offset);
 
-    SBIO_HD void inspect_xtc2(XTC2::Xtc* xtc,
-                              MetadataCollector& collector,
-                              std::uint32_t current_offset = 0);
+    SBIO_HD SBIO_API void inspect_xtc2(XTC2::Xtc* xtc,
+                                       MetadataCollector& collector,
+                                       std::uint32_t current_offset = 0);
   } // namespace XTC2
 };
 

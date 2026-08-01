@@ -21,6 +21,7 @@
 #define SBIO_FORMATS_XTC1_XTC1_TRAITS_HH
 
 #include "sbio/core/storage.hh"
+#include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/xtc1/xtc1.hh"
 #include "sbio/util/string.hh"
@@ -37,7 +38,7 @@
 #endif
 
 namespace sbio {
-  struct XTC1Traits : public BaseTraits {
+  struct SBIO_API XTC1Traits : public BaseTraits {
     // Sizeof dgram header
     // 16 bytes (Sequence) + 4 bytes (Env) + sizeof(Xtc)
     // 16 + 4 + 20 = 40 bytes
@@ -125,7 +126,7 @@ namespace sbio {
       std::size_t events_per_read { 0 };
     };
 
-    struct DataRequest {
+    struct SBIO_API DataRequest {
       DataRequest() = default;
 
       DataRequest(const DataRequest& other) = default;
@@ -163,7 +164,7 @@ namespace sbio {
      * This should be flat and allow for O(1) retrieval of offsets into a
      * a datagram for a combination of (Detector, Algorithm, Field)
      */
-    struct MetadataInventory;
+    struct SBIO_API MetadataInventory;
 
     /**
      * The struct to be used to return results when data is requested.

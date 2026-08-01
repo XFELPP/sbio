@@ -253,9 +253,25 @@ if libncarray.found()
     ncarray_dep = libncarray
 else
     message('ncarray not found via `find_library` - checking via Python')
+    nc_libs_cmd = '''
+import glob
+import os
+from typing import List, Set
+
+import ncarray
+
+d: str = ncarray.get_lib_dir()
+files: Set[str] = set(glob.glob(os.path.join(d, "libnc*")) + glob.glob(os.path.join(d, "ncarray*")))
+libs: List[str] = [f for f in files if f.endswith((".so", ".dylib", ".dll", ".lib")) or ".so." in f]
+
+if any(f.endswith(".lib") for f in libs):
+    libs = [f for f in libs if not f.endswith(".dll")]
+print("\\n".join(libs))
+'''
+
     nc_libs_raw = run_command(
         py3, '-c',
-        'import glob, ncarray; print("\\n".join(glob.glob(f"{ncarray.get_lib_dir()}/libnc*")))',
+        nc_libs_cmd,
         check: false,
     ).stdout().strip().split('\n')
 
@@ -267,12 +283,18 @@ else
         fs = import('fs')
         nc_link_args = []
         foreach lib : nc_libs_raw
-            libdir = fs.parent(lib)
-            libname = fs.name(lib)
-            nc_link_args += [
-                '-L' + libdir,
-                '-l:' + libname,
-            ]
+            if lib != ''
+                libdir = fs.parent(lib)
+                libname = fs.name(lib)
+                if host_machine.system() == 'windows'
+                    nc_link_args += [lib]
+                else
+                    nc_link_args += [
+                        '-L' + libdir,
+                        '-l:' + libname,
+                    ]
+                endif
+            endif
         endforeach
 
         nc_inc = run_command(

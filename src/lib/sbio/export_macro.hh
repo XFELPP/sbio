@@ -17,34 +17,21 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef SBIO_IO_POSIX_HH
-#define SBIO_IO_POSIX_HH
+#ifndef SBIO_EXPORT_MACRO_HH
+#define SBIO_EXPORT_MACRO_HH
 
-#include "sbio/core/io.hh"
-#include "sbio/export_macro.hh"
+#ifdef _WIN32
 
-#include <cstddef>
-#include <cstdint>
+#ifdef SBIO_BUILD_API
+#define SBIO_API __declspec(dllexport)
+#else
+#define SBIO_API __declspec(dllimport)
+#endif // SBIO_BUILD_API
 
-namespace sbio {
-  /**
-   * A very basic IO implementation over standard synchronous POSIX APIs.
-   *
-   * This IO implementation provides solely synchronous IO capabilities over a
-   * Stream using standard POSIX APIs.
-   */
-  struct SBIO_API SyncPOSIXIO : public IOPolicy<SyncPOSIXIO> {
-  public:
+#else
 
-    SyncPOSIXIO();
+#define SBIO_API
 
-    IOStatus connect(const char* path);
+#endif // _WIN32
 
-    IOStatus read(std::uint64_t offset, std::size_t size, void* dest);
-
-  private:
-    int m_fd;
-  };
-} // namespace sbio
-
-#endif // SBIO_IO_POSIX_HH
+#endif // SBIO_EXPORT_MACRO_HH

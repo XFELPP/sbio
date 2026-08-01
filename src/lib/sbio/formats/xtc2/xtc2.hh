@@ -1,6 +1,7 @@
 #ifndef SBIO_FORMATS_XTC2_XTC2_HH
 #define SBIO_FORMATS_XTC2_XTC2_HH
 
+#include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/util/string.hh"
 
@@ -77,7 +78,7 @@ namespace sbio {
       NumberOf
     };
 
-    struct TypeId {
+    struct SBIO_API TypeId {
       enum Type {
         Parent,
         ShapesData,
@@ -168,7 +169,7 @@ namespace sbio {
     };
 
     // --- Struct wrappers for XTC2 --- //
-    struct Src {
+    struct SBIO_API Src {
     public:
       SBIO_HD inline unsigned value() const { return m_value & ValueBitMask; }
 
@@ -180,7 +181,7 @@ namespace sbio {
       enum { ValueBitMask = 0x0FFFFFFF };
     };
 
-    struct Damage {
+    struct SBIO_API Damage {
     public:
       enum Value {
         Truncate            = 0,
@@ -220,7 +221,7 @@ namespace sbio {
     };
 
 #pragma pack(push, 2)
-    struct Xtc {
+    struct SBIO_API Xtc {
       Src src;              // 4 bytes
       Damage damage;        // 2 bytes
       TypeId contains;      // 2 bytes
@@ -246,7 +247,7 @@ namespace sbio {
     // This Dgram wrapper collapses the more complex class hierarchy from xtcdata
     // Comments indicate where the actual functions and data members are defined
     // in the original XtcData classes
-    struct Dgram {
+    struct SBIO_API Dgram {
     public: // Added in TransitionBase
       enum Type { Event = 0, Occurrence = 1, Marker = 2 };
       enum { NumberOfTypes = 3 };
@@ -298,7 +299,7 @@ namespace sbio {
       unsigned segment;
     };
 
-    struct XtcFieldDescr {
+    struct SBIO_API XtcFieldDescr {
     public:
       XtcFieldDescr(const char* name_, std::uint32_t rank_, XTC2::DType dtype_)
         : rank(rank_)
@@ -311,7 +312,7 @@ namespace sbio {
       char name[MaxNameSize]{};
     };
 
-    struct AlgVersion {
+    struct SBIO_API AlgVersion {
     public:
       SBIO_HD AlgVersion(std::uint8_t major, std::uint8_t minor, std::uint8_t micro) {
         m_version = major << 16 | minor << 8 | micro;
@@ -326,7 +327,7 @@ namespace sbio {
       std::uint32_t m_version;
     };
 
-    struct Alg {
+    struct SBIO_API Alg {
       SBIO_HD Alg(const char* alg, std::uint8_t major, std::uint8_t minor, std::uint8_t micro)
         : m_version(major, minor, micro)
       {
@@ -339,7 +340,7 @@ namespace sbio {
       AlgVersion m_version;
     };
 
-    struct Name {
+    struct SBIO_API Name {
     public:
       SBIO_HD Name()
         : m_alg("", 0, 0, 0)
@@ -384,7 +385,7 @@ namespace sbio {
       std::uint32_t m_rank;
     };
 
-    struct Shape {
+    struct SBIO_API Shape {
     public:
       SBIO_HD inline unsigned size(Name& name) {
         unsigned size { 1 };
@@ -418,7 +419,7 @@ namespace sbio {
       std::uint32_t segment;
     };
 
-    struct NamesId : public Src {
+    struct SBIO_API NamesId : public Src {
     public:
       enum { NumberOf = 1 << 20 };
 
@@ -430,7 +431,7 @@ namespace sbio {
     // NOTE: `Names`, `Data`, and `Shapes` actually inherit from AutoParentAlloc.
     //       That class isn't needed for reading though.
 
-    struct Names : public Xtc {
+    struct SBIO_API Names : public Xtc {
     public:
       SBIO_HD inline std::uint32_t numArrays() const { return m_name_info.numArrays; }
       SBIO_HD inline const char* detName() const { return m_name_info.detName; }
@@ -460,9 +461,9 @@ namespace sbio {
       NameInfo m_name_info;
     };
 
-    struct Data : public Xtc {};
+    struct SBIO_API Data : public Xtc {};
 
-    struct Shapes : public Xtc {
+    struct SBIO_API Shapes : public Xtc {
     public:
       SBIO_HD inline const Shape& get(unsigned index) const {
         return reinterpret_cast<const Shape*>(this + 1)[index];
@@ -472,7 +473,7 @@ namespace sbio {
       }
     };
 
-    struct ShapesData : public Xtc {
+    struct SBIO_API ShapesData : public Xtc {
     public:
       SBIO_HD inline const NamesId& namesId() const {
         return reinterpret_cast<const NamesId&>(src);
@@ -517,11 +518,11 @@ namespace sbio {
       }
     };
 
-    SBIO_HD DataResult resolve_xtc2_pointer(void* buffer,
-                                            std::uint32_t sd_offset,
-                                            const Name* field_schema,
-                                            std::uint32_t nid,
-                                            std::uint32_t f_idx);
+    SBIO_HD SBIO_API DataResult resolve_xtc2_pointer(void* buffer,
+                                                     std::uint32_t sd_offset,
+                                                     const Name* field_schema,
+                                                     std::uint32_t nid,
+                                                     std::uint32_t f_idx);
   } // namespace XTC2
 } // namespace sbio
 

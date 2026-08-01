@@ -23,6 +23,7 @@
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/sync.hh"
+#include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
@@ -52,7 +53,7 @@ typedef SSIZE_T ssize_t;
 namespace fs = std::filesystem;
 
 namespace sbio {
-  struct XTC2Traits : public BaseTraits {
+  struct SBIO_API XTC2Traits : public BaseTraits {
     // Sizeof dgram header
     // 4 bytes + 4 bytes + 4 bytes + sizeof(Xtc)
     // Xtc: 4 bytes (src) + 2 bytes (damage) + 2 (TypeId) + 4 bytes extent
@@ -92,7 +93,7 @@ namespace sbio {
       std::size_t events_per_read { 43200 };
     };
 
-    struct DataSourceParameters {
+    struct SBIO_API DataSourceParameters {
 #ifndef __CUDA_ARCH__
       DataSourceParameters(const std::string& exp, unsigned run_) {
         safe_strncpy(experiment, exp.c_str(), exp.size() + 1);
@@ -201,7 +202,7 @@ namespace sbio {
       DataAccessPtn last_accessed_ptn { DataAccessPtn::L1Accept }; ///< Indicate last buffer used
     };
 
-    struct DataRequest {
+    struct SBIO_API DataRequest {
       DataRequest() = default;
 
       DataRequest(const DataRequest& other) = default;
@@ -239,7 +240,7 @@ namespace sbio {
      * This should be flat and allow for O(1) retrieval of offsets into a
      * a datagram for a combination of (Detector, Algorithm, Field)
      */
-    struct MetadataInventory;
+    struct SBIO_API MetadataInventory;
 
     /**
      * The struct to be used to return results when data is requested.

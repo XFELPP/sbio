@@ -20,6 +20,7 @@
 #ifndef SBIO_FORMATS_XTC1_TRAVERSAL_HH
 #define SBIO_FORMATS_XTC1_TRAVERSAL_HH
 
+#include "sbio/export_macro.hh"
 #include "sbio/formats/xtc1/registry.hh"
 #include "sbio/formats/xtc1/xtc1.hh"
 #include "sbio/formats/xtc1/xtc1_schemas.hh"
@@ -51,11 +52,11 @@ typedef SSIZE_T ssize_t;
 namespace sbio {
   namespace XTC1 {
     // Helper functions to map Detector/Device IDs to string names
-    SBIO_HD const char* get_detector_name(std::uint8_t det_id);
-    SBIO_HD const char* get_device_name(std::uint8_t dev_id);
-    SBIO_HD const char* get_bld_name(std::uint32_t bld_type);
+    SBIO_HD SBIO_API const char* get_detector_name(std::uint8_t det_id);
+    SBIO_HD SBIO_API const char* get_device_name(std::uint8_t dev_id);
+    SBIO_HD SBIO_API const char* get_bld_name(std::uint32_t bld_type);
 
-    inline std::string format_src_fullname(const Src& src) {
+    SBIO_API inline std::string format_src_fullname(const Src& src) {
       if (src.level() == Level::Source) {
         std::uint32_t phy { src.phy() };
         std::uint32_t det { (phy >> 24) & 0xFF };
@@ -80,7 +81,7 @@ namespace sbio {
       return "Unknown";
     }
 
-    struct MetadataCollector {
+    struct SBIO_API MetadataCollector {
     public:
       // Populates the alias map by pre-scanning for AliasConfig
       SBIO_HD inline void populate_aliases(Xtc* xtc) {
@@ -259,9 +260,9 @@ namespace sbio {
       std::map<Src, std::uint32_t> m_registered_srcs;
     };
 
-    SBIO_HD void inspect_xtc1(Xtc* xtc,
-                              MetadataCollector& collector,
-                              std::uint32_t current_offset = 0);
+    SBIO_HD SBIO_API void inspect_xtc1(Xtc* xtc,
+                                       MetadataCollector& collector,
+                                       std::uint32_t current_offset = 0);
   } // namespace XTC1
 } // namespace sbio
 

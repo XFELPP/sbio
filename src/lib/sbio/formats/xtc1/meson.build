@@ -6,6 +6,7 @@ if build_core_opt
                 'xtc1.cc',
                 'traversal.cc',
             ],
+            cpp_args: ['-DSBIO_BUILD_API'],
             include_directories: sbio_headers,
             install: true,
             install_dir: libsbio_install_dir,

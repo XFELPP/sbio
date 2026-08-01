@@ -37,6 +37,13 @@ def main():
         )
 
     delvewheel_search_path: str = f"{lib_dir};{bin_dir}"
+    try:
+        import ncarray
+        nc_dir: str = ncarray.get_lib_dir()
+        if os.path.exists(nc_dir):
+            delvewheel_search_path = f"{delvewheel_search_path};{nc_dir}"
+    except ImportError:
+        pass
 
     cuda_args: List[str] = []
     cuda_path: Optional[str] = os.getenv("CUDA_PATH")

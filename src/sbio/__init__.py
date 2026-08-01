@@ -41,9 +41,9 @@ def get_lib_dir() -> str:
     py_package_dir: str = os.path.dirname(__file__)
 
     # Check full-wheel path first: site-packages/sbio/lib
-    nca_wheel_lib_dir: str = os.path.join(py_package_dir, "lib")
-    if os.path.exists(nca_wheel_lib_dir):
-        return nca_wheel_lib_dir
+    sbio_wheel_lib_dir: str = os.path.join(py_package_dir, "lib")
+    if os.path.exists(sbio_wheel_lib_dir):
+        return sbio_wheel_lib_dir
 
     # Check split-wheel: site-packages/sbio/libsbio.so
     #                    site-packages/sbio.libs/libsbio.so

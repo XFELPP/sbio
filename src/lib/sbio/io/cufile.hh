@@ -21,6 +21,7 @@
 #define SBIO_IO_CUFILE_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/export_macro.hh"
 
 #include <cufile.h>
 
@@ -31,7 +32,7 @@ namespace sbio {
   /**
    * A IO protocol using cuFile APIs in conjunction with POSIX descriptors.
    */
-  struct cuFileIO : public IOPolicy<cuFileIO> {
+  struct SBIO_API cuFileIO : public IOPolicy<cuFileIO> {
   public:
     cuFileIO();
     ~cuFileIO();

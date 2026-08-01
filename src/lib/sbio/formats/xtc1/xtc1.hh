@@ -1,6 +1,7 @@
 #ifndef SBIO_FORMATS_XTC1_XTC1_HH
 #define SBIO_FORMATS_XTC1_XTC1_HH
 
+#include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/util/string.hh"
 
@@ -64,7 +65,7 @@ namespace sbio {
       DType dtype;                     ///< Data type
     };
 
-    class TransitionId {
+    class SBIO_API TransitionId {
     public:
       enum Value {
         Unknown,
@@ -117,7 +118,7 @@ namespace sbio {
       Value m_val;
     };
 
-    class TypeId {
+    class SBIO_API TypeId {
     public:
       /*
        * Notice: New enum values should be appended to the end of the enum list, since
@@ -570,7 +571,7 @@ namespace sbio {
     };
 
     // --- Struct wrappers for XTC1 --- //
-    struct Level {
+    struct SBIO_API Level {
     public:
       enum Type {
         Control,
@@ -599,7 +600,7 @@ namespace sbio {
       }
     };
 
-    struct Src {
+    struct SBIO_API Src {
     public:
       SBIO_HD Src()
         : m_log(std::numeric_limits<std::uint32_t>::max())
@@ -631,7 +632,7 @@ namespace sbio {
       std::uint32_t m_phy; // Physical identifier
     };
 
-    struct Damage {
+    struct SBIO_API Damage {
     public:
       enum Value {
         DroppedContribution    = 1,
@@ -672,7 +673,7 @@ namespace sbio {
     };
 
 #pragma pack(push, 2)
-    struct Xtc {
+    struct SBIO_API Xtc {
       Damage damage;
       Src src;
       TypeId contains;
@@ -740,7 +741,7 @@ namespace sbio {
       }
     };
 #pragma pack(pop)
-    class ClockTime {
+    class SBIO_API ClockTime {
     public:
       SBIO_HD ClockTime() {}
       SBIO_HD ClockTime(const ClockTime& t)
@@ -792,7 +793,7 @@ namespace sbio {
       uint32_t m_high;
     };
 
-    class TimeStamp {
+    class SBIO_API TimeStamp {
     public:
       enum { NumFiducialBits = 17 };
       enum { MaxFiducials = (1<<17)-32 };
@@ -878,7 +879,7 @@ namespace sbio {
       std::uint32_t m_high;
     };
 
-    class Sequence {
+    class SBIO_API Sequence {
     public:
       enum Type { Event = 0, Occurrence = 1, Marker = 2 };
       enum { NumberOfTypes = 3 };
@@ -939,7 +940,7 @@ namespace sbio {
       TimeStamp m_stamp;
     };
 
-    class Env {
+    class SBIO_API Env {
     public:
       SBIO_HD Env() {}
       SBIO_HD Env(const Env& in)
@@ -962,7 +963,7 @@ namespace sbio {
     };
 
     namespace SmlData {
-      struct OrigDgramOffsetV1 {
+      struct SBIO_API OrigDgramOffsetV1 {
         std::int64_t m_fileOffset;
         std::uint32_t m_extent;
 
@@ -971,7 +972,7 @@ namespace sbio {
       };
     };
 
-    struct Dgram {
+    struct SBIO_API Dgram {
     public:
       Sequence seq;
       Env env;
@@ -992,7 +993,7 @@ namespace sbio {
       unsigned segment;
     };
 
-    struct XtcFieldDescr {
+    struct SBIO_API XtcFieldDescr {
       XtcFieldDescr(const char* name_,
                     std::uint32_t rank_,
                     XTC1::DType dtype_,
@@ -1018,7 +1019,7 @@ namespace sbio {
       char name[MaxNameSize] {};
     };
 
-    struct Name {
+    struct SBIO_API Name {
     public:
       SBIO_HD Name()
         : m_name {}
@@ -1047,20 +1048,20 @@ namespace sbio {
       std::uint32_t m_rank;
     };
 
-    SBIO_HD DataResult resolve_xtc_pointer(void* buffer,
-                                           std::uint32_t sd_offset,
-                                           const Name* field_schema,
-                                           std::uint32_t nid,
-                                           std::uint32_t f_idx,
-                                           std::uint32_t evt_type_id = 0,
-                                           const void* inv = nullptr,
-                                           std::uint32_t src_log = 0,
-                                           std::uint32_t src_phy = 0);
+    SBIO_HD SBIO_API DataResult resolve_xtc_pointer(void* buffer,
+                                                    std::uint32_t sd_offset,
+                                                    const Name* field_schema,
+                                                    std::uint32_t nid,
+                                                    std::uint32_t f_idx,
+                                                    std::uint32_t evt_type_id = 0,
+                                                    const void* inv = nullptr,
+                                                    std::uint32_t src_log = 0,
+                                                    std::uint32_t src_phy = 0);
 
-    SBIO_HD const Xtc* find_xtc_by_type(const Xtc* xtc,
-                                        TypeId::Type target,
-                                        std::uint32_t src_log = 0,
-                                        std::uint32_t src_phy = 0);
+    SBIO_HD SBIO_API const Xtc* find_xtc_by_type(const Xtc* xtc,
+                                                 TypeId::Type target,
+                                                 std::uint32_t src_log = 0,
+                                                 std::uint32_t src_phy = 0);
   } // namespace XTC1
 } // namespace sbio
 

@@ -85,7 +85,7 @@ def main():
                         for name in z.namelist()
                         if "libcudart-" in os.path.basename(name)
                     ),
-                    "ncarray.libs",
+                    "sbio.libs",
                 )
 
             for builtins_file in builtins_src:
