@@ -30,7 +30,7 @@ PYBIND11_MODULE(pyio, io_module, py::mod_gil_not_used()) {
   io_module.doc() = "sbio Python bindings for IO drivers.";
 
   py::native_enum<sbio::IOStatus>(io_module,
-                                  "DType",
+                                  "IOStatus",
                                   "enum.Enum",
                                   "Enumerators for IO operation statuses.")
     .value("Success", sbio::IOStatus::Success)
