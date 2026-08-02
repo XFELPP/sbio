@@ -87,9 +87,14 @@ LDFLAGS = "-L$GITHUB_WORKSPACE/install/lib"
 # So just install MS-MPI and then let meson auto detect
 config-settings = { "setup-args" = ["-Dcpp_compiler_launcher=", "-Dcuda_compiler_launcher=", "-Dbuild_core=false"] }
 before-all = [
-    "powershell -Command \"Invoke-WebRequest -Uri 'https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.2/msmpisetup.exe' -OutFile 'msmpisetup.exe'; Start-Process 'msmpisetup.exe' -ArgumentList '-unattend' -Wait; Invoke-WebRequest -Uri 'https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.2/msmpisdk.msi' -OutFile 'msmpisdk.msi'; Start-Process 'msiexec.exe' -ArgumentList '/i msmpisdk.msi /quiet /norestart' -Wait\"",
+    "curl.exe -L -o msmpisetup.exe https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe",
+    "msmpisetup.exe -unattend",
+    "curl.exe -L -o msmpisdk.msi https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisdk.msi",
+    "msiexec.exe /i msmpisdk.msi /quiet /norestart",
     "python -m pip install meson ninja",
     "python -m pip install ncarray==0.7.2 --extra-index-url https://pypi.xfelpp.org/host",
+    #.... Didn't get the .lib bundled.... Have to add this until I fix ncarray repair_wheel_win.....
+    "python -c \"import os, glob, subprocess, ncarray; d=ncarray.get_lib_dir(); dlls=glob.glob(os.path.join(d, '*.dll')); dll=dlls[0]; def_p=os.path.join(d, 'ncarray.def'); lib_p=os.path.join(d, 'ncarray.lib'); out=subprocess.check_output(['dumpbin', '/exports', dll], text=True); lines=[l.split()[-1] for l in out.splitlines() if len(l.split())>=4 and l.split()[0].isdigit()]; open(def_p, 'w').write('EXPORTS\\n' + '\\n'.join(lines)); subprocess.run(['lib', f'/def:{def_p}', f'/out:{lib_p}', '/machine:x64'], check=True)\"",
     "meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=auto --prefix=%CD%/install",
     "meson compile -j 2 -C builddir",
     "meson install -C builddir"
