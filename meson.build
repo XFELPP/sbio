@@ -284,16 +284,7 @@ print(";".join(libs).replace("\r", ""))
         nc_link_args = []
         foreach lib : nc_libs_raw
             if lib != ''
-                libdir = fs.parent(lib)
-                libname = fs.name(lib)
-                if host_machine.system() == 'windows'
-                    nc_link_args += [lib]
-                else
-                    nc_link_args += [
-                        '-L' + libdir,
-                        '-l:' + libname,
-                    ]
-                endif
+                nc_link_args += [lib]
             endif
         endforeach
 

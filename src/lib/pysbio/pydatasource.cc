@@ -37,6 +37,7 @@
 #endif
 #include <pybind11/pybind11.h>
 
+#include <iostream>
 #include <string>
 #include <type_traits>
 #include <variant>

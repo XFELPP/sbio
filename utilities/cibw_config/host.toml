@@ -44,7 +44,7 @@ before-all = [
     /opt/python/cp310-cp310/bin/pip install meson ninja
     /opt/python/cp310-cp310/bin/python -m pip install "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
     export PATH="/usr/lib64/openmpi/bin:/opt/python/cp310-cp310/bin:$PATH"
-    meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=mpich --prefix={project}/install
+    meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=mpich --prefix={project}/install
     meson compile -j 2 -C builddir
     meson install -C builddir
     """,
@@ -68,7 +68,7 @@ export PYTHONPATH="$HOME/Library/Python/3.10/lib/python/site-packages:/opt/homeb
 export PYTHON="/opt/homebrew/opt/python@3.10/bin/python3.10"
 ccache -z
 python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
-meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=mpich --prefix=$(pwd)/install
+meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=mpich --prefix=$(pwd)/install
 meson compile -j 2 -C builddir
 meson install -C builddir
 """
@@ -92,7 +92,7 @@ before-all = [
     "python -m pip install \"ncarray==0.7.2+host\" --extra-index-url https://pypi.xfelpp.org/host/",
     #.... Didn't get the .lib bundled.... Have to add this until I fix ncarray repair_wheel_win.....
     "python -c \"import os, glob, subprocess, ncarray; d=ncarray.get_lib_dir(); dlls=glob.glob(os.path.join(d, '*.dll')); dll=dlls[0]; def_p=os.path.join(d, 'ncarray.def'); lib_p=os.path.join(d, 'ncarray.lib'); out=subprocess.check_output(['dumpbin', '/exports', dll], text=True); lines=[l.split()[-1] for l in out.splitlines() if len(l.split())>=4 and l.split()[0].isdigit()]; open(def_p, 'w').write('EXPORTS\\n' + '\\n'.join(lines)); subprocess.run(['lib', f'/def:{def_p}', f'/out:{lib_p}', '/machine:x64'], check=True)\"",
-    "meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=auto --prefix=%CD%/install",
+    "meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=auto --prefix=%CD%/install",
     "meson compile -j 2 -C builddir",
     "meson install -C builddir"
 ]
