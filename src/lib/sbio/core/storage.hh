@@ -167,7 +167,7 @@ namespace sbio {
 
       // For the Roles pack, on expansion, if the individual Role matches the Role
       // provided to this function, run the callback. Otherwise, do nothing.
-      ( (std::is_same_v<class Roles::role, Role> ? callback(self.template get<Roles>()) : void()), ... );
+      ( (std::is_same_v<typename Roles::role, Role> ? callback(self.template get<Roles>()) : void()), ... );
     }
   };
 

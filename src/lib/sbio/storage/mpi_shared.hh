@@ -211,7 +211,6 @@ namespace sbio {
     void* m_ptr { nullptr };                              ///< Pointer to the shared memory buffer
     std::size_t m_size { 0 };                             ///< Total size of the buffer/Window
     RC<MPI_Win, MPIWinAllocator, MPIWinDeleter> m_window; ///< Window over the shared memory buffer
-    int m_window_idx { 0 };                               ///< The index of the Window for ref counting
     int m_tag { -1 };                                     ///< Tag to allow point-to-point communication
     int m_seq { 0 };                                      ///< A sequence number to track sync points
   };

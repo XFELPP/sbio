@@ -372,7 +372,7 @@ namespace sbio {
 
           // Sort with a circular wrapping accounted for in the fiducial.
           for (std::size_t i = 0; i < num_segments - 1; ++i) {
-            std::uint32_t best { i };
+            std::uint32_t best { static_cast<std::uint32_t>(i) };
             for (std::size_t j = i + 1; j < num_segments; ++j) {
               std::uint32_t diff_best { stream_indices[final_stream_indices[best]] - smallest };
               std::uint32_t diff_j { stream_indices[final_stream_indices[j]] - smallest };
