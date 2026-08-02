@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 import glob
 import subprocess
@@ -23,6 +24,14 @@ def main():
         "auditwheel",
         "repair",
     ]
+
+    with zipfile.ZipFile(wheel_path, "r") as z:
+        for name in z.namelist():
+            if name.endswith(".so") or ".so." in name:
+                content = z.read(name)
+                for lib in set(re.findall(rb"libncarray[a-zA-Z0-9_\-]*\.so[0-9\.]*", content)):
+                    cmd.extend(["--exclude", lib.decode("utf-8")])
+
     if not no_exclude_core:
         cmd.extend(
             [

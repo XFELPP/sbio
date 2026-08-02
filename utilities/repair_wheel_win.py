@@ -40,8 +40,15 @@ def main():
     try:
         import ncarray
         nc_dir: str = ncarray.get_lib_dir()
+        root: str = os.path.dirname(nc_dir)
+
+        nc_dlls: List[str] = glob.glob(os.path.join(root, "**", "*.dll"), recursive=True)
+        nc_dirs: List[str] = list(set(os.path.dirname(p) for p in nc_dlls))
         if os.path.exists(nc_dir):
-            delvewheel_search_path = f"{delvewheel_search_path};{nc_dir}"
+            nc_dirs.append(nc_dir)
+
+        for d in set(nc_dirs):
+            delvewheel_search_path = f"{delvewheel_search_path};{d}"
     except ImportError:
         pass
 

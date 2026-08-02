@@ -91,8 +91,29 @@ jobs:
         run: |
           Invoke-WebRequest -Uri https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe -OutFile msmpisetup.exe
           Invoke-WebRequest -Uri https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisdk.msi -OutFile msmpisdk.msi
-          Start-Process -FilePath .\msmpisetup.exe -ArgumentList "-unattend", "-norestart" -Wait
-          Start-Process -FilePath msiexec.exe -ArgumentList "/i", "msmpisdk.msi", "/quiet", "/norestart" -Wait
+
+          Write-Host "--- Starting MS-MPI Setup ---"
+          $proc = Start-Process -FilePath .\msmpisetup.exe -ArgumentList "-unattend", "-log", "setup.log" -PassThru
+
+          $proc.WaitForExit(30000)
+
+          if (Test-Path setup.log) {
+              Write-Host "--- MS-MPI Setup Log Output ---"
+              Get-Content setup.log
+          }
+
+          Write-Host "--- Active Processes & Command Lines ---"
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -like "*msi*" -or $_.Name -like "*setup*" } | Select-Object ProcessId, Name, CommandLine | Format-List
+
+
+          while (Get-Process msiexec -ErrorAction SilentlyContinue) {
+              Write-Host "Waiting for background msiexec process to finish..."
+              Start-Sleep -Seconds 3
+          }
+
+          Write-Host "--- Installing MS-MPI SDK ---"
+          Start-Process msiexec.exe -ArgumentList "/i", "msmpisdk.msi", "/qn", "/norestart" -Wait
+
           Remove-Item msmpisetup.exe, msmpisdk.msi
 
           # Need to provide these so that Meson can find it later
@@ -106,35 +127,26 @@ jobs:
         run: |
           python -c "import re; p = 'meson.build'; c = open(p).read(); open(p, 'w').write(re.sub(r\"version:\s*'([0-9]+\.[0-9]+\.[0-9]+)'\", r\"version: '\1+host'\", c))"
 
-      - name: Build wheels
-        # Check pyproject.toml for supported versions and additional config
+      - name: Build 3.8 wheels
         # NOTE: cibuildwheel does not support Python 3.8 after the 3.x series
         uses: pypa/cibuildwheel@8d2b08b68458a16aeb24b64e68a09ab1c8e82084                    # v3.4.1
         with:
           config-file: "{package}/utilities/cibw_config/host.toml"
         env:
+          CIBW_BUILD: "cp38-*"
           CIBW_CACHE_PATH: ".cibw_cache"
+          SYSTEM_VERSION_COMPAT: "0"
           PreferredToolArchitecture: "x64"
 
-      # TODO: After new ncarray versions, switch to building 3.8-3.15 with split setup
-      # - name: Build 3.8 wheels
-      #   # NOTE: cibuildwheel does not support Python 3.8 after the 3.x series
-      #   uses: pypa/cibuildwheel@8d2b08b68458a16aeb24b64e68a09ab1c8e82084                    # v3.4.1
-      #   with:
-      #     config-file: "{package}/utilities/cibw_config/host.toml"
-      #   env:
-      #     CIBW_BUILD: "cp38-*"
-      #     CIBW_CACHE_PATH: ".cibw_cache"
-      #     PreferredToolArchitecture: "x64"
-
-      # - name: Build 3.9 and later wheels
-      #   uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55                    # v4.1.0
-      #   with:
-      #     config-file: "{package}/utilities/cibw_config/host.toml"
-      #   env:
-      #     CIBW_CACHE_PATH: ".cibw_cache"
-      #     CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315-* cp315t-*"
-      #     PreferredToolArchitecture: "x64"
+      - name: Build 3.9 and later wheels
+        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55                    # v4.1.0
+        with:
+          config-file: "{package}/utilities/cibw_config/host.toml"
+        env:
+          CIBW_CACHE_PATH: ".cibw_cache"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-* cp315-* cp315t-*"
+          SYSTEM_VERSION_COMPAT: "0"
+          PreferredToolArchitecture: "x64"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a              # v7.0.1
         with:

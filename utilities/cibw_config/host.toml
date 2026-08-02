@@ -14,7 +14,7 @@ build-frontend = { name = "pip", args = ["--no-build-isolation"] }
 before-build = [
     "python -m pip install -U pip",
     "python -m pip install \"meson>=1.10.1\" meson-python ninja \"pybind11[global]\" setuptools cmake delvewheel",
-    "python -m pip install \"ncarray==0.7.2+host\" --extra-index-url https://pypi.xfelpp.org/host/"
+    "python -m pip install \"ncarray==0.7.3+host\" --extra-index-url https://pypi.xfelpp.org/host/"
 ]
 
 # For C++23 need a newer GCC coming from manylinux_2_28 (GCC 13) and later
@@ -42,7 +42,7 @@ before-all = [
 
     mkdir install
     /opt/python/cp310-cp310/bin/pip install meson ninja
-    /opt/python/cp310-cp310/bin/python -m pip install "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
+    /opt/python/cp310-cp310/bin/python -m pip install "ncarray==0.7.3+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
     export PATH="/usr/lib64/openmpi/bin:/opt/python/cp310-cp310/bin:$PATH"
     meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=mpich --prefix={project}/install
     meson compile -j 2 -C builddir
@@ -67,7 +67,7 @@ export PATH="$HOME/Library/Python/3.10/bin:/opt/homebrew/opt/python@3.10/bin:$PA
 export PYTHONPATH="$HOME/Library/Python/3.10/lib/python/site-packages:/opt/homebrew/lib/python3.10/site-packages:$PYTHONPATH"
 export PYTHON="/opt/homebrew/opt/python@3.10/bin/python3.10"
 ccache -z
-python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
+python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.3+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
 meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=mpich --prefix=$(pwd)/install
 meson compile -j 2 -C builddir
 meson install -C builddir
@@ -79,6 +79,10 @@ CXX = "ccache clang++"
 CCACHE_DIR = ".ccache"
 PIP_RETRIES = "20"
 MACOSX_DEPLOYMENT_TARGET = "11.0"
+# This shim seems to cause issues with Python 3.8 trying to install ncarray
+# Since ncarray was built under 11.0, the Python 3.8 compiled with 10.XYZ
+# is declared as "too old" so it rrejects the wheel (macosx_11_0_arm64)
+SYSTEM_VERSION_COMPAT = "0"
 # Not able to find cmake in wheel step otherwise?
 PATH = "/opt/homebrew/bin:/usr/local/bin:/Applications/CMake.app/Contents/bin:$PATH"
 LIBRARY_PATH = "$GITHUB_WORKSPACE/install/lib:$LIBRARY_PATH"
@@ -89,9 +93,9 @@ LDFLAGS = "-L$GITHUB_WORKSPACE/install/lib"
 config-settings = { "setup-args" = ["-Dcpp_compiler_launcher=", "-Dcuda_compiler_launcher=", "-Dbuild_core=false"] }
 before-all = [
     "python -m pip install meson ninja",
-    "python -m pip install \"ncarray==0.7.2+host\" --extra-index-url https://pypi.xfelpp.org/host/",
+    "python -m pip install \"ncarray==0.7.3+host\" --extra-index-url https://pypi.xfelpp.org/host/",
     #.... Didn't get the .lib bundled.... Have to add this until I fix ncarray repair_wheel_win.....
-    "python -c \"import os, glob, subprocess, ncarray; d=ncarray.get_lib_dir(); dlls=glob.glob(os.path.join(d, '*.dll')); dll=dlls[0]; def_p=os.path.join(d, 'ncarray.def'); lib_p=os.path.join(d, 'ncarray.lib'); out=subprocess.check_output(['dumpbin', '/exports', dll], text=True); lines=[l.split()[-1] for l in out.splitlines() if len(l.split())>=4 and l.split()[0].isdigit()]; open(def_p, 'w').write('EXPORTS\\n' + '\\n'.join(lines)); subprocess.run(['lib', f'/def:{def_p}', f'/out:{lib_p}', '/machine:x64'], check=True)\"",
+    "python -c \"import os, glob, subprocess, ncarray; d=ncarray.get_lib_dir(); lib_p=os.path.join(d, 'ncarray.lib'); sp=os.path.dirname(os.path.dirname(os.path.abspath(ncarray.__file__))); dlls=glob.glob(os.path.join(sp, '**', '*.dll'), recursive=True); dll=dlls[0] if dlls else None; (not os.path.exists(lib_p) and dll) and [open(os.path.join(d, 'ncarray.def'), 'w').write('EXPORTS\\n' + '\\n'.join([l.split()[-1] for l in subprocess.check_output(['dumpbin', '/exports', dll], text=True).splitlines() if len(l.split())>=4 and l.split()[0].isdigit()])), subprocess.run(['lib', f'/def:' + os.path.join(d, 'ncarray.def'), f'/out:{lib_p}', '/machine:x64'], check=True)]\"",
     "meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=auto --prefix=%CD%/install",
     "meson compile -j 2 -C builddir",
     "meson install -C builddir"
@@ -100,9 +104,9 @@ repair-wheel-command = "python utilities/repair_wheel_win.py {dest_dir} {wheel} 
 
 [tool.cibuildwheel.windows.environment]
 PIP_RETRIES = "20"
-INCLUDE = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include;$INCLUDE"
-LIB = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Lib\\x64;$GITHUB_WORKSPACE/install/lib;$LIB"
-PATH = "C:\\Program Files\\Microsoft MPI\\Bin;$GITHUB_WORKSPACE/install/bin;$PATH"
+INCLUDE = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include;%INCLUDE%"
+LIB = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Lib\\x64;%GITHUB_WORKSPACE%\\install\\lib;%LIB%"
+PATH = "C:\\Program Files\\Microsoft MPI\\Bin;%GITHUB_WORKSPACE%\\install\\bin;%PATH%"
 PreferredToolArchitecture = "x64"
 MSMPI_INC = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include"
 MSMPI_LIB64 = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Lib\\x64"
