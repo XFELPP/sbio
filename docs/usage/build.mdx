@@ -5,7 +5,50 @@ sidebar:
   order: 1
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Recommendations for Builds and Installs
+
+Unlike with `ncarray`, the `sbio` package is often better built from source. This is because the various components are all optional, and choosing to build and link against a set of components in the environment you are working in is easier than incorporating a pre-built library. E.g., `sbio` can be built with MPI support (a feature very likely to be used); however, the implementation and version of MPI can vary over a wide range of supported options. If you are interested in `sbio` you very likely already have a working environment with an `MPI` installation, in which case building against that may be preferrable. The `sbio` build is generally quite reasonable in terms of time and computational cost - 5-10 minutes with modest hardware for compilation should generally be sufficient.
+
+Nonetheless, like all XFELPP projects, `sbio` has releases bundled as wheels available through the XFELPP indices. Currently, only the host builds are released. You can install from the index on the command-line using:
+
+<Tabs>
+  <TabItem label="CPU Only" icon="seti:cpp">
+    ```bash
+    pip install sbio --extra-index-url https://pypi.xfelpp.org/host
+    ```
+  </TabItem>
+</Tabs>
+
+The host-builds are currently configured as follows:
+
+<Tabs>
+  <TabItem label="Linux" icon="linux">
+    <Steps>
+      1. Built against `ncarray == 0.7.2`
+      2. MPI Support with `MPICH 5.0.1`
+      3. XTC2 Data Format Support
+      4. Python Wheels for Python 3.8-3.13
+    </Steps>
+  </TabItem>
+  <TabItem label="Windows" icon="seti:windows">
+    <Steps>
+      1. Built against `ncarray == 0.7.2`
+      2. MPI support with `MS-MPI 10.1.2`
+      3. XTC2 Data Format Support
+      4. Python Wheels for Python 3.8-3.13
+    </Steps>
+  </TabItem>
+  <TabItem label="macOS" icon="apple">
+    <Steps>
+      1. Built against `ncarray == 0.7.2`
+      2. MPI support with `MPICH 5.0.1`
+      3. XTC2 Data Format Support
+      4. Python Wheels for Python 3.8-3.13
+    </Steps>
+  </TabItem>
+</Tabs>
 
 ## General Information
 
