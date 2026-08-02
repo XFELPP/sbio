@@ -14,7 +14,7 @@ build-frontend = { name = "pip", args = ["--no-build-isolation"] }
 before-build = [
     "python -m pip install -U pip",
     "python -m pip install \"meson>=1.10.1\" meson-python ninja \"pybind11[global]\" setuptools cmake delvewheel",
-    "python -m pip install ncarray==0.7.2 --extra-index-url https://pypi.xfelpp.org/host"
+    "python -m pip install \"ncarray==0.7.2+host\" --extra-index-url https://pypi.xfelpp.org/host/"
 ]
 
 # For C++23 need a newer GCC coming from manylinux_2_28 (GCC 13) and later
@@ -42,7 +42,7 @@ before-all = [
 
     mkdir install
     /opt/python/cp310-cp310/bin/pip install meson ninja
-    /opt/python/cp310-cp310/bin/python -m pip install ncarray==0.7.2 --extra-index-url https://pypi.xfelpp.org/host || true
+    /opt/python/cp310-cp310/bin/python -m pip install "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
     export PATH="/usr/lib64/openmpi/bin:/opt/python/cp310-cp310/bin:$PATH"
     meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=mpich --prefix={project}/install
     meson compile -j 2 -C builddir
@@ -64,7 +64,7 @@ LDFLAGS = "-L/project/install/lib -L/project/install/lib64"
 before-all = """
 brew install open-mpi ccache ninja meson cmake || true
 ccache -z
-python3 -m pip install --break-system-packages ncarray==0.7.2 --extra-index-url https://pypi.xfelpp.org/host || true
+python3 -m pip install --break-system-packages "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
 meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=mpich --prefix=$(pwd)/install
 meson compile -j 2 -C builddir
 meson install -C builddir
@@ -86,7 +86,7 @@ LDFLAGS = "-L$GITHUB_WORKSPACE/install/lib"
 config-settings = { "setup-args" = ["-Dcpp_compiler_launcher=", "-Dcuda_compiler_launcher=", "-Dbuild_core=false"] }
 before-all = [
     "python -m pip install meson ninja",
-    "python -m pip install ncarray==0.7.2 --extra-index-url https://pypi.xfelpp.org/host",
+    "python -m pip install \"ncarray==0.7.2+host\" --extra-index-url https://pypi.xfelpp.org/host/",
     #.... Didn't get the .lib bundled.... Have to add this until I fix ncarray repair_wheel_win.....
     "python -c \"import os, glob, subprocess, ncarray; d=ncarray.get_lib_dir(); dlls=glob.glob(os.path.join(d, '*.dll')); dll=dlls[0]; def_p=os.path.join(d, 'ncarray.def'); lib_p=os.path.join(d, 'ncarray.lib'); out=subprocess.check_output(['dumpbin', '/exports', dll], text=True); lines=[l.split()[-1] for l in out.splitlines() if len(l.split())>=4 and l.split()[0].isdigit()]; open(def_p, 'w').write('EXPORTS\\n' + '\\n'.join(lines)); subprocess.run(['lib', f'/def:{def_p}', f'/out:{lib_p}', '/machine:x64'], check=True)\"",
     "meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=auto --prefix=%CD%/install",

@@ -266,14 +266,14 @@ libs: List[str] = [f for f in files if f.endswith((".so", ".dylib", ".dll", ".li
 
 if any(f.endswith(".lib") for f in libs):
     libs = [f for f in libs if not f.endswith(".dll")]
-print("\\n".join(libs))
+print(";".join(libs).replace("\r", ""))
 '''
 
     nc_libs_raw = run_command(
         py3, '-c',
         nc_libs_cmd,
         check: false,
-    ).stdout().strip().split('\n')
+    ).stdout().strip().split(';')
 
     if (nc_libs_raw.length() == 0) or (nc_libs_raw.length() == 1  and nc_libs_raw[0] == '')
         message('ncarray not found via Python - will use subproject.')
