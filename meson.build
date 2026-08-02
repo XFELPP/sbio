@@ -261,7 +261,7 @@ from typing import List, Set
 import ncarray
 
 d: str = ncarray.get_lib_dir()
-files: Set[str] = set(glob.glob(os.path.join(d, "libnc*")) + glob.glob(os.path.join(d, "ncarray*")))
+files: Set[str] = set(glob.glob(os.path.join(d, "*")))
 libs: List[str] = [f for f in files if f.endswith((".so", ".dylib", ".dll", ".lib")) or ".so." in f]
 
 if any(f.endswith(".lib") for f in libs):

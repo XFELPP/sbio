@@ -62,9 +62,12 @@ LDFLAGS = "-L/project/install/lib -L/project/install/lib64"
 
 [tool.cibuildwheel.macos]
 before-all = """
-brew install open-mpi ccache ninja meson cmake || true
+brew install open-mpi ccache ninja meson cmake python@3.10 || true
+export PATH="$HOME/Library/Python/3.10/bin:/opt/homebrew/opt/python@3.10/bin:$PATH"
+export PYTHONPATH="$HOME/Library/Python/3.10/lib/python/site-packages:/opt/homebrew/lib/python3.10/site-packages:$PYTHONPATH"
+export PYTHON="/opt/homebrew/opt/python@3.10/bin/python3.10"
 ccache -z
-python3 -m pip install --break-system-packages "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
+python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.2+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
 meson setup builddir -Dbuild_core=true -Dbuild_python=true -Dsbio_as_wheel=true -Dbuild_mpi=mpich --prefix=$(pwd)/install
 meson compile -j 2 -C builddir
 meson install -C builddir
