@@ -85,6 +85,22 @@ jobs:
         with:
           arch: amd64
 
+      - name: Install MS-MPI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe -OutFile msmpisetup.exe
+          Invoke-WebRequest -Uri https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisdk.msi -OutFile msmpisdk.msi
+          Start-Process -FilePath .\msmpisetup.exe -ArgumentList "-unattend", "-norestart" -Wait
+          Start-Process -FilePath msiexec.exe -ArgumentList "/i", "msmpisdk.msi", "/quiet", "/norestart" -Wait
+          Remove-Item msmpisetup.exe, msmpisdk.msi
+
+          # Need to provide these so that Meson can find it later
+          "MSMPI_INC=C:\Program Files (x86)\Microsoft SDKs\MPI\Include" >> $env:GITHUB_ENV
+          "MSMPI_LIB64=C:\Program Files (x86)\Microsoft SDKs\MPI\Lib\x64" >> $env:GITHUB_ENV
+          "C:\Program Files (x86)\Microsoft SDKs\MPI\Include" >> $env:GITHUB_PATH
+          "C:\Program Files\Microsoft MPI\Bin" >> $env:GITHUB_PATH
+
       - name: Update Version for Variant
         shell: bash
         run: |

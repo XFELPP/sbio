@@ -83,14 +83,8 @@ DYLD_LIBRARY_PATH = "$GITHUB_WORKSPACE/install/lib:$DYLD_LIBRARY_PATH"
 LDFLAGS = "-L$GITHUB_WORKSPACE/install/lib"
 
 [tool.cibuildwheel.windows]
-# There is no modern OpenMPI/MPICH support for Windows - pain to wrap as subproject
-# So just install MS-MPI and then let meson auto detect
 config-settings = { "setup-args" = ["-Dcpp_compiler_launcher=", "-Dcuda_compiler_launcher=", "-Dbuild_core=false"] }
 before-all = [
-    "curl.exe -L -o msmpisetup.exe https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisetup.exe",
-    "start /wait msmpisetup.exe -unattend",
-    "curl.exe -L -o msmpisdk.msi https://github.com/microsoft/Microsoft-MPI/releases/download/v10.1.1/msmpisdk.msi",
-    "start /wait msiexec.exe /i msmpisdk.msi /quiet /norestart",
     "python -m pip install meson ninja",
     "python -m pip install ncarray==0.7.2 --extra-index-url https://pypi.xfelpp.org/host",
     #.... Didn't get the .lib bundled.... Have to add this until I fix ncarray repair_wheel_win.....
@@ -105,7 +99,7 @@ repair-wheel-command = "python utilities/repair_wheel_win.py {dest_dir} {wheel} 
 PIP_RETRIES = "20"
 INCLUDE = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include;$INCLUDE"
 LIB = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Lib\\x64;$GITHUB_WORKSPACE/install/lib;$LIB"
-PATH = "$GITHUB_WORKSPACE/install/bin;$PATH"
+PATH = "C:\\Program Files\\Microsoft MPI\\Bin;$GITHUB_WORKSPACE/install/bin;$PATH"
 PreferredToolArchitecture = "x64"
 MSMPI_INC = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Include"
 MSMPI_LIB64 = "C:\\Program Files (x86)\\Microsoft SDKs\\MPI\\Lib\\x64"
