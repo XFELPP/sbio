@@ -127,9 +127,9 @@ namespace sbio {
       oss << exp << "-r" << std::setw(4) << std::setfill('0') << run;
       std::string file_base_ptn = oss.str();
       for (auto const& dir_entry : fs::directory_iterator(xtc_dir)) {
-        std::string xtc_path = dir_entry.path();
+        std::string xtc_path = dir_entry.path().string();
         if (xtc_path.find(file_base_ptn) != std::string::npos) {
-          std::string xtc_stem = dir_entry.path().stem();
+          std::string xtc_stem = dir_entry.path().stem().string();
           std::string ext = dir_entry.path().extension().string();
 
           std::string smd_path;

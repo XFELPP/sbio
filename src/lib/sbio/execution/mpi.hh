@@ -124,6 +124,11 @@ namespace sbio {
       }
 
       if (m_num_inactive_ranks > 0) {
+#ifdef _WIN32
+        // Ugh. MS-MPI doesn't seem to have the API below...
+        int color { is_current_rank_inactive() ? MPI_UNDEFINED : 0 };
+        MPI_Comm_split(m_world_comm, color, m_rank, &m_active_comm);
+#else
         MPI_Group world_group;
         MPI_Comm_group(m_world_comm, &world_group);
 
@@ -137,6 +142,7 @@ namespace sbio {
 
         MPI_Group_free(&world_group);
         MPI_Group_free(&active_group);
+#endif // _WIN32
       } else {
         MPI_Comm_dup(m_world_comm, &m_active_comm);
       }

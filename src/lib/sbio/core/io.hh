@@ -5,10 +5,11 @@
 #ifdef _WIN32
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
+#include <io.h>
 #else
 #include <sys/types.h>
-#endif
 #include <unistd.h>
+#endif
 
 #include <concepts>
 #include <cstddef>

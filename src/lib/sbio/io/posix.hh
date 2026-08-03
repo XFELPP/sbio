@@ -23,6 +23,10 @@
 #include "sbio/core/io.hh"
 #include "sbio/export_macro.hh"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif // _WIN32
+
 #include <cstddef>
 #include <cstdint>
 
@@ -38,12 +42,18 @@ namespace sbio {
 
     SyncPOSIXIO();
 
+    ~SyncPOSIXIO();
+
     IOStatus connect(const char* path);
 
     IOStatus read(std::uint64_t offset, std::size_t size, void* dest);
 
   private:
+#ifdef _WIN32
+    HANDLE m_file;
+#else
     int m_fd;
+#endif // _WIN32
   };
 } // namespace sbio
 

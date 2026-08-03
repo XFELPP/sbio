@@ -24,6 +24,8 @@
 #ifdef _WIN32
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
+
+#include <windows.h>
 #else
 #include <sys/types.h>
 #endif
@@ -37,14 +39,44 @@ namespace fs = std::filesystem;
 namespace sbio {
   SyncPOSIXIO::SyncPOSIXIO()
     : IOPolicy<SyncPOSIXIO>()
+#ifdef _WIN32
+    , m_file(INVALID_HANDLE_VALUE)
+#else
     , m_fd(-1)
+#endif
   {}
 
+  SyncPOSIXIO::~SyncPOSIXIO() {
+#ifdef _WIN32
+    if (m_file != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(m_file);
+    }
+#else
+    if (m_fd >= 0) {
+      ::close(m_fd);
+    }
+#endif // _WIN32
+  }
+
   IOStatus SyncPOSIXIO::connect(const char* path) {
+#ifdef _WIN32
+    m_file = CreateFileA(path,
+                         GENERIC_READ,
+                         FILE_SHARE_READ,
+                         nullptr,
+                         OPEN_EXISTING,
+                         FILE_FLAG_OVERLAPPED,
+                         nullptr);
+
+    if (m_file == INVALID_HANDLE_VALUE) {
+      return IOStatus::OpenFailed;
+    }
+#else
     m_fd = ::open(path, O_RDONLY);
     if (m_fd < 0) {
       return IOStatus::OpenFailed;
     }
+#endif // _WIN32
 
     fs::path fs_path = path;
     m_file_size = fs::file_size(fs_path);
@@ -52,7 +84,27 @@ namespace sbio {
   }
 
   IOStatus SyncPOSIXIO::read(std::uint64_t offset, std::size_t size, void* dest) {
+#ifdef _WIN32
+    OVERLAPPED overlapped {};
+    overlapped.Offset = static_cast<DWORD>(offset & 0xffffffff);
+    overlapped.OffsetHigh = static_cast<DWORD>((offset >> 32) & 0xffffffff);
+
+    DWORD bytes_read { 0 };
+    BOOL ok {
+      ReadFile(m_file, dest, static_cast<DWORD>(size), &bytes_read, &overlapped)
+    };
+
+    ssize_t read_count { -1 };
+    if (ok) {
+      read_count = static_cast<ssize_t>(bytes_read);
+    } else if (::GetLastError() == ERROR_IO_PENDING) {
+      if (::GetOverlappedResult(m_file, &overlapped, &bytes_read, TRUE)) {
+        read_count = static_cast<ssize_t>(bytes_read);
+      }
+    }
+#else
     ssize_t read_count { ::pread(m_fd, dest, size, offset) };
+#endif // _WIN32
     if (read_count == 0) {
       m_read_count = 0;
       return IOStatus::ZeroBytesRead;

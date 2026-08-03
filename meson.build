@@ -1,15 +1,17 @@
 project(
     'sbio',
+    'c',
     'cpp',
     version: '0.1.0',
     default_options: [
+        'c_std=c17',
         'cpp_std=c++23,c++latest',
         'cuda_std=c++20',
         'optimization=3',
     ],
 )
 
-add_languages('cpp', native: true, required: true)
+add_languages('c', 'cpp', native: true, required: true)
 sbio_has_cuda = add_languages('cuda', required: false)
 
 if sbio_has_cuda
@@ -284,7 +286,11 @@ print(";".join(libs).replace("\r", ""))
         nc_link_args = []
         foreach lib : nc_libs_raw
             if lib != ''
-                nc_link_args += [lib]
+                if 'libpython' in lib or lib.endswith('/Python')
+                    message('Skipping ' + lib + ' from ncarray list. Causes problem on macOS!')
+                else
+                    nc_link_args += [lib]
+                endif # macOS Python wheel repair guard.....
             endif
         endforeach
 
@@ -323,7 +329,11 @@ else
     found_mpi = false
     bundle_mpi = false # Only bundle if using subproject
     if try_sys
-        mpi_dep = dependency('mpi', language: 'cpp', required: false)
+        if host_machine.system() == 'windows'
+            mpi_dep = dependency('mpi', language: 'c', required: false)
+        else
+            mpi_dep = dependency('mpi', required: false)
+        endif
         if mpi_dep.found()
             found_mpi = true
         endif
@@ -364,11 +374,21 @@ if build_python_opt
     endif # pybind11 not found
 endif
 
-spdlog_dep = dependency('spdlog', required: false)
-if not spdlog_dep.found()
-    message('spdlog not found - using subproject')
-    spdlog_proj = subproject('spdlog')
+if host_machine.system() == 'darwin'
+    # macOS CI is the worst. Fails in all psosible configurations
+    # BUILD ONLY WITH SUBPROJECT, STATIC ONLY, DONT ALLOW ANYTHING TO BE PULLED BY HOMEBREW
+    fmt_proj = subproject('fmt', default_options: ['default_library=static'])
+    fmt_dep = fmt_proj.get_variable('fmt_dep')
+    deps_for_sbio += fmt_dep
+    spdlog_proj = subproject('spdlog', default_options: ['default_library=static'])
     spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
+else
+    spdlog_dep = dependency('spdlog', required: false, static: true)
+    if not spdlog_dep.found()
+        message('spdlog not found - using subproject')
+        spdlog_proj = subproject('spdlog', default_options: ['default_library=static'])
+        spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
+    endif
 endif
 deps_for_sbio += spdlog_dep
 
