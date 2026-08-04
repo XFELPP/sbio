@@ -36,6 +36,10 @@ namespace sbio {
    *
    * This IO implementation provides solely synchronous IO capabilities over a
    * Stream using standard POSIX APIs.
+   *
+   * The term POSIX is a misnomer if on Windows as the POSIX `pread`, etc, APIs
+   * are clearly not available. In this case, however, the equivalent behaviour
+   * is provided using the Windows APIs.
    */
   struct SBIO_API SyncPOSIXIO : public IOPolicy<SyncPOSIXIO> {
   public:
