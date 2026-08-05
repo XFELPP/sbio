@@ -181,8 +181,46 @@ namespace sbio {
       }
       m_type[i] = '\0';
 
+      std::uint32_t final_segment_indices[MaxSegments] {};
+      if constexpr (FTraits::PartitioningStrategy != StreamPartitioningStrategy::Chronological) {
+        // Chronological streams are provided time-sorted already
+        // For the other case -- sort the indices by the "segment_no" to handle the
+        // possibility of missing segments but maintain the segment numbering where it
+        // is significant
+        std::uint32_t smallest { segments[0].segment_no };
+        for (std::size_t j = 0; j < num_segments; ++j) {
+          final_segment_indices[j] = j;
+          if (segments[j].segment_no < smallest) {
+            smallest = segments[j].segment_no;
+          }
+        }
+
+        for (std::size_t i = 0; i < num_segments - 1; ++i) {
+          std::uint32_t best { static_cast<std::uint32_t>(i) };
+          for (std::size_t j = i + 1; j < num_segments; ++j) {
+            std::uint32_t diff_best { segments[final_segment_indices[best]].segment_no - smallest };
+            std::uint32_t diff_j { segments[final_segment_indices[j]].segment_no - smallest };
+
+            if (diff_j < diff_best) {
+              best = j;
+            }
+          }
+
+          if (best != i) {
+            std::uint32_t tmp { final_segment_indices[i] };
+            final_segment_indices[i] = final_segment_indices[best];
+            final_segment_indices[best] = tmp;
+          }
+        }
+      } else {
+        for (std::size_t i = 0; i < num_segments; ++i) {
+          final_segment_indices[i] = i;
+        }
+      }
+
       for (std::size_t n_seg = 0; n_seg < m_num_segments; ++n_seg) {
-        m_segments[n_seg] = segments[n_seg];
+        std::uint32_t working_idx { final_segment_indices[n_seg] };
+        m_segments[n_seg] = segments[working_idx];
 
         auto* broker = m_segments[n_seg].broker;
         auto access_ptn = m_segments[n_seg].access_ptn;
@@ -330,8 +368,8 @@ namespace sbio {
           ref_res.size = res.size;
           ref_res.rank = res.rank;
           // TODO: Consider ways to avoid copy....
-          for (std::uint16_t i = 0; i < res.rank; ++i) {
-            ref_res.shape[i] = res.shape[i];
+          for (std::uint16_t j = 0; j < res.rank; ++j) {
+            ref_res.shape[j] = res.shape[j];
           }
           ref_res.dtype = res.dtype;
         } else {
@@ -341,16 +379,17 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          // m_ptrs[req.segment_number] = const_cast<void*>(res.data);
-          ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
+          // HOWEVER - we pre-sort the segments during construction. This avoids
+          // problems if only "segment 2" is provided without 0 and 1, e.g.
+          ptr_tbl[i] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
             ref_res.size = res.size;
             ref_res.rank = res.rank;
             // TODO: Consider ways to avoid copy....
-            for (std::uint16_t i = 0; i < res.rank; ++i) {
-              ref_res.shape[i] = res.shape[i];
+            for (std::uint16_t j = 0; j < res.rank; ++j) {
+              ref_res.shape[j] = res.shape[j];
             }
             ref_res.dtype = res.dtype;
           }
@@ -427,8 +466,8 @@ namespace sbio {
           ref_res.size = res.size;
           ref_res.rank = res.rank;
           // TODO: Consider ways to avoid copy....
-          for (std::uint16_t i = 0; i < res.rank; ++i) {
-            ref_res.shape[i] = res.shape[i];
+          for (std::uint16_t j = 0; j < res.rank; ++j) {
+            ref_res.shape[j] = res.shape[j];
           }
           ref_res.dtype = res.dtype;
         } else {
@@ -436,15 +475,17 @@ namespace sbio {
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
           // -> This way segment 0 gets put into m_ptrs[0]
-          ptr_tbl[req.segment_number] = const_cast<void*>(res.data);
+          // HOWEVER - we pre-sort the segments during construction. This avoids
+          // problems if only "segment 2" is provided without 0 and 1, e.g.
+          ptr_tbl[i] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
             ref_res.size = res.size;
             ref_res.rank = res.rank;
             // TODO: Consider ways to avoid copy....
-            for (std::uint16_t i = 0; i < res.rank; ++i) {
-              ref_res.shape[i] = res.shape[i];
+            for (std::uint16_t j = 0; j < res.rank; ++j) {
+              ref_res.shape[j] = res.shape[j];
             }
             ref_res.dtype = res.dtype;
           }
@@ -504,7 +545,12 @@ namespace sbio {
                                   std::forward<CBType>(callback),
                                   cnt);
 
-          std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
+          // NOTE: The order of the segments may not be the "physical" order
+          // -> Use the segment number from the request to populate m_ptrs
+          // -> This way segment 0 gets put into m_ptrs[0]
+          // HOWEVER - we pre-sort the segments during construction. This avoids
+          // problems if only "segment 2" is provided without 0 and 1, e.g.
+          std::size_t ptr_idx { cnt * m_num_segments + i };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
@@ -513,8 +559,8 @@ namespace sbio {
             ref_res.rank = res.rank + 1;
             ref_res.shape[0] = count;
             // TODO: Consider ways to avoid copy....
-            for (std::uint16_t i = 0; i < res.rank - 1; ++i) {
-              ref_res.shape[i + 1] = res.shape[i];
+            for (std::uint16_t j = 0; j < res.rank - 1; ++j) {
+              ref_res.shape[j + 1] = res.shape[j];
             }
             ref_res.dtype = res.dtype;
           }
@@ -571,7 +617,12 @@ namespace sbio {
         } else {
           auto res = get_data_for(req, i, cnt);
 
-          std::size_t ptr_idx { cnt * m_num_segments + req.segment_number };
+          // NOTE: The order of the segments may not be the "physical" order
+          // -> Use the segment number from the request to populate m_ptrs
+          // -> This way segment 0 gets put into m_ptrs[0]
+          // HOWEVER - we pre-sort the segments during construction. This avoids
+          // problems if only "segment 2" is provided without 0 and 1, e.g.
+          std::size_t ptr_idx { cnt * m_num_segments + i };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
           if (i == 0 && cnt == 0) {
             // This assumes all segments are same shape...
@@ -580,8 +631,8 @@ namespace sbio {
             ref_res.rank = res.rank;
             ref_res.shape[0] = count;
             // TODO: Consider ways to avoid copy....
-            for (std::uint16_t i = 0; i < res.rank; ++i) {
-              ref_res.shape[i + 1] = res.shape[i];
+            for (std::uint16_t j = 0; j < res.rank; ++j) {
+              ref_res.shape[j + 1] = res.shape[j];
             }
             ref_res.dtype = res.dtype;
           }
