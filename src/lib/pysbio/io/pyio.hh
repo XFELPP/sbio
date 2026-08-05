@@ -24,7 +24,7 @@
 
 namespace pysbio {
   enum class IOPolicy : std::uint8_t {
-    SyncPOSIXIO = 0
+    SyncPOSIX = 0
   };
 } // namespace pysbio
 

@@ -34,7 +34,7 @@ PYBIND11_MODULE(pyio, io_module, py::mod_gil_not_used()) {
                                     "IOPolicy",
                                     "enum.Enum",
                                     "Enumerators for selecting IO policies.")
-    .value("SyncPOSIXIO", pysbio::IOPolicy::SyncPOSIXIO)
+    .value("SyncPOSIX", pysbio::IOPolicy::SyncPOSIX)
     .export_values()
     .finalize();
 

@@ -105,7 +105,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
          py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
          py::arg("exec_cfg") = py::dict(),
-         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIXIO,
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
          ds_doc)
     .def("group", [&](PyDataSource& self, const char* name) {
       return self.group(pysbio_module, name);

@@ -154,7 +154,7 @@ namespace pysbio {
                  pysbio::FTraits data_fmt = pysbio::FTraits::XTC2,
                  pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPI,
                  py::dict exec_cfg = py::dict(),
-                 pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIXIO);
+                 pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
     py::object group(py::module& m, const char* name);
 
