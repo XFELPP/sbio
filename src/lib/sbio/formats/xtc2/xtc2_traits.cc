@@ -116,8 +116,8 @@ namespace sbio {
   }
 
   SBIO_HD XTC2Traits::DataResult XTC2Traits::resolve_data(void* buffer,
-                                                           const XTC2Traits::MetadataInventory& inv,
-                                                           const XTC2Traits::DataRequest& req) {
+                                                          const XTC2Traits::MetadataInventory& inv,
+                                                          const XTC2Traits::DataRequest& req) {
     std::uint32_t nid = inv.resolve_names_id(req);
     if (nid == 0xFFFFFFFF) {
       // Detector/Algorithm not found
