@@ -28,7 +28,7 @@ typedef SSIZE_T ssize_t;
 
 namespace sbio {
   namespace XTC2 {
-    constexpr auto MaxRank = 10;
+    constexpr auto MaxRank = 5;
     constexpr auto MaxNameSize = 256;
 
     enum class DType {

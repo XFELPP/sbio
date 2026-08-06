@@ -129,7 +129,6 @@ import sbio
 exp: str = "abcd1234"
 run_num: int = 99
 ds: sbio.DataSource = sbio.DataSource(
-    ds_type=ds_type,
     exp=exp,
     run=run_num,
     events_per_read=43200,
@@ -138,7 +137,7 @@ ds: sbio.DataSource = sbio.DataSource(
     # data_fmt=sbio.FTraits.XTC2,
     # epolicy=sbio.ExecutionPolicy.MPI,
     # exec_cfg={},
-    # io_policy=sbio.IOPolicy.SyncPOSIXIO,
+    # io_policy=sbio.IOPolicy.SyncPOSIX,
 )
 
 grp: sbio.BrokerGroupWrapper = ds.group("group_name")

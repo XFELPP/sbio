@@ -31,45 +31,42 @@
 #endif
 #endif
 
-namespace sbio {
+namespace sbio::XTC2 {
+  SBIO_HD DataResult resolve_xtc2_pointer(void* buffer,
+                                          std::uint32_t sd_offset,
+                                          const Name* field_schema,
+                                          std::uint32_t nid,
+                                          std::uint32_t f_idx) {
+    auto* sd =
+      reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + sd_offset);
 
-  namespace XTC2 {
-    SBIO_HD DataResult resolve_xtc2_pointer(void* buffer,
-                                             std::uint32_t sd_offset,
-                                             const Name* field_schema,
-                                             std::uint32_t nid,
-                                             std::uint32_t f_idx) {
-      auto* sd =
-        reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + sd_offset);
+    const auto& shapes = sd->shapes();
 
-      const auto& shapes = sd->shapes();
-
-      std::size_t byte_offset = 0;
-      std::uint32_t shape_idx = 0;
-      for (uint32_t i = 0; i < f_idx; ++i) {
-        if (field_schema[i].rank() == 0) {
-          byte_offset += XTC2::DTypeSize[static_cast<uint8_t>(field_schema[i].type())];
-        } else {
-          byte_offset += shapes.get(shape_idx++).size(field_schema[i]);
-        }
-      }
-
-      const auto& target = field_schema[f_idx];
-      DataResult res(sd->data().payload() + byte_offset);
-      res.rank = target.rank();
-      res.dtype = target.type();
-      if (res.rank == 0) {
-        res.size = XTC2::DTypeSize[static_cast<std::uint8_t>(target.type())];
+    std::size_t byte_offset { 0 };
+    std::uint32_t shape_idx { 0 };
+    for (uint32_t i = 0; i < f_idx; ++i) {
+      if (field_schema[i].rank() == 0) {
+        byte_offset += XTC2::DTypeSize[static_cast<uint8_t>(field_schema[i].type())];
       } else {
-        const auto& s = shapes.get(shape_idx);
-        res.size = s.size(const_cast<XTC2::Name&>(target));
-        const std::uint32_t* shape_ptr = s.shape();
-        for (size_t i = 0; i < res.rank; ++i) {
-          res.shape[i] = shape_ptr[i];
-        }
+        byte_offset += shapes.get(shape_idx++).size(field_schema[i]);
       }
-
-      return res;
     }
-  } // namespace XTC2
-} // namespace sbio
+
+    const auto& target = field_schema[f_idx];
+    DataResult res(sd->data().payload() + byte_offset);
+    res.rank = target.rank();
+    res.dtype = target.type();
+    if (res.rank == 0) {
+      res.size = XTC2::DTypeSize[static_cast<std::uint8_t>(target.type())];
+    } else {
+      const auto& s = shapes.get(shape_idx);
+      res.size = s.size(const_cast<XTC2::Name&>(target));
+      const std::uint32_t* shape_ptr = s.shape();
+      for (size_t i = 0; i < res.rank; ++i) {
+        res.shape[i] = shape_ptr[i];
+      }
+    }
+
+    return res;
+  }
+} // namespace sbio::XTC2
