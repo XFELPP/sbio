@@ -91,4 +91,15 @@ elif platform.system() == "Linux":
             except Exception:
                 pass
 
+
+# While the pysbio modules import ncarray -- it's too late to avoid link issues
+# The loader will search for the ncarray libs before. So must import ncarray
+# here, before import pysbio
+try:
+    import ncarray
+except Exception:
+    raise RuntimeError(
+        "`sbio` requires ncarray to use! Must install ncarray before proceeding!"
+    )
+
 from sbio.core._pysbio import *
