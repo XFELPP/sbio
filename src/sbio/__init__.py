@@ -45,11 +45,23 @@ def get_lib_dir() -> str:
     if os.path.exists(sbio_wheel_lib_dir):
         return sbio_wheel_lib_dir
 
+    # Check split-wheel: site-packages/sbio/.dylibs
+    #                    site-packages/sbio/.libs
+    sbio_wheel_dot_dylibs_dir: str = os.path.join(py_package_dir, ".dylibs")
+    if os.path.exists(sbio_wheel_dot_dylibs_dir):
+        return sbio_wheel_dot_dylibs_dir
+
+    sbio_wheel_dot_libs_dir: str = os.path.join(py_package_dir, ".libs")
+    if os.path.exists(sbio_wheel_dot_libs_dir):
+        return sbio_wheel_dot_libs_dir
+
     # Check split-wheel: site-packages/sbio/libsbio.so
     #                    site-packages/sbio.libs/libsbio.so
     parent_dir: str = os.path.dirname(py_package_dir)
     for folder in os.listdir(parent_dir):
-        if "sbio" in folder and folder != os.path.basename(py_package_dir):
+        if (
+            "sbio" in folder or "dylib" in folder or "lib" in folder
+        ) and folder != os.path.basename(py_package_dir):
             libs_dir: str = os.path.join(parent_dir, folder)
             if not os.path.isdir(libs_dir):
                 continue

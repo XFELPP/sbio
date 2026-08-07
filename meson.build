@@ -2,7 +2,7 @@ project(
     'sbio',
     'c',
     'cpp',
-    version: '0.1.2',
+    version: '0.1.3',
     default_options: [
         'c_std=c17',
         'cpp_std=c++23,c++latest',
@@ -271,11 +271,15 @@ if any(f.endswith(".lib") for f in libs):
 print(";".join(libs).replace("\r", ""))
 '''
 
-    nc_libs_raw = run_command(
-        py3, '-c',
-        nc_libs_cmd,
+    nc_cmd_res = run_command(
+        py3, '-c', nc_libs_cmd,
         check: false,
-    ).stdout().strip().split(';')
+    )
+    message('NCArray Python Lib Search RETURNCODE: ' + nc_cmd_res.returncode().to_string())
+    message('NCArray Python Lib Search STDOUT: ' + nc_cmd_res.stdout())
+    message('NCArray Python Lib Search STDERR: ' + nc_cmd_res.stdout())
+
+    nc_libs_raw = nc_cmd_res.stdout().strip().split(';')
 
     if (nc_libs_raw.length() == 0) or (nc_libs_raw.length() == 1  and nc_libs_raw[0] == '')
         message('ncarray not found via Python - will use subproject.')
@@ -294,10 +298,16 @@ print(";".join(libs).replace("\r", ""))
             endif
         endforeach
 
-        nc_inc = run_command(
+        nc_inc_cmd_res = run_command(
             py3, '-c', 'import ncarray; print(ncarray.get_include())',
             check: false,
-        ).stdout().strip()
+        )
+
+        message('NCArray Python Include Search RETURNCODE: ' + nc_inc_cmd_res.returncode().to_string())
+        message('NCArray Python Include Search STDOUT: ' + nc_inc_cmd_res.stdout())
+        message('NCArray Python Include Search STDERR: ' + nc_inc_cmd_res.stdout())
+
+        nc_inc = nc_inc_cmd_res.stdout().strip()
 
         ncarray_dep = declare_dependency(
             link_args: nc_link_args,
