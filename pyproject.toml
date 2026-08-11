@@ -8,7 +8,7 @@ description="Stream Broker IO - Data Processing Framework for Streamed Data."
 requires-python = ">=3.8"
 dynamic = ["version"]
 dependencies = [
-    "ncarray>=0.7.4",
+    "ncarray>=0.7.5",
 ]
 authors = [
     { name = "Gabriel Dorlhiac", email = "gabriel@dorlhiac.com" },
@@ -40,6 +40,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+[project.scripts]
+sbio-pkg-config = "sbio:sbio_pkg_config"
 
 [tool.meson-python.args]
 install = ['--skip-subprojects']
