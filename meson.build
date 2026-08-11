@@ -105,11 +105,6 @@ build_python_opt = get_option('build_python')
 sbio_cuda_archs_opt = get_option('sbio_cuda_archs')
 sbio_as_wheel_opt = get_option('sbio_as_wheel')
 
-if not build_python_opt and sbio_as_wheel_opt
-    warning('Requested wheel-build, but not Python bindings. Overriding and will build Python bindings!')
-    build_python_opt = true
-endif
-
 # Add-ons and development
 build_examples_opt = get_option('build_examples')
 

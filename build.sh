@@ -160,7 +160,7 @@ if [ ! -d "${BUILD_ENV}" ]; then
     source "${BUILD_ENV}/bin/activate"
     pip install --upgrade pip
     # Install the relevant build dependencies and nothing else
-    pip install "meson>=1.10.1" "meson-python" "ninja" "numpy" "pybind11" "setuptools"
+    pip install auditwheel patchelf "meson>=1.10.1" "meson-python" "ninja" "numpy" "pybind11" "setuptools"
 
     pip install ncarray --extra-index-url https://pypi.xfelpp.org/host/
     # Mark that this is a first-build. This is used to make decisions later
@@ -172,18 +172,32 @@ else
     source "${BUILD_ENV}/bin/activate"
 fi
 
+export PKG_CONFIG_PATH="$(nca-pkg-config --pkg-config-path):${PKG_CONFIG_PATH}"
+
 # Run meson configure/setup if it hasn't be done yet or it has been requested
 # It generally only needs to rerun if install prefix has changed, or meson.build
 # files have been modified.
 if [ ! -d "${BUILD_DIR}" ]; then
     LINES=("Running meson setup for build configuration")
     print_banner "${LINES[@]}"
-    meson setup "${BUILD_DIR}" --prefix="${INSTALL_DIR}" -Dbuildtype=release
+    meson setup "${BUILD_DIR}"      \
+          --prefix="${INSTALL_DIR}" \
+          -Dbuild_core=true         \
+          -Dsbio_as_wheel=true      \
+          -Dbuildtype=release       \
+          -Dbuild_examples=true     \
+          -Dbuild_python=false
 elif [[ ${FIRST_BUILD} || ${NEED_RECONFIG} ]]; then
     LINES=("Running meson setup reconfiguration")
     print_banner "${LINES[@]}"
     # Reconfigure in case prefix or options changed, but keep cache
-    meson setup "${BUILD_DIR}" --reconfigure --prefix="${INSTALL_DIR}"
+    meson setup "${BUILD_DIR}"      \
+          --reconfigure             \
+          --prefix="${INSTALL_DIR}" \
+          -Dsbio_as_wheel=true      \
+          -Dbuildtype=release       \
+          -Dbuild_examples=true     \
+          -Dbuild_python=false
 else
     LINES=(
         "!!!!! Skipping meson setup reconfiguration !!!!!"
@@ -204,34 +218,26 @@ meson compile -C "${BUILD_DIR}"
 LINES=("Installing files in ${INSTALL_DIR}...")
 print_banner "${LINES[@]}"
 meson install -C "${BUILD_DIR}"
+# We will append Python Version info to the build directories for side-by-side builds
+PY_VER=$(python3 -V | awk '{print $2}' | cut -d. -f1,2)
+export LD_LIBRARY_PATH="${INSTALL_DIR}/lib/python${PY_VER}/site-packages/sbio/lib:${LD_LIBRARY_PATH}"
+export LIBRARY_PATH="${INSTALL_DIR}/lib/python${PY_VER}/site-packages/sbio/lib:${LIBRARY_PATH}"
+export LD_FLAGS="-L${INSTALL_DIR}/lib/python${PY_VER}/site-packages/sbio/lib ${LD_FLAGS}"
 
-# Run pip at the end - this gets the entrypoints defined in pyproject.toml
-# It can be pointed at the build directory to prevent pip from trying to rebuild
-# the rest of the stuff from scratch.
+mkdir -p "${INSTALL_DIR}/tmp_wheel"
+python3 -m pip wheel .                            \
+       --wheel-dir="${INSTALL_DIR}/tmp_wheel"     \
+       --no-deps                                  \
+       -Csetup-args=-Dsbio_as_wheel=true          \
+       -Csetup-args=-Dbuild_core=false            \
+       -Csetup-args=-Dbuildtype=release           \
+       --no-build-isolation
 
-# We will also use the underlying Python (e.g. from psconda.sh)
-# This way, the build env can be kept small, and it can be deleted as well.
-# Otherwise, the Python scripts would end up pointing to the Python from that env.
-if [[ ${FIRST_BUILD} || ${NEED_ENTRYPOINTS} ]]; then
-    LINES=("Creating Python entry points")
-    print_banner "${LINES[@]}"
-    BUILD_VENV_SITE_PACKAGES=(${BUILD_ENV}/lib/python*/site-packages)
-    PYTHONPATH="${BUILD_VENV_SITE_PACKAGES}:${PYTHONPATH}" \
-    PATH="${BUILD_ENV}/bin:${PATH}" \
-    ${HOST_PYTHON} -m pip install . \
-        --prefix="${INSTALL_DIR}" \
-        --no-dependencies \
-        --no-build-isolation \
-        --config-settings=build-dir="${BUILD_DIR}"
-else
-    LINES=(
-        "!!!!! Skipping entry-point recreation !!!!!"
-        "This is normally fine; however, if you have modified pyproject.toml"
-        "you may need to rerun this script with the -e argument to recreate"
-        "the entry points."
-    )
-    print_banner "${LINES[@]}"
-fi
+REPAIRED_WHEEL_DIR="${INSTALL_DIR}/dist"
+mkdir -p "${REPAIRED_WHEEL_DIR}"
+
+WHEEL_FILE=$(ls "${INSTALL_DIR}/tmp_wheel"/sbio-*.whl | head -n 1)
+python3 utilities/repair_wheel.py "${WHEEL_FILE}" "${REPAIRED_WHEEL_DIR}" --no-exclude-core
 
 if [[ ${NEED_CLEANUP} ]]; then
     LINES=(

@@ -18,10 +18,13 @@ def update_pc_in_repaired_wheel(whl_path: str):
 
         pc_content: str = z.read(pc_path_in_whl).decode("utf-8")
 
+        # NOTE: Use basename to avoid matching for the directory `sbio.libs/<lib>.dll`
         repaired_libs: List[str] = [
             f
             for f in z.namelist()
-            if re.search(r"(lib)?(dev)?(sbio)[a-zA-Z0-9_.\-]*\.lib", f)
+            if re.search(
+                r"(?<!py)(dev)?(sbio|xtc)[a-zA-Z0-9_.\-]*\.lib", os.path.basename(f)
+            )
         ]
 
     if repaired_libs and pc_content:
@@ -101,6 +104,19 @@ def main():
                 "--no-dll",
                 "xtc1slim.dll",
                 "--no-dll",
+                "xtc2slim.dll",
+            ]
+        )
+    else:
+        delvewheel_cmd.extend(
+            [
+                "--no-mangle",
+                "sbio.dll",
+                "--no-mangle",
+                "devsbio.dll",
+                "--no-mangle",
+                "xtc1slim.dll",
+                "--no-mangle",
                 "xtc2slim.dll",
             ]
         )

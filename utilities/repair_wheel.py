@@ -3,9 +3,62 @@ import os
 import re
 import sys
 import glob
+import shutil
 import subprocess
+import tempfile
 import zipfile
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
+
+
+def unmangle_wheel_libs_linux(
+    whl_path: str, prefixes: Tuple[str, ...] = ("libsbio", "libdevsbio", "libxtc")
+):
+    tmp_dir: str = tempfile.mkdtemp(prefix="unmangle_whl_")
+    try:
+        with zipfile.ZipFile(whl_path, "r") as z:
+            z.extractall(tmp_dir)
+
+        rename_map: Dict[str, str] = {}
+        for root, _, files in os.walk(tmp_dir):
+            for f in files:
+                if f.endswith(".so") or ".so." in f:
+                    for p in prefixes:
+                        if f.startswith(p):
+                            clean_name: str = re.sub(r"-[0-9a-f]{8,}", "", f)
+                            if clean_name != f:
+                                old_path: str = os.path.join(root, f)
+                                new_path: str = os.path.join(root, clean_name)
+                                os.rename(old_path, new_path)
+                                rename_map[f] = clean_name
+
+                                subprocess.run(
+                                    ["patchelf", "--set-soname", clean_name, new_path],
+                                    check=False,
+                                )
+                            break
+        if not rename_map:
+            return
+
+        for root, _, files in os.walk(tmp_dir):
+            for f in files:
+                if f.endswith(".so") or ".so." in f:
+                    so_path: str = os.path.join(root, f)
+                    for mangled_name, clean_name in rename_map.items():
+                        subprocess.run(
+                            [
+                                "patchelf",
+                                "--replace-needed",
+                                mangled_name,
+                                clean_name,
+                                so_path,
+                            ],
+                            check=False,
+                        )
+        shutil.make_archive(whl_path.replace(".whl", ""), "zip", tmp_dir)
+        os.replace(whl_path.replace(".whl", ".zip"), whl_path)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 
 def update_pc_in_repaired_wheel(whl_path: str):
@@ -18,12 +71,13 @@ def update_pc_in_repaired_wheel(whl_path: str):
 
         pc_content: str = z.read(pc_path_in_whl).decode("utf-8")
 
+        # NOTE: Use basename so the anchor does NOT exclude sbio.libs
         repaired_libs: List[str] = [
             f
             for f in z.namelist()
             if re.search(
-                r"^(lib)?(dev)(sbio)[a-zA-Z0-9_.\-]*\.(so|dylib|lib)",
-                f,
+                r"^(lib)?(dev)?(sbio|xtc)[a-zA-Z0-9_.\-]*\.(so|dylib|lib)",
+                os.path.basename(f),
             )
         ]
 
@@ -122,9 +176,6 @@ def main():
         prefixes: List[bytes] = [
             b"ncarray",
             b"ncdevarray",
-            b"mpi",
-            b"mpich",
-            b"pciaccess",
             b"opa",
             b"gcc_s",
             b"stdc++",
@@ -164,9 +215,6 @@ def main():
         linux_excludes: List[str] = [
             "libncarray*",
             "libncdevarray*",
-            "libmpi*",
-            "libmpich*",
-            "libpciaccess*",
             "libopa*",
             "libgcc_s*",
             "libstdc++*",
@@ -215,7 +263,7 @@ def main():
                 "--exclude",
                 "libcuda.so.1",
                 "--lib-sdir",
-                ".",
+                ".libs",
                 "-w",
                 dest_dir,
                 wheel_path,
@@ -275,6 +323,8 @@ def main():
                         print(f"  Adding {real_file} -> {target_path}")
                         z.write(real_file, target_path)
 
+            if sys.platform != "darwin":
+                unmangle_wheel_libs_linux(whl_path=whl)
             update_pc_in_repaired_wheel(whl_path=whl)
 
 
