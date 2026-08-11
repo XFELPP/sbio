@@ -18,6 +18,15 @@ if build_core_opt
         core_sources += ['formats/xtc2/xtc2_traits.cc']
     endif
 
+    # There seems to be no possible way to have a soversion included in the
+    # import lib .lib in Windows. This causes problems with delvewheel when trying
+    # to package the import libs in Python wheels. Just remove it for Windows....
+    if host_machine.system() == 'windows'
+        sbio_version_kwargs = {}
+    else
+        sbio_version_kwargs = {'version': '1', 'soversion': '1'}
+    endif
+
     libsbio = shared_library(
         'sbio',
         core_sources,
@@ -27,8 +36,7 @@ if build_core_opt
         install: true,
         install_dir: libsbio_install_dir,
         install_rpath: lib_install_rpath,
-        version: '1',
-        soversion: '1',
+        kwargs: sbio_version_kwargs,
     )
 
     sbio_dep = declare_dependency(
