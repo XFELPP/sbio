@@ -257,31 +257,35 @@ if libncarray.found()
     ncarray_dep = libncarray
 else
     message('ncarray not found via `find_library` - checking via Python pkg-config helper')
-
-    nc_pc_path_cmd_res = run_command(
-        'nca-pkg-config', '--pkg-config-path',
-        check: false,
-    )
-    nc_pc_path = nc_pc_path_cmd_res.stdout().strip()
-    if (nc_pc_path_cmd_res.returncode() == 0) and (nc_pc_path != '' and nc_pc_path != 'None')
-        nca_inc_rel_pc = nc_pc_path + '/../include'
-        nc_cflags = run_command(
-            'nca-pkg-config', '--pkg-config-cflags',
+    nca_pkg_config_bin = find_program('nca-pkg-config', required: false)
+    if nca_pkg_config_bin.found()
+        nc_pc_path_cmd_res = run_command(
+            nca_pkg_config_bin, '--pkg-config-path',
             check: false,
-        ).stdout().strip().replace('${includedir}', nca_inc_rel_pc)
-        message('**** Using these NCArray compile args: ' + nc_cflags)
-
-        nc_libs = run_command(
-            'nca-pkg-config', '--pkg-config-libs',
-            check: false,
-        ).stdout().strip().replace('${pcfiledir}', nc_pc_path)
-        message('**** Using these NCArray link args: ' + nc_libs)
-
-        ncarray_dep = declare_dependency(
-            compile_args: nc_cflags.split(),
-            link_args: nc_libs.split(),
         )
-    else
+        nc_pc_path = nc_pc_path_cmd_res.stdout().strip()
+        if (nc_pc_path_cmd_res.returncode() == 0) and (nc_pc_path != '' and nc_pc_path != 'None')
+            nca_inc_rel_pc = nc_pc_path + '/../include'
+            nc_cflags = run_command(
+                nca_pkg_config_bin, '--pkg-config-cflags',
+                check: false,
+            ).stdout().strip().replace('${includedir}', nca_inc_rel_pc)
+            message('**** Using these NCArray compile args: ' + nc_cflags)
+
+            nc_libs = run_command(
+                nca_pkg_config_bin, '--pkg-config-libs',
+                check: false,
+            ).stdout().strip().replace('${pcfiledir}', nc_pc_path)
+            message('**** Using these NCArray link args: ' + nc_libs)
+
+            ncarray_dep = declare_dependency(
+                compile_args: nc_cflags.split(),
+                link_args: nc_libs.split(),
+            )
+        endif
+    endif
+
+    if not is_variable('ncarray_dep')
         message('ncarray not found via pkg-config helper - checking via Python lib and inc getters')
         nc_libs_cmd = '''
 import glob
