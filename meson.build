@@ -2,12 +2,14 @@ project(
     'sbio',
     'c',
     'cpp',
-    version: '0.1.3',
+    version: '0.1.4',
+    meson_version: '>=1.10.0',
     default_options: [
         'c_std=c17',
         'cpp_std=c++23,c++latest',
         'cuda_std=c++20',
         'optimization=3',
+        'pkgconfig.relocatable=true',
     ],
 )
 
@@ -254,8 +256,34 @@ libncarray = cpp.find_library('ncarray', required: false)
 if libncarray.found()
     ncarray_dep = libncarray
 else
-    message('ncarray not found via `find_library` - checking via Python')
-    nc_libs_cmd = '''
+    message('ncarray not found via `find_library` - checking via Python pkg-config helper')
+
+    nc_pc_path_cmd_res = run_command(
+        'nca-pkg-config', '--pkg-config-path',
+        check: false,
+    )
+    nc_pc_path = nc_pc_path_cmd_res.stdout().strip()
+    if (nc_pc_path_cmd_res.returncode() == 0) and (nc_pc_path != '' and nc_pc_path != 'None')
+        nca_inc_rel_pc = nc_pc_path + '/../include'
+        nc_cflags = run_command(
+            'nca-pkg-config', '--pkg-config-cflags',
+            check: false,
+        ).stdout().strip().replace('${includedir}', nca_inc_rel_pc)
+        message('**** Using these NCArray compile args: ' + nc_cflags)
+
+        nc_libs = run_command(
+            'nca-pkg-config', '--pkg-config-libs',
+            check: false,
+        ).stdout().strip().replace('${pcfiledir}', nc_pc_path)
+        message('**** Using these NCArray link args: ' + nc_libs)
+
+        ncarray_dep = declare_dependency(
+            compile_args: nc_cflags.split(),
+            link_args: nc_libs.split(),
+        )
+    else
+        message('ncarray not found via pkg-config helper - checking via Python lib and inc getters')
+        nc_libs_cmd = '''
 import glob
 import os
 from typing import List, Set
@@ -271,49 +299,50 @@ if any(f.endswith(".lib") for f in libs):
 print(";".join(libs).replace("\r", ""))
 '''
 
-    nc_cmd_res = run_command(
-        py3, '-c', nc_libs_cmd,
-        check: false,
-    )
-    message('NCArray Python Lib Search RETURNCODE: ' + nc_cmd_res.returncode().to_string())
-    message('NCArray Python Lib Search STDOUT: ' + nc_cmd_res.stdout())
-    message('NCArray Python Lib Search STDERR: ' + nc_cmd_res.stdout())
-
-    nc_libs_raw = nc_cmd_res.stdout().strip().split(';')
-
-    if (nc_libs_raw.length() == 0) or (nc_libs_raw.length() == 1  and nc_libs_raw[0] == '')
-        message('ncarray not found via Python - will use subproject.')
-        ncarray_proj = subproject('ncarray')
-        ncarray_dep = ncarray_proj.get_variable('ncarray_dep')
-    else
-        fs = import('fs')
-        nc_link_args = []
-        foreach lib : nc_libs_raw
-            if lib != ''
-                if 'libpython' in lib or lib.endswith('/Python')
-                    message('Skipping ' + lib + ' from ncarray list. Causes problem on macOS!')
-                else
-                    nc_link_args += [lib]
-                endif # macOS Python wheel repair guard.....
-            endif
-        endforeach
-
-        nc_inc_cmd_res = run_command(
-            py3, '-c', 'import ncarray; print(ncarray.get_include())',
+        nc_cmd_res = run_command(
+            py3, '-c', nc_libs_cmd,
             check: false,
         )
+        message('NCArray Python Lib Search RETURNCODE: ' + nc_cmd_res.returncode().to_string())
+        message('NCArray Python Lib Search STDOUT: ' + nc_cmd_res.stdout())
+        message('NCArray Python Lib Search STDERR: ' + nc_cmd_res.stderr())
 
-        message('NCArray Python Include Search RETURNCODE: ' + nc_inc_cmd_res.returncode().to_string())
-        message('NCArray Python Include Search STDOUT: ' + nc_inc_cmd_res.stdout())
-        message('NCArray Python Include Search STDERR: ' + nc_inc_cmd_res.stdout())
+        nc_libs_raw = nc_cmd_res.stdout().strip().split(';')
 
-        nc_inc = nc_inc_cmd_res.stdout().strip()
+        if (nc_libs_raw.length() == 0) or (nc_libs_raw.length() == 1  and nc_libs_raw[0] == '')
+            message('ncarray not found via Python - will use subproject.')
+            ncarray_proj = subproject('ncarray')
+            ncarray_dep = ncarray_proj.get_variable('ncarray_dep')
+        else
+            fs = import('fs')
+            nc_link_args = []
+            foreach lib : nc_libs_raw
+                if lib != ''
+                    if 'libpython' in lib or lib.endswith('/Python')
+                        message('Skipping ' + lib + ' from ncarray list. Causes problem on macOS!')
+                    else
+                        nc_link_args += [lib]
+                    endif # macOS Python wheel repair guard.....
+                endif
+            endforeach
 
-        ncarray_dep = declare_dependency(
-            link_args: nc_link_args,
-            include_directories: include_directories(nc_inc),
-        )
-    endif # if nca_libs_raw empty (Python search for ncarray)
+            nc_inc_cmd_res = run_command(
+                py3, '-c', 'import ncarray; print(ncarray.get_include())',
+                check: false,
+            )
+
+            message('NCArray Python Include Search RETURNCODE: ' + nc_inc_cmd_res.returncode().to_string())
+            message('NCArray Python Include Search STDOUT: ' + nc_inc_cmd_res.stdout())
+            message('NCArray Python Include Search STDERR: ' + nc_inc_cmd_res.stderr())
+
+            nc_inc = nc_inc_cmd_res.stdout().strip()
+
+            ncarray_dep = declare_dependency(
+                link_args: nc_link_args,
+                include_directories: include_directories(nc_inc),
+            )
+        endif # if nca_libs_raw empty (Python search for ncarray)
+    endif # nca-pkg-config helper
 endif
 deps_for_sbio += ncarray_dep
 
@@ -478,3 +507,55 @@ subdir('src')
 # Build the test suite
 # subdir('tests')
 
+# Setup a pkgconfig file now after the build completed.
+pkg = import('pkgconfig')
+
+if build_core_opt and not sbio_as_wheel_opt
+    pc_install_dir = get_option('libdir') / 'pkgconfig'
+else
+    pc_install_dir = py_install_dir / 'sbio/pkgconfig'
+endif
+
+pc_libs = [libsbio]
+
+# if sbio_has_cuda
+#     pc_libs += [libdevsbio]
+# endif
+
+if sbio_build_xtc1
+    pc_libs += [libxtc1slim]
+endif
+
+if sbio_build_xtc2
+    pc_libs += [libxtc2slim]
+endif
+
+feature_flags = []
+if sbio_has_cuda
+    feature_flags += ['-DSBIO_HAS_CUDA']
+endif
+
+if sbio_build_xtc1
+    feature_flags += ['-DSBIO_HAS_XTC1']
+endif
+
+if sbio_build_xtc2
+    feature_flags += ['-DSBIO_HAS_XTC2']
+endif
+
+if get_variable('found_mpi', false)
+    feature_flags += ['-DSBIO_HAS_MPI']
+endif
+
+pc_headers = ['.', 'sbio']
+pkg.generate(
+    name: 'sbio',
+    description: 'Stream Broker IO - Data Processing Framework for Streamed Data.',
+    libraries: pc_libs,
+    extra_cflags: feature_flags,
+    subdirs: pc_headers,
+    version: meson.project_version(),
+    url: 'https://sbio.xfelpp.org',
+    license: 'AGPL-3.0-only',
+    install_dir: pc_install_dir,
+)

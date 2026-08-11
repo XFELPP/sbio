@@ -22,6 +22,90 @@ import platform
 import sys
 
 
+def get_pkg_config() -> str:
+    sbio_wheel_pkgconfig_dir: str = os.path.join(os.path.dirname(__file__), "pkgconfig")
+    if os.path.exists(sbio_wheel_pkgconfig_dir):
+        return sbio_wheel_pkgconfig_dir
+
+    win_prefix_lib_dir: str = os.path.join(sys.prefix, "Library")
+    if os.path.exists(win_prefix_lib_dir):
+        win_prefix_pkgconfig_dir: str = os.path.join(win_prefix_lib_dir, "pkgconfig")
+
+        if os.path.exists(win_prefix_pkgconfig_dir):
+            return win_prefix_pkgconfig_dir
+
+        for subdir in os.listdir(win_prefix_lib_dir):
+            subdir_pkgconfig: str = os.path.join(
+                win_prefix_lib_dir, subdir, "pkgconfig"
+            )
+            if os.path.exists(subdir_pkgconfig):
+                return subdir_pkgconfig
+
+    unix_prefix_lib_dir: str = os.path.join(sys.prefix, "lib")
+    if os.path.exists(unix_prefix_lib_dir):
+        unix_prefix_pkgconfig_dir: str = os.path.join(unix_prefix_lib_dir, "pkgconfig")
+
+        if os.path.exists(unix_prefix_pkgconfig_dir):
+            return unix_prefix_pkgconfig_dir
+
+        for subdir in os.listdir(unix_prefix_lib_dir):
+            subdir_pkgconfig: str = os.path.join(
+                unix_prefix_lib_dir, subdir, "pkgconfig"
+            )
+            if os.path.exists(subdir_pkgconfig):
+                return subdir_pkgconfig
+
+    return ""
+
+
+def sbio_pkg_config() -> None:
+    import argparse
+    import os
+    import re
+    from typing import Optional
+
+    parser: argparse.ArgumentParser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--pkg-config-cflags",
+        action="store_true",
+        help="Print the Cflags from the .pc file.",
+    )
+    parser.add_argument(
+        "--pkg-config-libs",
+        action="store_true",
+        help="Print the Libs from the .pc file.",
+    )
+    parser.add_argument(
+        "--pkg-config-path",
+        action="store_true",
+        help="Print the path usable by pkg-config.",
+    )
+
+    args: argparse.Namespace = parser.parse_args()
+
+    pc_path: str = get_pkg_config()
+    pc_file: str = os.path.join(pc_path, "sbio.pc")
+    if args.pkg_config_cflags:
+        if pc_path and os.path.exists(pc_file):
+            with open(pc_file, "r") as f:
+                pc_content: str = f.read()
+                cflags_m: Optional[re.Match] = re.search(
+                    r"(?<=Cflags:)(.*)", pc_content
+                )
+                if cflags_m:
+                    print(cflags_m.group().strip())
+    elif args.pkg_config_libs:
+        if pc_path and os.path.exists(pc_file):
+            with open(pc_file, "r") as f:
+                pc_content = f.read()
+                libs_m: Optional[re.Match] = re.search(r"(?<=Libs:)(.*)", pc_content)
+                if libs_m:
+                    print(libs_m.group().strip())
+    elif args.pkg_config_path:
+        print(pc_path)
+
+
+
 def get_include() -> str:
     sbio_wheel_include_dir: str = os.path.join(os.path.dirname(__file__), "include")
     if os.path.exists(sbio_wheel_include_dir):

@@ -151,6 +151,27 @@ LINES=(
 
 print_banner "${LINES[@]}"
 
+# Create a build environment if it doesn't yet exist
+if [ ! -d "${BUILD_ENV}" ]; then
+    LINES=("Creating isolated build environment in ${BUILD_ENV}...")
+    print_banner "${LINES[@]}"
+    python3 -m venv "${BUILD_ENV}"
+    # Source before installing dependencies
+    source "${BUILD_ENV}/bin/activate"
+    pip install --upgrade pip
+    # Install the relevant build dependencies and nothing else
+    pip install "meson>=1.10.1" "meson-python" "ninja" "numpy" "pybind11" "setuptools"
+
+    pip install ncarray --extra-index-url https://pypi.xfelpp.org/host/
+    # Mark that this is a first-build. This is used to make decisions later
+    FIRST_BUILD=1
+else
+    # If it already exists (you've run build.sh before) just activate it
+    LINES=("Activating build environment at ${BUILD_ENV}")
+    print_banner "${LINES[@]}"
+    source "${BUILD_ENV}/bin/activate"
+fi
+
 # Run meson configure/setup if it hasn't be done yet or it has been requested
 # It generally only needs to rerun if install prefix has changed, or meson.build
 # files have been modified.
