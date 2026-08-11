@@ -280,7 +280,6 @@ else
         ncarray_dep = declare_dependency(
             compile_args: nc_cflags.split(),
             link_args: nc_libs.split(),
-            # include_directories: include_directories(nc_cflags),
         )
     else
         message('ncarray not found via pkg-config helper - checking via Python lib and inc getters')
