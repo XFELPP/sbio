@@ -26,6 +26,9 @@
 
 namespace sbio {
   struct ThreadLocalBuffer {
+
+    static constexpr MemorySpace memory_space() { return MemorySpace::Host; }
+
     // ThreadLocalBuffer() = default;
 
     // ThreadLocalBuffer(const ThreadLocalBuffer&) = delete;

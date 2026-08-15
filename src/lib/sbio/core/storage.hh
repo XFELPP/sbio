@@ -66,6 +66,38 @@ namespace sbio {
   struct DeviceBound {};    // Requirement: E.g., only accessible to CUDA/HIP
   struct DoubleBuffered {}; // Strategy: E.g. requires ping-pong buffers
 
+  /**
+   * The MemorySpace an individual buffer lives in.
+   *
+   * Each buffer satisfying ValidBuffer (below) indicates the memory space that
+   * it resides in. This allows querying, and making decisions if/when memory may
+   * need to be copied or moved into different spaces.
+   */
+  enum class MemorySpace : std::uint8_t {
+    Host    = 0, ///< Resides in host memory
+    Pinned  = 1, ///<
+    Device  = 2, ///< Resides in device (GPU) memory
+    Managed = 3  ///<
+  };
+
+  /**
+   * Operating through StorageView's acquisition model, specify MemorySpace to use.
+   *
+   * A caller can specify a view of a buffer must be returned in the caller's native
+   * memory space (GPU/CPU etc), or alternatively, that it can be left in the buffer's
+   * native space. The latter option may at first seem not so useful (why would a caller
+   * request access to a buffer it cannot read?) - however, callers in the sbio
+   * infrastructure are often *orchestrating* other components. They can specify
+   * acquisition, initiating a transaction, and proceed to direct how the buffer be
+   * filled/read elsewhere, without actually reading it themselves. This allows for
+   * major performance improvements where the alternative would require copies
+   * back and forth between CPU and GPU memory (as an example).
+   */
+  enum class AcquireIntent : std::uint8_t {
+    CallerMemorySpace = 0, ///< On acquire, view should be in the caller's space
+    BufferMemorySpace = 1  ///< On acquire, view can be left in the buffer's space
+  };
+
   template <typename FTraits>
   struct AllocationRequest {
     // One entry for every descriptor in the BrokerBufferRequirements TypeList
@@ -95,6 +127,7 @@ namespace sbio {
     { buf.ptr() } -> std::same_as<void*>;
     { buf.size() } -> std::convertible_to<std::size_t>;
     { buf.set_memory(std::declval<void*>(), std::declval<std::size_t>()) };
+    { T::memory_space() } -> std::convertible_to<MemorySpace>;
   };
 
   // --- All buffers are combined together into a single Storage object --- //

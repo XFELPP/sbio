@@ -135,6 +135,18 @@ namespace sbio {
       static_cast<hd_std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x0 };
 
+    /**
+     * The memory space that results (via get_data) are returned in.
+     */
+    static constexpr MemorySpace result_memory_space() {
+      if constexpr (requires { Derived::result_memory_space_impl(); }) {
+        return Derived::result_memory_space_impl();
+      } else {
+        // For now, assume return to host memory as default fallback.
+        return MemorySpace::Host;
+      }
+    }
+
     // --- Execution Policy Configuration (if applicable) --- //
     // ------------------------------------------------------ //
 
@@ -295,15 +307,6 @@ namespace sbio {
         return Derived::acquire_broker_view_impl(buf);
       } else {
         return buf.ptr();
-      }
-    }
-
-    template <typename Buffer, typename Result>
-    SBIO_HD static Result release_broker_view(Buffer& buf, void* broker_view, Result res) {
-      if constexpr (requires { Derived::release_broker_view_impl(buf, broker_view, res); }) {
-        return Derived::release_broker_view_impl(buf, broker_view, res);
-      } else {
-        return res;
       }
     }
 

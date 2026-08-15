@@ -428,29 +428,6 @@ namespace sbio {
       return step;
     }
 
-    template <typename Buffer>
-    static void* acquire_broker_view_impl(Buffer& buf) {
-      if constexpr (requires { buf.host_ptr(); }) {
-        if (buf.is_dirty()) {
-          buf.set_dirty(false);
-        }
-        return buf.host_ptr();
-      }
-
-      return buf.ptr();
-    }
-
-    template <typename Buffer, typename Result>
-    static Result release_broker_view_impl(Buffer& buf, void* broker_view, Result res) {
-      if constexpr (requires { buf.host_ptr(); }) {
-        // Map host-mirror offset to the GPU device address space
-        std::size_t offset =
-            reinterpret_cast<const char*>(res.data) - reinterpret_cast<const char*>(broker_view);
-        res.data = reinterpret_cast<const char*>(buf.ptr()) + offset;
-      }
-      return res;
-    }
-
   private:
     /**
      * Communicator for synchronizing across the whole MPI world.

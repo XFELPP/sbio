@@ -100,6 +100,8 @@ namespace sbio {
    */
   struct MPISharedBuffer {
 
+    static constexpr MemorySpace memory_space() { return MemorySpace::Host; }
+
     MPISharedBuffer() = default;
 
     MPISharedBuffer(const MPISharedBuffer& other)
