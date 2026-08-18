@@ -67,6 +67,7 @@ namespace sbio {
 
       if (aligned > m_cap) {
         realloc(aligned);
+        m_idx = 0;
       } else if (m_idx + aligned > m_cap) {
         m_idx = 0;
 
