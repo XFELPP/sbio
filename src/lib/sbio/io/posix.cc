@@ -27,7 +27,9 @@ typedef SSIZE_T ssize_t;
 
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/types.h>
+#include <unistd.h>
 #endif
 
 #include <cstddef>

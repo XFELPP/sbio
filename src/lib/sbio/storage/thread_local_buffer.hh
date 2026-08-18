@@ -26,6 +26,9 @@
 
 namespace sbio {
   struct ThreadLocalBuffer {
+
+    static constexpr MemorySpace memory_space() { return MemorySpace::Host; }
+
     // ThreadLocalBuffer() = default;
 
     // ThreadLocalBuffer(const ThreadLocalBuffer&) = delete;
@@ -90,10 +93,6 @@ namespace sbio {
      * @param[in] size The size of the buffer required.
      */
     inline void set_memory(void* ptr, std::size_t size) { m_size = size; }
-
-    inline bool is_dirty() const { return false; }
-
-    inline void set_dirty(bool) {}
 
     ~ThreadLocalBuffer() {
       // TODO: Implement this!

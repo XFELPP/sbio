@@ -334,7 +334,8 @@ namespace sbio {
     SBIO_HD static IOStatus discover_metadata(Stream<IO, XTC2Traits>* streams,
                                               StorageViewT& storage,
                                               MetadataInventory& inv) {
-      auto* smd_buf = storage.template acquire<MetadataRole>();
+      auto* smd_buf =
+        storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
       IOStatus status = streams[SMD].read_one(smd_buf,
                                               storage.template size<MetadataRole>());
@@ -347,7 +348,7 @@ namespace sbio {
         }
       }
 
-      storage.template release<MetadataRole, 0>(smd_buf, status);
+      storage.template release<MetadataRole, 0>(smd_buf);
       return status;
     }
 
@@ -372,17 +373,21 @@ namespace sbio {
       }
 
       // Read a lot into a scratch buffer
-      auto* smd_buf = storage.template acquire<MetadataRole, 1>();
+      auto* smd_buf =
+        storage.template acquire<MetadataRole, 1, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
       IOStatus status = streams[SMD].read_batch(smd_buf, read_size, missing_chunk);
 
       if (status == IOStatus::ZeroBytesRead) {
         stream_state.num_events = 0;
         stream_state.num_transitions = 0;
       } else if (status == IOStatus::Success) {
-        auto* l1_offsets =
-          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
-        auto* transition_offsets =
-            reinterpret_cast<TransitionOffset*>(storage.template acquire<IndexRole, 1>());
+        void* idx0_buf =
+          storage.template acquire<IndexRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+        auto* l1_offsets { reinterpret_cast<EventOffset*>(idx0_buf) };
+
+        void* idx1_buf =
+          storage.template acquire<IndexRole, 1, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+        auto* transition_offsets { reinterpret_cast<TransitionOffset*>(idx1_buf) };
 
         std::size_t bytes_read = streams[SMD].read_count();
         stream_state.curr_smd_offset = 0;
@@ -420,11 +425,11 @@ namespace sbio {
         stream_state.num_events = n_events;
         stream_state.num_transitions = n_transitions;
 
-        storage.template release<IndexRole, 0>(l1_offsets, status);
-        storage.template release<IndexRole, 1>(transition_offsets, status);
+        storage.template release<IndexRole, 0>(l1_offsets);
+        storage.template release<IndexRole, 1>(transition_offsets);
       }
 
-      storage.template release<MetadataRole, 1>(smd_buf, status);
+      storage.template release<MetadataRole, 1>(smd_buf);
       return status;
     }
 
@@ -443,14 +448,15 @@ namespace sbio {
           return IOStatus::AllRequestedRead;
         }
 
-        auto* l1_offsets =
-          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+        void* idx0_buf =
+          storage.template acquire<IndexRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+        auto* l1_offsets { reinterpret_cast<EventOffset*>(idx0_buf) };
 
         auto& offset = l1_offsets[adjusted_index];
         std::size_t file_offset { offset.offset };
         std::size_t read_size { offset.size };
 
-        auto* bd_buf = storage.template acquire<DataRole, 0>();
+        auto* bd_buf = storage.template acquire<DataRole, 0, ncarray::HostTag>();
         IOStatus status = streams[BD].read_at(bd_buf, file_offset, read_size);
 
         if (status == IOStatus::Success) {
@@ -462,10 +468,11 @@ namespace sbio {
           }
         }
 
-        storage.template release<IndexRole, 0>(l1_offsets, status);
-        storage.template release<DataRole, 0>(bd_buf, status);
+        storage.template release<IndexRole, 0>(l1_offsets);
+        storage.template release<DataRole, 0>(bd_buf);
         return status;
       } else {
+        // TODO: Update for BufferMemorySpace vs CallerMemorySpace
         XTC2::TransitionId transition_id { XTC2::TransitionId::Unused_11 };
         if (ptn == DataAccessPtn::SlowUpdate) {
           transition_id = XTC2::TransitionId::SlowUpdate;
@@ -479,9 +486,9 @@ namespace sbio {
         }
 
         auto* l1_offsets =
-          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0, ncarray::HostTag>());
         auto* transition_offsets =
-          reinterpret_cast<TransitionOffset*>(storage.template acquire<IndexRole, 1>());
+          reinterpret_cast<TransitionOffset*>(storage.template acquire<IndexRole, 1, ncarray::HostTag>());
 
         auto& curr_transition_index { stream_state.trans_offset_idx };
         auto& offset { transition_offsets[curr_transition_index] };
@@ -539,7 +546,7 @@ namespace sbio {
           }
         }
 
-        auto* bd_buf { storage.template acquire<MetadataRole, 0>() };
+        auto* bd_buf { storage.template acquire<MetadataRole, 0, ncarray::HostTag>() };
         IOStatus status = streams[BD].read_at(bd_buf, file_offset, read_size);
 
         if (status == IOStatus::Success) {
@@ -551,9 +558,9 @@ namespace sbio {
           }
         }
 
-        storage.template release<IndexRole, 0>(l1_offsets, status);
-        storage.template release<IndexRole, 1>(transition_offsets, status);
-        storage.template release<MetadataRole, 0>(bd_buf, status);
+        storage.template release<IndexRole, 0>(l1_offsets);
+        storage.template release<IndexRole, 1>(transition_offsets);
+        storage.template release<MetadataRole, 0>(bd_buf);
         return status;
       }
 
@@ -579,7 +586,7 @@ namespace sbio {
         }
 
         auto* l1_offsets =
-          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0>());
+          reinterpret_cast<EventOffset*>(storage.template acquire<IndexRole, 0, ncarray::HostTag>());
 
         auto& start_offset = l1_offsets[start_index];
         auto& end_offset = l1_offsets[end_index];
@@ -587,7 +594,7 @@ namespace sbio {
         std::size_t read_size { (end_offset.offset + end_offset.size) - file_offset };
 
         std::size_t bd_buf_size { storage.template size<DataRole, 0>() };
-        auto* bd_buf = storage.template acquire<DataRole, 0>();
+        auto* bd_buf = storage.template acquire<DataRole, 0, ncarray::HostTag>();
 
         IOStatus status { IOStatus::Success };
         if (read_size <= bd_buf_size) {
@@ -629,8 +636,8 @@ namespace sbio {
           }
         }
 
-        storage.template release<IndexRole, 0>(l1_offsets, status);
-        storage.template release<DataRole, 0>(bd_buf, status);
+        storage.template release<IndexRole, 0>(l1_offsets);
+        storage.template release<DataRole, 0>(bd_buf);
         return status;
       } else {
         /// TODO: Implement... something for this.
@@ -670,8 +677,10 @@ namespace sbio {
       XTC2::TransitionId target_service { XTC2::TransitionId::L1Accept };
       void* bd_buf { nullptr };
       XTC2::Dgram* dg { nullptr };
+
       if (ptn == DataAccessPtn::L1Accept) {
-        bd_buf = storage.template acquire<DataRole, 0>();
+        bd_buf =
+          storage.template acquire<DataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
         dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
 
         target_service = XTC2::TransitionId::L1Accept;
@@ -720,7 +729,8 @@ namespace sbio {
           }
         }
 
-        bd_buf = storage.template acquire<MetadataRole, 0>();
+        bd_buf =
+          storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
         dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
       }
 
@@ -741,9 +751,9 @@ namespace sbio {
       DataResult res = XTC2Traits::resolve_data(dg, inv, corrected_req);
 
       if (ptn == DataAccessPtn::L1Accept) {
-        storage.template release<DataRole, 0>(bd_buf, res);
+        res.data = storage.template release<DataRole, 0>(bd_buf, res.data);
       } else {
-        storage.template release<MetadataRole, 0>(bd_buf, res);
+        res.data = storage.template release<MetadataRole, 0>(bd_buf, res.data);
       }
 
       return res;
@@ -759,12 +769,12 @@ namespace sbio {
     SBIO_HD static auto current_buffer(StorageViewT& storage,
                                        const DiscoveryState& state) {
       if (state.last_accessed_ptn == DataAccessPtn::L1Accept) {
-        auto* buf = storage.template acquire<DataRole, 0>();
+        auto* buf = storage.template acquire<DataRole, 0, ncarray::HostTag>();
         storage.template release<DataRole, 0>(buf);
 
         return buf;
       } else {
-        auto* buf = storage.template acquire<MetadataRole, 0>();
+        auto* buf = storage.template acquire<MetadataRole, 0, ncarray::HostTag>();
         storage.template release<MetadataRole, 0>(buf);
 
         return buf;

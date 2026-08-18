@@ -24,15 +24,33 @@
 
 #include <cufile.h>
 
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
+
+namespace fs = std::filesystem;
 
 namespace sbio {
   cuFileIO::cuFileIO()
     : IOPolicy<cuFileIO>()
+#ifdef _WIN32
+    , m_file(INVALID_HANDLE_VALUE)
+#else
     , m_fd(-1)
+#endif
   {
     std::memset(&m_descr, 0, sizeof(m_descr));
   }
@@ -42,9 +60,15 @@ namespace sbio {
       cuFileHandleDeregister(m_handle);
     }
 
+#ifdef _WIN32
+    if (m_file != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(m_file);
+    }
+#else
     if (m_fd >= 0) {
       ::close(m_fd);
     }
+#endif // _WIN32
 
     cuFileDriverClose();
   }
@@ -55,19 +79,46 @@ namespace sbio {
       return IOStatus::OpenFailed;
     }
 
+#ifdef _WIN32
+    // TODO: FILE_FLAG_OVERLAPPED on Windows has restrictions that O_DIRECT
+    //       does not --> Need to understand what these are and how to handle...
+    m_file = CreateFileA(path,
+                         GENERIC_READ,
+                         FILE_SHARE_READ,
+                         nullptr,
+                         OPEN_EXISTING,
+                         FILE_FLAG_OVERLAPPED | FILE_FLAG_OVERLAPPED,
+                         nullptr);
+
+    if (m_file == INVALID_HANDLE_VALUE) {
+      return IOStatus::OpenFailed;
+    }
+#else
     m_fd = ::open(path, O_RDONLY | O_DIRECT);
     if (m_fd < 0) {
       return IOStatus::OpenFailed;
     }
+#endif // _WIN32
 
+#ifdef _WIN32
+    m_descr.handle.handle = m_file;
+    m_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_WIN32;
+#else
     m_descr.handle.fd = m_fd;
     m_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
+#endif // _WIN32
 
     if (checkCuFile(cuFileHandleRegister(&m_handle, &m_descr))) {
+#ifdef _WIN32
+      std::cerr << "Error registering file handle" << std::endl;
+      ::CloseHandle(m_file);
+      m_file = INVALID_HANDLE_VALUE;
+#else
       std::cerr << "Error registering file handle for fd " << m_fd << std::endl;
       ::close(m_fd);
-      cuFileDriverClose();
       m_fd = -1;
+#endif // _WIN32
+      cuFileDriverClose();
       return IOStatus::OpenFailed;
     } else {
       std::cout << "cuFile handle registered" << std::endl;

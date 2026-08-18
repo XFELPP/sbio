@@ -157,6 +157,19 @@ namespace sbio {
       DataAccessPtn access_ptn;
     };
 
+    /**
+     * Based on choice of ExecutionPolicy, data will return in host or device buffers.
+     *
+     * As data is returned via ncarray array objects, the MemTag converts a MemorySpace
+     * indicator in sbio to the tagging system used for host/device array constructs in
+     * ncarray.
+     */
+    using MemTag = std::conditional_t<
+      ExecutionPolicy::result_memory_space() == MemorySpace::Host,
+      ncarray::HostTag,
+      ncarray::DevTag
+    >;
+
     // Default constructor for DataSource abstraction
     BrokerGroup() {
       m_name[0] = '\0';
@@ -315,7 +328,6 @@ namespace sbio {
      * Args pack as less-specialized, and prefer this overload. Adding it, though, does
      * not hurt and future-proofs against future overloads.
      *
-     * @tparam MemTag The tag indicating host (CPU) or device (GPU) data access.
      * @tparam CBType The type for the lambda callback to apply to each data segment
      *         independently.
      * @tparam Args... The variadic types for arguments to pass to the DataRequest
@@ -328,7 +340,7 @@ namespace sbio {
      * @returns array The requested data as an NCArrayView or NCDevArrayView
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
-    template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
+    template <class CBType, typename... Args>
     requires std::invocable<CBType, DataResult>
     inline ncarray::SOViewFor<MemTag> get_data(StepIdxType& step_idx,
                                                CBType&& callback,
@@ -422,7 +434,6 @@ namespace sbio {
      * This is an identical get_data call to the other overload, without the application
      * of a lambda callback.
      *
-     * @tparam MemTag The tag indicating host (CPU) or device (GPU) data access.
      * @tparam Args... The variadic types for arguments to pass to the DataRequest
      *         constructor. This set of arguments depends on the FormatTraits request
      *         constructors (of which, there are possibly multiple).
@@ -431,7 +442,7 @@ namespace sbio {
      * @returns array The requested data as an NCArrayView or NCDevArrayView
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
-    template <typename MemTag = ncarray::HostTag, typename... Args>
+    template <typename... Args>
     inline ncarray::SOViewFor<MemTag> get_data(StepIdxType& step_idx,
                                                Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);

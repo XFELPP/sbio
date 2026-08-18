@@ -27,6 +27,9 @@
 namespace sbio {
 
   struct HostBuffer {
+
+    static constexpr MemorySpace memory_space() { return MemorySpace::Host; }
+
     // HostBuffer() = default;
     // HostBuffer(const HostBuffer&) = delete;
     // HostBuffer& operator=(const HostBuffer&) = delete;

@@ -240,6 +240,8 @@ namespace sbio {
 
       using Hint = typename GetHint<Descriptor>::type;
 
+      // NOTE: This policy only implements synchronization on Index/Shareable.
+      //       DataRole updates (per-step hot path) do NOT synchronize.
       // Check if Windows need synchronization
       if constexpr (std::is_same_v<Role, IndexRole> ||
                     std::is_same_v<Role, GroupRole> ||
@@ -279,6 +281,8 @@ namespace sbio {
 
       using Hint = typename GetHint<Descriptor>::type;
 
+      // NOTE: This policy only implements synchronization on Index/Shareable.
+      //       DataRole updates (per-step hot path) do NOT synchronize.
       // Check if Windows need synchronization
       int tag { 0 };
       int seq { 0 };
@@ -300,64 +304,64 @@ namespace sbio {
         };
 
         storage.template for_each_role<Role>(fence_win);
+
+        // Broadcast all requested sync_vars
+        // We tag our data to distinguish between brokers on the communicator
+        // This requires point-to-point Send/Recv, but we recreate a binomial tree
+        // distribution pattern like you would get from using a Bcast
+        int tree_idx { 0 };
+        auto broadcast_all_ranks = [tag, seq, &tree_idx](auto& var) {
+          using VarT = decltype(var);
+
+          auto mpi_type { mpi::type_for<VarT>() };
+
+          int ub { mpi::tag_upper_bound() };
+          int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
+          tree_idx++;
+
+          if (m_rank == 0) {
+            std::vector<MPI_Request> reqs(m_size - 1);
+            for (int peer = 1; peer < m_size; ++peer) {
+              m_logger->trace("[Rank {}] About to send sync vars to {}."
+                              "(tag = {}, seq = {}, msg_tag = {})",
+                              m_rank,
+                              peer,
+                              tag,
+                              seq,
+                              msg_tag);
+              MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
+            }
+
+            if (!reqs.empty()) {
+              MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+              m_logger->trace("[Rank {}] Sync vars sent to all peers!"
+                              "(tag = {}, seq = {}, msg_tag = {})",
+                              m_rank,
+                              tag,
+                              seq,
+                              msg_tag);
+            }
+          } else {
+            MPI_Request req;
+            m_logger->trace("[Rank {}] Waiting to receive sync vars from rank 0."
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            tag,
+                            seq,
+                            msg_tag);
+            MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
+            MPI_Wait(&req, MPI_STATUS_IGNORE);
+            m_logger->trace("[Rank {}] Received sync vars from rank 0."
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            tag,
+                            seq,
+                            msg_tag);
+          }
+        };
+
+        sync_vars.for_each(broadcast_all_ranks);
       }
-
-      // Broadcast all requested sync_vars
-      // We tag our data to distinguish between brokers on the communicator
-      // This requires point-to-point Send/Recv, but we recreate a binomial tree
-      // distribution pattern like you would get from using a Bcast
-      int tree_idx { 0 };
-      auto broadcast_all_ranks = [tag, seq, &tree_idx](auto& var) {
-        using VarT = decltype(var);
-
-        auto mpi_type { mpi::type_for<VarT>() };
-
-        int ub { mpi::tag_upper_bound() };
-        int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
-        tree_idx++;
-
-        if (m_rank == 0) {
-          std::vector<MPI_Request> reqs(m_size - 1);
-          for (int peer = 1; peer < m_size; ++peer) {
-            m_logger->trace("[Rank {}] About to send sync vars to {}."
-                            "(tag = {}, seq = {}, msg_tag = {})",
-                            m_rank,
-                            peer,
-                            tag,
-                            seq,
-                            msg_tag);
-            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
-          }
-
-          if (!reqs.empty()) {
-            MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
-            m_logger->trace("[Rank {}] Sync vars sent to all peers!"
-                            "(tag = {}, seq = {}, msg_tag = {})",
-                            m_rank,
-                            tag,
-                            seq,
-                            msg_tag);
-          }
-        } else {
-          MPI_Request req;
-          m_logger->trace("[Rank {}] Waiting to receive sync vars from rank 0."
-                          "(tag = {}, seq = {}, msg_tag = {})",
-                          m_rank,
-                          tag,
-                          seq,
-                          msg_tag);
-          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
-          MPI_Wait(&req, MPI_STATUS_IGNORE);
-          m_logger->trace("[Rank {}] Received sync vars from rank 0."
-                          "(tag = {}, seq = {}, msg_tag = {})",
-                          m_rank,
-                          tag,
-                          seq,
-                          msg_tag);
-        }
-      };
-
-      sync_vars.for_each(broadcast_all_ranks);
     }
 
     /**
@@ -426,29 +430,6 @@ namespace sbio {
       }
 
       return step;
-    }
-
-    template <typename Buffer>
-    static void* acquire_broker_view_impl(Buffer& buf) {
-      if constexpr (requires { buf.host_ptr(); }) {
-        if (buf.is_dirty()) {
-          buf.set_dirty(false);
-        }
-        return buf.host_ptr();
-      }
-
-      return buf.ptr();
-    }
-
-    template <typename Buffer, typename Result>
-    static Result release_broker_view_impl(Buffer& buf, void* broker_view, Result res) {
-      if constexpr (requires { buf.host_ptr(); }) {
-        // Map host-mirror offset to the GPU device address space
-        std::size_t offset =
-            reinterpret_cast<const char*>(res.data) - reinterpret_cast<const char*>(broker_view);
-        res.data = reinterpret_cast<const char*>(buf.ptr()) + offset;
-      }
-      return res;
     }
 
   private:

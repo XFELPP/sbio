@@ -26,6 +26,7 @@
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/core/sync.hh"
+#include "sbio/core/transaction.hh"
 #include "sbio/formats/format_traits.hh"
 
 #include <concepts>
@@ -277,19 +278,18 @@ namespace sbio {
     SBIO_HD inline IOStatus discover_metadata() {
       m_broker_state = BrokerState::DISCOVERY;
 
-      EPolicy::template pre_discovery<StreamBroker, FTraits>(*this, m_metadata_inv);
+      auto txn { Transaction<MetadataRole, ExecutionPolicy, SBStorageType>(m_storage) };
+      auto sv { txn.view() };
 
       IOStatus status;
       if constexpr (!std::is_void_v<Derived>) {
         status = static_cast<Derived*>(this)->discover_metadata_impl();
       } else {
-        StorageView<SBStorageType, EPolicy> sv(m_storage);
         status = FTraits::discover_metadata(m_streams, sv, m_metadata_inv);
       }
 
-      EPolicy::template on_discovery<StreamBroker, FTraits>(*this,
-                                                            m_metadata_inv,
-                                                            status);
+      txn.commit(sync_vars(), status);
+
       m_broker_state = BrokerState::READY;
 
       return status;
@@ -345,15 +345,14 @@ namespace sbio {
     SBIO_HD inline IOStatus index_stream() {
       m_broker_state = BrokerState::INDEXING;
 
-      EPolicy::template pre_update<IndexRole>(m_storage);
+      auto txn { Transaction<IndexRole, ExecutionPolicy, SBStorageType>(m_storage) };
+      auto sv { txn.view() };
 
       IOStatus status { IOStatus::Success };
       if (EPolicy::should_index()) {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->index_stream_impl();
         } else {
-          StorageView<SBStorageType, EPolicy> sv(m_storage);
-
           // Must ensure that the signatures match to avoid silent failures
           const auto& cfg { m_config };
           if constexpr (requires {
@@ -368,7 +367,7 @@ namespace sbio {
       // This object must contain references to various attributes - it is the
       // responsibility of the execution policy to handle appropriate assingment
       // when synchronization is required.
-      EPolicy::template post_update<IndexRole>(m_storage, sync_vars(), status);
+      txn.commit(sync_vars(), status);
 
       // Should do an error check to set state properly.
       m_broker_state = BrokerState::READY;
@@ -391,18 +390,20 @@ namespace sbio {
                                        const DataAccessPtn ptn) {
       m_broker_state = BrokerState::STREAMING;
 
-      EPolicy::template pre_update<DataRole>(m_storage);
+      auto txn { Transaction<DataRole, ExecutionPolicy, SBStorageType>(m_storage) };
+      auto sv { txn.view() };
 
       IOStatus status { IOStatus::Success };
       if (EPolicy::template should_process<FTraits>(step_idx)) {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->fetch_step_impl(step_idx, ptn);
         } else {
-          StorageView<SBStorageType, EPolicy> sv(m_storage);
           status =
             FTraits::fetch_step(m_streams, sv, m_stream_state, m_config, step_idx, ptn);
         }
       }
+
+      txn.commit(sync_vars(), status);
 
       // Should do an error check to set state properly.
       m_broker_state = BrokerState::READY;
@@ -417,7 +418,8 @@ namespace sbio {
       } else if (steps.size() <= 3) {
         m_broker_state = BrokerState::STREAMING;
 
-        EPolicy::template pre_update<DataRole>(m_storage);
+        auto txn { Transaction<DataRole, ExecutionPolicy, SBStorageType>(m_storage) };
+        auto sv { txn.view() };
 
         // Passed begin/end, steps of 1 unit or explicit as 3rd item
         bool passed_step { steps.size() == 3 };
@@ -436,9 +438,6 @@ namespace sbio {
             }) {
             status = static_cast<Derived*>(this)->fetch_steps_impl(steps, ptn);
           } else {
-
-
-            StorageView<SBStorageType, EPolicy> sv(m_storage);
             status = FTraits::fetch_multi_steps(m_streams,
                                                 sv,
                                                 m_stream_state,
@@ -448,6 +447,8 @@ namespace sbio {
                                                 ptn);
           }
         }
+
+        txn.commit(sync_vars(), status);
 
         // Should do an error check to set state properly.
         m_broker_state = BrokerState::READY;

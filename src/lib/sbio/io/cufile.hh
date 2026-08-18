@@ -42,7 +42,11 @@ namespace sbio {
     IOStatus read(std::uint64_t offset, std::size_t size, void* dest);
 
   private:
+#ifdef _WIN32
+    HANDLE m_file;
+#else
     int m_fd;
+#endif // _WIN32
     CUfileDescr_t m_descr;
     CUfileHandle_t m_handle;
   };
