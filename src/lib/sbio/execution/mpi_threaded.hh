@@ -250,6 +250,8 @@ namespace sbio {
       using Descriptor = typename FindDescriptor<Role, 0, List>::type;
       using Hint = typename GetHint<Descriptor>::type;
 
+      // NOTE: This policy only implements synchronization on Index/Shareable.
+      //       DataRole updates (per-step hot path) do NOT synchronize.
       if constexpr (std::is_same_v<Role, IndexRole> ||
                     std::is_same_v<Role, GroupRole> ||
                     std::is_same_v<Hint, Shareable>) {
@@ -296,6 +298,8 @@ namespace sbio {
       using Descriptor = typename FindDescriptor<Role, 0, List>::type;
       using Hint = typename GetHint<Descriptor>::type;
 
+      // NOTE: This policy only implements synchronization on Index/Shareable.
+      //       DataRole updates (per-step hot path) do NOT synchronize.
       int tag { 0 };
       int seq { 0 };
       if constexpr (std::is_same_v<Role, IndexRole> ||
@@ -313,68 +317,68 @@ namespace sbio {
           }
         };
         storage.template for_each_role<Role>(fence_win);
+
+        // This requires point-to-point Send/Recv, but we recreate a binomial tree
+        // distribution pattern like you would get from using a Bcast
+        // NOTE: We include a chunk identifier as well as a buffer tag to prevent
+        //       desynch and mismatched collectives if ranks move at different rates
+        int tree_idx { 0 };
+        auto broadcast_all_ranks = [tag, seq, &tree_idx](auto& var) {
+          using VarT = decltype(var);
+
+          auto mpi_type { mpi::type_for<VarT>() };
+
+          int ub { mpi::tag_upper_bound() };
+          int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
+          tree_idx++;
+
+          if (m_rank == 0) {
+            std::vector<MPI_Request> reqs(m_size - 1);
+            for (int peer = 1; peer < m_size; ++peer) {
+              m_logger->trace("[Rank {} - thread {}] About to send sync vars to {}."
+                              "(tag = {}, seq = {}, msg_tag = {})",
+                              m_rank,
+                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                              peer,
+                              tag,
+                              seq,
+                              msg_tag);
+              MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
+            }
+
+            if (!reqs.empty()) {
+              MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+              m_logger->trace("[Rank {} - thread {}] Sync vars sent to all peers!"
+                              "(tag = {}, seq = {}, msg_tag = {})",
+                              m_rank,
+                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                              tag,
+                              seq,
+                              msg_tag);
+            }
+          } else {
+            MPI_Request req;
+            m_logger->trace("[Rank {} - thread {}] Waiting to receive sync vars from rank 0."
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            tag,
+                            seq,
+                            msg_tag);
+            MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
+            MPI_Wait(&req, MPI_STATUS_IGNORE);
+            m_logger->trace("[Rank {} - thread {}] Received sync vars from rank 0."
+                            "(tag = {}, seq = {}, msg_tag = {})",
+                            m_rank,
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            tag,
+                            seq,
+                            msg_tag);
+          }
+        };
+
+        sync_vars.for_each(broadcast_all_ranks);
       }
-
-      // This requires point-to-point Send/Recv, but we recreate a binomial tree
-      // distribution pattern like you would get from using a Bcast
-      // NOTE: We include a chunk identifier as well as a buffer tag to prevent
-      //       desynch and mismatched collectives if ranks move at different rates
-      int tree_idx { 0 };
-      auto broadcast_all_ranks = [tag, seq, &tree_idx](auto& var) {
-        using VarT = decltype(var);
-
-        auto mpi_type { mpi::type_for<VarT>() };
-
-        int ub { mpi::tag_upper_bound() };
-        int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
-        tree_idx++;
-
-        if (m_rank == 0) {
-          std::vector<MPI_Request> reqs(m_size - 1);
-          for (int peer = 1; peer < m_size; ++peer) {
-            m_logger->trace("[Rank {} - thread {}] About to send sync vars to {}."
-                            "(tag = {}, seq = {}, msg_tag = {})",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            peer,
-                            tag,
-                            seq,
-                            msg_tag);
-            MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
-          }
-
-          if (!reqs.empty()) {
-            MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
-            m_logger->trace("[Rank {} - thread {}] Sync vars sent to all peers!"
-                            "(tag = {}, seq = {}, msg_tag = {})",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            tag,
-                            seq,
-                            msg_tag);
-          }
-        } else {
-          MPI_Request req;
-          m_logger->trace("[Rank {} - thread {}] Waiting to receive sync vars from rank 0."
-                          "(tag = {}, seq = {}, msg_tag = {})",
-                          m_rank,
-                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          tag,
-                          seq,
-                          msg_tag);
-          MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
-          MPI_Wait(&req, MPI_STATUS_IGNORE);
-          m_logger->trace("[Rank {} - thread {}] Received sync vars from rank 0."
-                          "(tag = {}, seq = {}, msg_tag = {})",
-                          m_rank,
-                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          tag,
-                          seq,
-                          msg_tag);
-        }
-      };
-
-      sync_vars.for_each(broadcast_all_ranks);
     }
 
     /**

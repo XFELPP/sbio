@@ -79,13 +79,9 @@ namespace sbio {
    *       by definition provide minimums, but the final authority is the execution
    *       model.
    * 2. ***Connection is unmanaged by the execution model.***
-   * 3. Metadata discovery includes 2 hooks
-   *    -> A pre state transition hook. I.e. control what happens before metadata
-   *    -> A post state transition hook. I.e. control what happens immediately
-   *       after the metadata discovery step.
-   * 4. Indexing stage contains 1 explicit hook: A switch to control whether the broker
+   * 3. Indexing stage contains 1 explicit hook: A switch to control whether the broker
    *    should index at all. The synchronizations hooks below will also be used.
-   * 5. For data access the policy defines 1 hook that controls whether the
+   * 4. For data access the policy defines 1 hook that controls whether the
    *    broker should proceed with retrieval (like stage 4 indexing above).
    *
    * At the level of the BrokerGroup, the model provides control mechanisms for:
@@ -180,43 +176,11 @@ namespace sbio {
       return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
     }
 
-    /**
-     * An opportunity to provide explicit synchronization prior to metadata discovery.
-     *
-     * @tparam BrokerType The type of the StreamBroker being used.
-     * @tparam FTraits The data format type.
-     * @param[in] broker The StreamBroker being used.
-     * @param[in] inv The StreamBroker's metadata inventory.
-     */
-    template <class BrokerType, class FTraits>
-    requires FormatTraits<FTraits, typename BrokerType::IOPolicy, Derived>
-    SBIO_HD static void pre_discovery(BrokerType& broker,
-                                      typename FTraits::MetadataInventory& inv) {
-      if constexpr (requires {
-          Derived::template pre_discovery_impl<BrokerType, FTraits>(broker, inv);
-        }) {
-        Derived::template pre_discovery_impl<BrokerType, FTraits>(broker, inv);
-      }
-    }
-
-    /**
-     * An opportunity to provide explicit synchronization immediately after metadata discovery.
-     *
-     * @tparam BrokerType The type of the StreamBroker being used.
-     * @tparam FTraits The data format type.
-     * @param[in] broker The StreamBroker being used.
-     * @param[in] inv The StreamBroker's metadata inventory.
-     * @param[in] status The IOStatus result from the metadata discovery step.
-     */
-    template <class BrokerType, class FTraits>
-    requires FormatTraits<FTraits, typename BrokerType::IOPolicy, Derived>
-    SBIO_HD static void on_discovery(BrokerType& broker,
-                                     typename FTraits::MetadataInventory& inv,
-                                     IOStatus status) {
-      if constexpr (requires {
-          Derived::template on_discovery_impl<BrokerType, FTraits>(broker, inv, status);
-        }) {
-        Derived::template on_discovery_impl<BrokerType, FTraits>(broker, inv, status);
+    SBIO_HD static void* get_block_from_pool(std::size_t bytes, std::size_t alignment = 16) {
+      if constexpr ( requires { Derived::get_block_from_pool_impl(bytes, alignment); }) {
+        return Derived::get_block_from_pool_impl(bytes, alignment);
+      } else {
+        return nullptr;
       }
     }
 

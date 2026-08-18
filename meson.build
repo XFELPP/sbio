@@ -10,6 +10,7 @@ project(
         'cuda_std=c++20',
         'optimization=3',
         'pkgconfig.relocatable=true',
+        'b_ndebug=if-release',
     ],
 )
 

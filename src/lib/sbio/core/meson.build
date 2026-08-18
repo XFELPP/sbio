@@ -9,6 +9,7 @@ installed_core_headers = [
     'storage_view.hh',
     'stream.hh',
     'sync.hh',
+    'transaction.hh',
     'utility.hh',
 ]
 

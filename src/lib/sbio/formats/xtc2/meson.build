@@ -17,6 +17,7 @@ if build_core_opt
             ],
             cpp_args: ['-DSBIO_BUILD_API'],
             include_directories: sbio_headers,
+            dependencies: [ncarray_dep],
             install: true,
             install_dir: libsbio_install_dir,
             install_rpath: lib_install_rpath,

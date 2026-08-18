@@ -20,6 +20,7 @@
 #ifndef SBIO_STORAGE_MPI_SHARED_HH
 #define SBIO_STORAGE_MPI_SHARED_HH
 
+#include "sbio/core/storage.hh"
 #include "sbio/util/rc.hh"
 
 #include <mpi.h>

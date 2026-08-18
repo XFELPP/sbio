@@ -94,10 +94,6 @@ namespace sbio {
      */
     inline void set_memory(void* ptr, std::size_t size) { m_size = size; }
 
-    inline bool is_dirty() const { return false; }
-
-    inline void set_dirty(bool) {}
-
     ~ThreadLocalBuffer() {
       // TODO: Implement this!
     }
