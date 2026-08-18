@@ -24,10 +24,24 @@
 
 #include <cufile.h>
 
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
+
+namespace fs = std::filesystem;
 
 namespace sbio {
   cuFileIO::cuFileIO()
