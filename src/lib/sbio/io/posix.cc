@@ -85,6 +85,20 @@ namespace sbio {
     return IOStatus::Success;
   }
 
+#ifdef _WIN32
+  IOStatus SyncPOSIXIO::connect(HANDLE h_file) {
+    m_file = h_file;
+
+    return IOStatus::Success;
+  }
+#else
+  IOStatus SyncPOSIXIO::connect(int fd) {
+    m_fd = fd;
+
+    return IOStatus::Success;
+  }
+#endif // _WIN32
+
   IOStatus SyncPOSIXIO::read(std::uint64_t offset, std::size_t size, void* dest) {
 #ifdef _WIN32
     OVERLAPPED overlapped {};
