@@ -7,8 +7,8 @@ option(
 option(
     'sbio_data_formats',
     type: 'string',
-    value: 'xtc2',
-    description: 'Select data formats to build. Provide multiple with comma separator. Options: all, xtc1, xtc2',
+    value: 'xtc2,sbiofmt',
+    description: 'Select data formats to build. Provide multiple with comma separator. Options: all, xtc1, xtc2, sbiofmt',
 )
 option(
     'build_mpi',
