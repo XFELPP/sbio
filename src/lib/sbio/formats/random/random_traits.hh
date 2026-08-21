@@ -293,7 +293,13 @@ namespace sbio {
 
       request.size_requests[0] = cfg.event_size;
       request.size_requests[1] = cfg.event_size;
-      request.size_requests[2] = cfg.num_events * sizeof(EventOffset);
+      if (cfg.indexing_mode == IndexingMode::IndexAll) {
+        request.size_requests[2] = cfg.num_events * sizeof(EventOffset);
+      } else if (cfg.indexing_mode == IndexingMode::IndexBatch) {
+        request.size_requests[2] = cfg.indexing_batch_size * sizeof(EventOffset);
+      } else {
+        request.size_requests[2] = 2 * sizeof(EventOffset);
+      }
 
       return request;
     }
@@ -421,7 +427,10 @@ namespace sbio {
                     // NOTE: This is very wasteful ATM since everything is reread each time..
                     //       But... this is not supposed to be a high-performance format. Just testing...
                     start_evt = stream_state.num_events;
-                    end_evt = cfg.indexing_batch_size;
+                    end_evt = start_evt + cfg.indexing_batch_size;
+                    if (end_evt > total_events) {
+                      end_evt = total_events;
+                    }
                   }
 
                   for (hd_std::size_t i = start_evt; i < end_evt; ++i) {
@@ -430,7 +439,11 @@ namespace sbio {
                   }
 
                   event_count = end_evt;
-                  stream_state.num_events = event_count;
+                  if (cfg.indexing_mode == IndexingMode::IndexAll) {
+                    stream_state.num_events = event_count;
+                  } else {
+                    stream_state.num_events = end_evt - start_evt;
+                  }
 
                   storage.template release<MetadataRole, 0>(meta_buf);
                   storage.template release<IndexRole, 0>(idx_buf);
@@ -488,7 +501,7 @@ namespace sbio {
         }
       }
 
-      std::size_t event_sb_size { sizeof(randfmt::Block) + blk.payload_size() };
+      hd_std::size_t event_sb_size { sizeof(randfmt::Block) + blk.payload_size() };
       event_offsets[0].offset = stream_state.curr_offset;
       event_offsets[0].size = event_sb_size;
 
@@ -510,14 +523,20 @@ namespace sbio {
                                        const StreamParameters& cfg,
                                        StepIdxType step_idx,
                                        DataAccessPtn ptn) {
-      if (step_idx >= stream_state.num_events) {
+      hd_std::size_t adjusted_idx { step_idx };
+      if (cfg.indexing_mode == IndexingMode::IndexBatch) {
+        adjusted_idx = step_idx % cfg.indexing_batch_size;
+      } else if (cfg.indexing_mode == IndexingMode::NoIndex) {
+        adjusted_idx = 0;
+      }
+      if (adjusted_idx >= stream_state.num_events) {
         return IOStatus::AllRequestedRead;
       }
 
       auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
       const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
 
-      const auto& evt_off { event_offsets[step_idx] };
+      const auto& evt_off { event_offsets[adjusted_idx] };
       std::size_t file_offset { evt_off.offset };
       std::size_t read_size { evt_off.size };
 
@@ -538,25 +557,57 @@ namespace sbio {
                                               StepIdxType step_idx,
                                               StepIdxType count,
                                               DataAccessPtn ptn) {
-      if (step_idx + count > stream_state.num_events) {
-        return IOStatus::AllRequestedRead;
+      if (cfg.indexing_mode == IndexingMode::IndexAll ||
+          cfg.indexing_mode == IndexingMode::IndexBatch) {
+        hd_std::size_t start_idx { step_idx };
+        if (cfg.indexing_mode == IndexingMode::IndexBatch) {
+          start_idx = step_idx % cfg.indexing_batch_size;
+        }
+
+        hd_std::size_t end_idx { start_idx + count - 1 };
+
+        if (end_idx > stream_state.num_events) {
+          return IOStatus::AllRequestedRead;
+        }
+
+        auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
+        const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
+        const auto& start_off { event_offsets[start_idx] };
+        const auto& end_off { event_offsets[end_idx] };
+
+        hd_std::size_t file_offset { start_off.offset };
+        hd_std::size_t read_size { (end_off.offset + end_off.size) - file_offset };
+
+        auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
+        IOStatus status = streams[Data].read_at(data_buf, file_offset, read_size);
+
+        storage.template release<IndexRole, 0>(idx_buf);
+        storage.template release<DataRole, 0>(data_buf);
+
+        return status;
+      } else {
+        // This is about the worst strategy you could use... but worth testing...
+        auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
+
+        hd_std::size_t cummulative_offset { 0 };
+        for (hd_std::size_t c = 0; c < count; ++c) {
+          auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
+          const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
+          const auto& off { event_offsets[0] };
+
+          hd_std::size_t file_offset { off.offset };
+          hd_std::size_t read_size { off.size };
+
+          IOStatus status = streams[Data].read_at(reinterpret_cast<char*>(data_buf) + cummulative_offset,
+                                                  file_offset,
+                                                  read_size);
+          storage.template release<IndexRole, 0>(idx_buf);
+          if (c < count - 1) {
+            cummulative_offset += read_size;
+            index_stream(streams, storage, stream_state, cfg);
+          }
+        }
       }
-
-      auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
-      const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
-      const auto& start_off { event_offsets[step_idx] };
-      const auto& end_off { event_offsets[step_idx + count - 1] };
-
-      hd_std::size_t file_offset { start_off.offset };
-      hd_std::size_t read_size { (end_off.offset + end_off.size) - file_offset };
-
-      auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
-      IOStatus status = streams[Data].read_at(data_buf, file_offset, read_size);
-
-      storage.template release<IndexRole, 0>(idx_buf);
-      storage.template release<DataRole, 0>(data_buf);
-
-      return status;
     }
 
     template <IOTraits IO, class StorageViewT>
