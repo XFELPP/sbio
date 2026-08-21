@@ -59,6 +59,6 @@ PYBIND11_MODULE(pyio, io_module, py::mod_gil_not_used()) {
 
   py::classh<sbio::SyncPOSIXIO>(io_module, "SyncPOSIXIO")
     .def(py::init<>())
-    .def("connect", &sbio::SyncPOSIXIO::connect)
+    .def("connect", py::overload_cast<const char*>(&sbio::SyncPOSIXIO::connect))
     .def("read", &sbio::SyncPOSIXIO::read);
 } // io_module
