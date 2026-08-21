@@ -20,6 +20,8 @@
 #ifndef SBIO_FORMATS_RANDOM_RANDFMT_HH
 #define SBIO_FORMATS_RANDOM_RANDFMT_HH
 
+#include <ncarray/dtype.hh>
+
 #ifdef __CUDACC__
 
 #include <cuda/std/cstddef>
@@ -47,6 +49,16 @@ namespace hd_std = std;
 #endif
 
 namespace sbio::randfmt {
+  /**
+   * The maximum number of dimensions a data payload may have.
+   */
+  static constexpr hd_std::uint16_t MaxRank { 5 };
+
+  /**
+   * The maximum number of bytes for string/character payloads.
+   */
+  static constexpr hd_std::uint16_t MaxNameSize { 64 };
+
   /**
    * Magic byte start sequence: SBIORND0.
    *
@@ -85,12 +97,9 @@ namespace sbio::randfmt {
     SuperBlockOffsetTable = 1  ///< Write an offset-table to each SuperBlock at the end
   };
 
-  /**
-   * File format flags at the granularity of the SuperBlock.
-   *
-   * Currently, only addition of sub-block offsets tables is available.
-   */
-
+  SBIO_HD inline bool test_feature_flag(hd_std::uint8_t flags, FormatFlags feat) {
+    return flags & (1 << static_cast<hd_std::uint8_t>(feat));
+  }
 
 #pragma pack(push, 4)
   struct Header {
@@ -103,11 +112,22 @@ namespace sbio::randfmt {
     hd_std::uint32_t _reserved;    ///< Reserved for future use
   };
 
+  // --- Payload descriptors inside the relevant blocks --- //
+  /**
+   * The payload of a SuperBlock.
+   *
+   * This payload begins immediately following the Header. If the flags have been
+   * configured to include the sub-block offset table, those offsets will begin
+   * immediately following the `_reserved` field and can be accessed via the
+   * `offsets` function. If the sub-block offset table has not been used, then
+   * this function will be meaningless (or, more specifically, ends up pointing to
+   * the first sub-block, i.e. it's Header).
+   */
   struct SuperBlock {
-    hd_std::uint64_t sequence_num; ///< Sequence number - e.g., timestamp, or similar
-    hd_std::uint8_t num_blocks;    ///< Number of subequent blocks in super-block group
-    hd_std::uint8_t user;          ///< Field blank for arbitrary user use
-    hd_std::uint16_t _reserved;    ///< Reserved for future use
+    hd_std::uint64_t sequence_num { 0 }; ///< Sequence number - e.g., timestamp, or similar
+    hd_std::uint8_t num_blocks { 0 };    ///< Number of subequent blocks in super-block group
+    hd_std::uint8_t user { 0 };          ///< Field blank for arbitrary user use
+    hd_std::uint16_t _reserved { 0 };    ///< Reserved for future use
 
     /**
      * If bit-0 of flags is enabled, a sub-block offset table can be accessed.
@@ -123,13 +143,20 @@ namespace sbio::randfmt {
     }
   };
 
+  /**
+   * The payload of a ConfigBlock.
+   */
   struct ConfigBlock {
     hd_std::uint32_t seed { 42 };        ///< Seed if using PNRG data filling.
-    hd_std::uint32_t pattern_type { 0 }; ///< Input data: 0 = PNRG, 1 = Sequential, 2 = Fixed.
+    hd_std::uint8_t pattern_type { 0 };  ///< Input data: 0 = PNRG, 1 = Sequential, 2 = Fixed.
     hd_std::uint64_t total_events { 0 }; ///< Total events in stream. 0 = Unknown.
-    hd_std::uint32_t flags { 0 };        ///< Any additional flags (e.g. to write SuperBlock offsets)
+    hd_std::uint8_t flags { 0 };         ///< Any additional flags (e.g. to write SuperBlock offsets)
+    hd_std::uint16_t _reserved { 0 };    ///< Reserved for future use
   };
 
+  /**
+   * The payload of a MetadataBlock.
+   */
   struct MetadataBlock {
     char name[64];
     char type[64];
@@ -138,17 +165,60 @@ namespace sbio::randfmt {
     hd_std::uint16_t dtype;
   };
 
+  /**
+   * The payload of an IndexBlock.
+   *
+   * If the super-block offset table has been configured via appropriate flags, then
+   * immediately following the `_reserved` field there will be `num_super_blocks`
+   * IndexEntry objects before the FileTrailer. If there are no super-block offsets,
+   * then the FileTrailer will immediately follow this IndexBlock.
+   */
   struct IndexBlock {
     hd_std::uint64_t num_super_blocks; ///< Total number of SuperBlocks (and IndexEntry as a result)
     hd_std::uint32_t _reserved;        ///< Reserved for future use.
   };
 
+  /**
+   * An entry to describe the location of a prior SuperBlock.
+   *
+   * The entries include the absolute byte offset in the stream, and the total size of
+   * SuperBlock (the SuperBlock and its enclosed sub-Blocks). Each entry also includes
+   * the sequence number which will (or... should) match the corresponding sequence
+   * number in the referenced SuperBlock.
+   */
   struct IndexEntry {
     hd_std::uint64_t sequence_num; ///< Sequence number - e.g., timestamp, or similar (matches SuperBlock)
     hd_std::uint64_t offset;       ///< Absolute byte offset for the SuperBlock
     hd_std::uint32_t sb_size;      ///< Total byte size of SuperBlock (includes the enclosed sub-Blocks.)
   };
 
+  /**
+   * The main descriptor of a Block of data in the sbio randfmt format.
+   *
+   * A Block consists of a Header, followed by a payload. The payload's can be
+   * described by the relevant structs (E.g. SuperBlock, MetadataBlock, etc.).
+   * Those other structs do NOT include the Header, and are not children of
+   * the Block struct. They describe only the payload. The DataBlock does not
+   * have a specific struct to describe its payload as it is an arbitrary byte
+   * stream (which can be described by a single pointer).
+   *
+   * The sbio randfmt has a two-layer hieararchy. There are SuperBlocks which
+   * enclose a set of sub-Blocks that contain data, metadata, config, etc. Every
+   * Block has an identifier value in its Header, and both the SuperBlock and each
+   * sub-block have their own Headers.
+   *
+   * With byte number increasing to the right, a single SuperBlock will look like:
+   *
+   * |                              SuperBlock0                                 |
+   * | SuperBlock Header | <Offsets> | Sub0 Header | Sub0 Payload |     ...     |
+   *
+   * Immediately, following SuperBlock0, comes the next SuperBlock. The <Offsets>
+   * entry is optional, controlled by a feature flag, and may or may not be present.
+   * If present, it has the offsets to quickly jump to each *sub-Block* within the
+   * SuperBlock. There is additionally, a separate feature flag which controls the
+   * presence of a series of IndexEntry objects which, if enabled, will appear at
+   * the end of the file, and contain the offsets to quickly jump to each *SuperBlock*.
+   */
   struct Block {
     Header hdr;
 
@@ -157,7 +227,7 @@ namespace sbio::randfmt {
     }
 
     SBIO_HD inline bool test_flag(FormatFlags feat) const {
-      return this->hdr.flags & (1 << static_cast<hd_std::uint16_t>(feat));
+      return this->hdr.flags & (1 << static_cast<hd_std::uint8_t>(feat));
     }
 
     SBIO_HD inline BlockType block_type() const {
@@ -228,6 +298,63 @@ namespace sbio::randfmt {
     char magic_tail[8];              ///< Final magic bytes. Should read 'SBIOTAIL'
   };
 #pragma pack(pop)
+
+  /**
+   * A simplified description of a `detector` to allow specifying how to write payloads.
+   */
+  struct DetectorSpec {
+    char name[MaxNameSize];                                  ///< Name of the detector
+    char type[MaxNameSize];                                  ///< Type of the detector
+    hd_std::uint16_t rank { 2 };                             ///< Rank (dims) of the payload
+    hd_std::uint32_t shape[MaxRank] { 1024, 1024, 0, 0, 0 }; ///< Shape of the payload
+    ncarray::DType dtype { ncarray::DType::uint16 };         ///< Underlying payload data type
+  };
+
+#ifdef _WIN32
+  using FileHandle = HANDLE;
+#else
+  using FileHandle = int;
+#endif // _WIN32
+
+  void write_bytes(FileHandle f_handle,
+                   const void* buf,
+                   hd_std::size_t sz,
+                   hd_std::uint64_t off);
+
+  void write_super_block(FileHandle f_handle,
+                         hd_std::uint64_t seq_no,
+                         hd_std::uint8_t flags,
+                         hd_std::uint8_t num_sub_blocks,
+                         BlockType* block_types,
+                         hd_std::uint8_t* block_ids,
+                         void** payloads,
+                         hd_std::uint32_t* sizes,
+                         hd_std::uint64_t& curr_offset);
+
+  void construct_data_block(hd_std::uint32_t size,
+                            hd_std::uint8_t pattern_type,
+                            hd_std::uint8_t*& payload);
+
+  void construct_cfg_block(hd_std::uint32_t seed,
+                           hd_std::uint8_t pattern_type,
+                           hd_std::uint64_t total_events,
+                           hd_std::uint8_t flags,
+                           hd_std::uint8_t*& payload);
+
+  void construct_meta_block(hd_std::uint8_t num_detectors,
+                            const DetectorSpec* detector_specs,
+                            hd_std::uint8_t*& payload);
+
+  void write_sbiornd_file(FileHandle f_handle,
+                          hd_std::uint64_t& curr_offset,
+                          hd_std::uint8_t num_detectors,
+                          const DetectorSpec* detector_specs,
+                          hd_std::uint8_t* det_block_ids,
+                          hd_std::uint32_t seed,
+                          hd_std::uint8_t pattern_type,
+                          hd_std::uint64_t total_events,
+                          hd_std::uint8_t flags);
+
 } // namespace sbio::randfmt
 
 #endif // SBIO_FORMATS_RANDOM_RANDFMT_HH
