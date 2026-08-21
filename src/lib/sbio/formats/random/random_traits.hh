@@ -85,6 +85,12 @@ namespace sbio {
     };
     static constexpr hd_std::size_t DataAccessPtnCount { 1 };
 
+    enum class IndexingMode : hd_std::uint8_t {
+      IndexAll   = 0, ///< When index_stream is called, all events will be indexed.
+      IndexBatch = 1, ///< When index_stream is called a batch is indexed. This allows reindexing later.
+      NoIndex    = 2  ///< Offsets are not written, so indexing is disabled and data is traversed linearly.
+    };
+
     struct StreamParameters {
       hd_std::size_t num_events { 100000 };
       hd_std::size_t event_size { 0x100000 };
@@ -92,7 +98,8 @@ namespace sbio {
       hd_std::uint32_t seed { 42 };
       hd_std::uint8_t pattern_type { 0 }; ///< 0 = PNRG, 1 = Sequential, 2 = Fixed fill
       bool enable_subblock_offsets { true };
-      bool enable_superblock_offsets { true };
+      IndexingMode indexing_mode { IndexingMode::IndexAll };
+      hd_std::size_t indexing_batch_size { 100 }; ///< If using IndexBatch, how many steps to index at a time
 
 #ifdef _WIN32
       HANDLE h_file;
@@ -150,13 +157,19 @@ namespace sbio {
           stream_cfg.fd = fd;
           randfmt::FileHandle f_handle { fd };
 #endif
+          // Write the SuperBlock offsets only if the NoIndex mode was NOT requested
+          bool enable_superblock_offsets { true };
+          if (stream_cfg.indexing_mode == IndexingMode::NoIndex) {
+            enable_superblock_offsets = false;
+          }
+
           hd_std::uint64_t curr_offset { 0 };
 
           hd_std::uint8_t flags { 0 };
           if (stream_cfg.enable_subblock_offsets) {
             flags |= (1 << static_cast<hd_std::uint8_t>(randfmt::FormatFlags::SubBlockOffsetTable));
           }
-          if (stream_cfg.enable_superblock_offsets) {
+          if (enable_superblock_offsets) {
             flags |= (1 << static_cast<hd_std::uint8_t>(randfmt::FormatFlags::SuperBlockOffsetTable));
           }
           // Just write 1 detector per stream for now...
@@ -366,55 +379,73 @@ namespace sbio {
       hd_std::size_t event_count { 0 };
 
       // TODO: Double check... I think maybe right path. Need scratch buffer I think...
-      if (stream_size >= sizeof(randfmt::FileTrailer)) {
-        randfmt::FileTrailer trailer {};
-        hd_std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
+      if (cfg.indexing_mode == IndexingMode::IndexAll ||
+          cfg.indexing_mode == IndexingMode::IndexBatch) {
+        if (stream_size >= sizeof(randfmt::FileTrailer)) {
+          randfmt::FileTrailer trailer {};
+          hd_std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
 
-        IOStatus status = streams[Data].read_at(&trailer, trailer_offset, sizeof(trailer));
-        if (status == IOStatus::Success) {
-          if (hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
-            auto* meta_buf =
-              storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-            hd_std::size_t meta_buf_size { storage.template size<MetadataRole>() };
-
-            status = streams[Data].read_at(meta_buf,
-                                           trailer.idx_blk_offset,
-                                           meta_buf_size);
-
-            const auto* super_blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
-            if (status == IOStatus::Success &&
-                super_blk->block_type() == randfmt::BlockType::Super) {
-              const auto* sub_blk { super_blk->closest_block() };
-              if (sub_blk->block_type() == randfmt::BlockType::Index) {
-                const auto* idx_blk { reinterpret_cast<const randfmt::IndexBlock*>(sub_blk->data()) };
-                const auto* entries { reinterpret_cast<const randfmt::IndexEntry*>(idx_blk + 1) };
-
-                hd_std::size_t total_events { 0 };
-                if (idx_blk->num_super_blocks > 2) {
-                  // Subtract off the config/meta and index super blocks at start and end
-                  total_events = idx_blk->num_super_blocks - 2;
-                }
-
-                for (std::size_t i = 0; i < total_events; ++i) {
-                  event_offsets[i].offset = entries[i + 1].offset;
-                  event_offsets[i].size = entries[i + 1].sb_size;
-                }
-
-                event_count = idx_blk->num_super_blocks;
-                stream_state.num_events = event_count;
-
-                storage.template release<MetadataRole, 0>(meta_buf);
-                storage.template release<IndexRole, 0>(idx_buf);
-
-                return IOStatus::Success;
+          IOStatus status = streams[Data].read_at(&trailer, trailer_offset, sizeof(trailer));
+          if (status == IOStatus::Success) {
+            if (hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
+              auto* meta_buf =
+                storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+              hd_std::size_t meta_buf_size { storage.template size<MetadataRole>() };
+              hd_std::size_t read_size { meta_buf_size };
+              if (stream_size - trailer.idx_blk_offset < read_size) {
+                read_size = stream_size - trailer.idx_blk_offset;
               }
 
-              storage.template release<MetadataRole, 0>(meta_buf);
+              status = streams[Data].read_at(meta_buf,
+                                             trailer.idx_blk_offset,
+                                             read_size);
+
+              const auto* super_blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
+              if (status == IOStatus::Success &&
+                  super_blk->block_type() == randfmt::BlockType::Super) {
+                const auto* sub_blk { super_blk->closest_block() };
+                if (sub_blk->block_type() == randfmt::BlockType::Index) {
+                  const auto* idx_blk { reinterpret_cast<const randfmt::IndexBlock*>(sub_blk->data()) };
+                  const auto* entries { reinterpret_cast<const randfmt::IndexEntry*>(idx_blk + 1) };
+
+                  hd_std::size_t total_events { 0 };
+                  if (idx_blk->num_super_blocks > 2) {
+                    // Subtract off the config/meta and index super blocks at start and end
+                    total_events = idx_blk->num_super_blocks - 2;
+                  }
+
+                  hd_std::size_t start_evt { 0 };
+                  hd_std::size_t end_evt { total_events };
+                  if (cfg.indexing_mode == IndexingMode::IndexBatch) {
+                    // If reading in batches only index the chunk requested.
+                    // NOTE: This is very wasteful ATM since everything is reread each time..
+                    //       But... this is not supposed to be a high-performance format. Just testing...
+                    start_evt = stream_state.num_events;
+                    end_evt = cfg.indexing_batch_size;
+                  }
+
+                  for (hd_std::size_t i = start_evt; i < end_evt; ++i) {
+                    event_offsets[i].offset = entries[i + 1].offset;
+                    event_offsets[i].size = entries[i + 1].sb_size;
+                  }
+
+                  event_count = end_evt;
+                  stream_state.num_events = event_count;
+
+                  storage.template release<MetadataRole, 0>(meta_buf);
+                  storage.template release<IndexRole, 0>(idx_buf);
+
+                  return IOStatus::Success;
+                }
+
+                storage.template release<MetadataRole, 0>(meta_buf);
+              }
             }
           }
         }
       }
 
+      // IndexMode::NoIndex --> Always return the next step
       if (stream_state.curr_offset >= stream_size) {
         stream_state.num_events = 0;
         storage.template release<IndexRole, 0>(idx_buf);
@@ -611,6 +642,8 @@ namespace sbio {
           res.shape[r] = entry->shape[r];
         }
         res.dtype = entry->dtype;
+
+        return res;
       }
 
       if (super_blk->test_flag(randfmt::FormatFlags::SubBlockOffsetTable)) {

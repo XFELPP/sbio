@@ -1,3 +1,22 @@
+/*
+ * sbio - Stream Broker IO
+ *
+ * Copyright (C) 2025-2026 Gabriel Dorlhiac
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU Affero General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "sbio/core/datasource.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/execution/serial.hh"
@@ -32,10 +51,14 @@ int main(int argc, char* argv[]) {
   ds_params.detectors[0].dtype = ncarray::DType::uint16;
 
   sbio::RandomTraits::StreamParameters base_cfg;
-  base_cfg.num_events = 100;
+  base_cfg.num_events = 500;
   base_cfg.pattern_type = 2;
   base_cfg.enable_subblock_offsets = true;
-  base_cfg.enable_superblock_offsets = true;
+
+  // Can use IndexAll, IndexBatch, or NoIndex.
+  // For IndexBatch, set base_cfg.indexing_batch_size as well
+  base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
+  base_cfg.indexing_batch_size = 100;
 
   bool created { ds.load_run(base_cfg, ds_params) };
   assert(created && "Failed to create random stream brokers");
@@ -50,7 +73,7 @@ int main(int argc, char* argv[]) {
       auto grp { ds.get_stream_group("test") };
       std::cout << "[Pass] Retrieved stream group for `test`." << std::endl;
 
-      for (auto step = ds.next(); step < 100; step = ds.next()) {
+      for (auto step = ds.next(); step < 500; step = ds.next()) {
         auto cb = [&](sbio::RandomTraits::DataResult res) {
           if (step % 20 == 0) {
             std::cout << "Processed step " << step << std::endl;
