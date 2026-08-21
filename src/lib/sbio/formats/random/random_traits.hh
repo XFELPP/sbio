@@ -237,18 +237,18 @@ namespace sbio {
       Entry entries[16];
       hd_std::size_t count { 0 };
 
-      SBIO_HD inline void add_detector(const char* name_,
-                                       const char* type_,
-                                       hd_std::uint16_t rank_,
-                                       const hd_std::uint32_t* shape_,
-                                       ncarray::DType dtype);
+      SBIO_HD void add_detector(const char* name_,
+                                const char* type_,
+                                hd_std::uint16_t rank_,
+                                const hd_std::uint32_t* shape_,
+                                ncarray::DType dtype);
     };
 
     struct DataResult {
       const void* data;
       hd_std::size_t size;
       hd_std::uint16_t rank;
-      const hd_std::uint32_t* shape;
+      hd_std::uint32_t shape[MaxRank];
       ncarray::DType dtype;
     };
 
@@ -362,38 +362,42 @@ namespace sbio {
                                          const StreamParameters& cfg) {
       auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
       auto* event_offsets { reinterpret_cast<EventOffset*>(idx_buf) };
-      std::size_t stream_size { streams[Data].file_size() };
-      std::size_t event_count { 0 };
+      hd_std::size_t stream_size { streams[Data].file_size() };
+      hd_std::size_t event_count { 0 };
 
       // TODO: Double check... I think maybe right path. Need scratch buffer I think...
       if (stream_size >= sizeof(randfmt::FileTrailer)) {
         randfmt::FileTrailer trailer {};
-        std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
+        hd_std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
 
         IOStatus status = streams[Data].read_at(&trailer, trailer_offset, sizeof(trailer));
         if (status == IOStatus::Success) {
           if (hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
             auto* meta_buf =
               storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-            std::size_t meta_buf_size { storage.template size<MetadataRole>() };
+            hd_std::size_t meta_buf_size { storage.template size<MetadataRole>() };
 
             status = streams[Data].read_at(meta_buf,
                                            trailer.idx_blk_offset,
-                                           sizeof(randfmt::Block));
+                                           meta_buf_size);
 
-            const auto* blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
-            if (status == IOStatus::Success && blk->block_type() == randfmt::BlockType::Index) {
-              status = streams[Data].read_at(blk->data(),
-                                             trailer.idx_blk_offset + sizeof(randfmt::Header),
-                                             blk->payload_size());
-
-              if (blk->payload_size() <= meta_buf_size && status == IOStatus::Success) {
-                const auto* idx_blk { reinterpret_cast<const randfmt::IndexBlock*>(blk->data()) };
+            const auto* super_blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
+            if (status == IOStatus::Success &&
+                super_blk->block_type() == randfmt::BlockType::Super) {
+              const auto* sub_blk { super_blk->closest_block() };
+              if (sub_blk->block_type() == randfmt::BlockType::Index) {
+                const auto* idx_blk { reinterpret_cast<const randfmt::IndexBlock*>(sub_blk->data()) };
                 const auto* entries { reinterpret_cast<const randfmt::IndexEntry*>(idx_blk + 1) };
 
-                for (std::size_t i = 0; i < idx_blk->num_super_blocks; ++i) {
-                  event_offsets[i].offset = entries[i].offset;
-                  event_offsets[i].size = entries[i].sb_size;
+                hd_std::size_t total_events { 0 };
+                if (idx_blk->num_super_blocks > 2) {
+                  // Subtract off the config/meta and index super blocks at start and end
+                  total_events = idx_blk->num_super_blocks - 2;
+                }
+
+                for (std::size_t i = 0; i < total_events; ++i) {
+                  event_offsets[i].offset = entries[i + 1].offset;
+                  event_offsets[i].size = entries[i + 1].sb_size;
                 }
 
                 event_count = idx_blk->num_super_blocks;
@@ -603,7 +607,9 @@ namespace sbio {
         res.data = blk->data();
         res.size = entry->size;
         res.rank = entry->rank;
-        res.shape = entry->shape;
+        for (hd_std::uint16_t r= 0; r < entry->rank; ++r) {
+          res.shape[r] = entry->shape[r];
+        }
         res.dtype = entry->dtype;
       }
 
@@ -620,7 +626,9 @@ namespace sbio {
         res.data = blk->data();
         res.size = entry->size;
         res.rank = entry->rank;
-        res.shape = entry->shape;
+        for (hd_std::uint16_t r = 0; r < entry->rank; ++r) {
+          res.shape[r] = entry->shape[r];
+        }
         res.dtype = entry->dtype;
 
         return res;
@@ -636,7 +644,9 @@ namespace sbio {
           res.data = sub_blk->data();
           res.size = entry->size;
           res.rank = entry->rank;
-          res.shape = entry->shape;
+          for (hd_std::uint16_t r = 0; r < entry->rank; ++r) {
+            res.shape[r] = entry->shape[r];
+          }
           res.dtype = entry->dtype;
 
           hd_std::size_t blk_offset =

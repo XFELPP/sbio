@@ -156,7 +156,7 @@ namespace sbio::randfmt {
       write_bytes(f_handle,
                   sub_blk_offsets,
                   num_sub_blocks * sizeof(hd_std::uint32_t),
-                  sb_payload_start);
+                  sb_payload_start + sizeof(SuperBlock));
     }
   }
 
@@ -250,9 +250,6 @@ namespace sbio::randfmt {
       payloads[d + 1] = reinterpret_cast<void*>(meta_payload + (d * sizeof(MetadataBlock)));
     }
 
-    delete [] cfg_payload;
-    delete [] meta_payload;
-
     write_super_block(f_handle,
                       seq_no,
                       flags,
@@ -262,6 +259,9 @@ namespace sbio::randfmt {
                       payloads,
                       payload_sizes,
                       curr_offset);
+
+    delete[] cfg_payload;
+    delete[] meta_payload;
 
     hd_std::uint32_t total_det_bytes { 0 };
     for (hd_std::uint8_t d = 0; d < num_detectors; ++d) {
@@ -289,7 +289,7 @@ namespace sbio::randfmt {
     // Add the bytes for all data payloads + (num_detectors * sizeof(Header))
     data_sb_size += total_det_bytes + (num_detectors * sizeof(Header));
     // Final SuperBlock has the IndexBlock.
-    hd_std::uint64_t idx_blk_offset { curr_offset + (total_events + data_sb_size) };
+    hd_std::uint64_t idx_blk_offset { curr_offset + (total_events * data_sb_size) };
 
     // Total SuperBlocks = 1 Config/Metadata + N data + 1 IndexBlock at the end.
     hd_std::uint64_t num_super_blocks { total_events + 1 + 1 };
@@ -333,6 +333,7 @@ namespace sbio::randfmt {
         offset += payload_sizes[d];
       }
 
+      hd_std::uint64_t evt_start { curr_offset }; // If recording IndexEntrys
       write_super_block(f_handle,
                         seq_no,
                         flags,
@@ -346,7 +347,7 @@ namespace sbio::randfmt {
       if (test_feature_flag(flags, FormatFlags::SuperBlockOffsetTable)) {
         // idx_blk_offset was incremented when the initial IndexBlock SuperBlock was
         // setup above. So it points to the next place to write an IndexEntry
-        IndexEntry entry { seq_no, (curr_offset - start_pt), data_sb_size };
+        IndexEntry entry { seq_no, (evt_start - start_pt), data_sb_size };
 
         write_bytes(f_handle, &entry, sizeof(IndexEntry), idx_blk_offset);
         idx_blk_offset += sizeof(IndexEntry);
