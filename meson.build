@@ -108,6 +108,7 @@ sbio_as_wheel_opt = get_option('sbio_as_wheel')
 
 # Add-ons and development
 build_examples_opt = get_option('build_examples')
+build_tests_opt = get_option('build_tests')
 
 #### Parse CUDA architectures and set CUDA args ####
 ####################################################
@@ -516,7 +517,9 @@ if build_examples_opt
 endif
 
 # Build the test suite
-# subdir('tests')
+if build_tests_opt
+    subdir('tests')
+endif
 
 # Setup a pkgconfig file now after the build completed.
 pkg = import('pkgconfig')
