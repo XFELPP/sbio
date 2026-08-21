@@ -13,13 +13,19 @@ if build_core_opt and build_tests_opt
     #     deps_for_tests += cuda_dep
     # endif
 
-    test_rnd_patterns = executable(
-        'test_random_patterns',
-        ['test_random_patterns.cc'],
+    sbiofmt_test_sources = [
+        'test_random_patterns.cc',
+        'test_indexing_modes.cc',
+        'test_broker_group.cc',
+        'test_execution_policies.cc',
+    ]
+    test_sbiofmt = executable(
+        'test_sbiofmt',
+        sbiofmt_test_sources,
         dependencies: deps_for_tests,
         install: true,
         include_directories: sbio_headers,
     )
-    test('Testing sbiofmt pattern selection.', test_rnd_patterns, verbose: true)
+    test('Running test suite using sbio rndfmt.', test_sbiofmt, verbose: true)
 
 endif # build_core_opt and build_tests_opt

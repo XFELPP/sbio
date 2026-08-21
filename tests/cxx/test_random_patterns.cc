@@ -35,7 +35,6 @@ typedef SSIZE_T ssize_t;
 
 #include <cstdint>
 #include <cstddef>
-#include <iostream>
 
 class RandomPatternTest : public ::testing::Test {
 protected:
