@@ -94,6 +94,20 @@ namespace sbio {
     > ParallelSupport { 0x3 }; // 0b11 - MPI | THREADS
 
     static void configure_impl(const Config& config) {
+      int initialized { 0 };
+      MPI_Initialized(&initialized);
+
+      if (!initialized) {
+        int argc { 0 };
+        char** argv { nullptr };
+
+        int provided;
+        MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+        if (provided < MPI_THREAD_MULTIPLE) {
+          abort();
+        }
+      }
+
       if (m_world_comm != MPI_COMM_NULL) {
         MPI_Comm_free(&m_world_comm);
       }
