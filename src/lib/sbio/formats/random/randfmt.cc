@@ -163,17 +163,30 @@ namespace sbio::randfmt {
   // 0 = PNRG, 1 = Sequential, 2 = Fixed
   void construct_data_block(hd_std::uint32_t size,
                             hd_std::uint8_t pattern_type,
-                            hd_std::uint8_t*& payload) {
+                            hd_std::uint8_t*& payload,
+                            hd_std::uint32_t seed,
+                            hd_std::uint64_t seq_no) {
     if (payload == nullptr) {
       payload = new hd_std::uint8_t[size];
     }
 
-    for (hd_std::uint32_t i = 0; i < size; ++i) {
-      if (pattern_type == 0) {
-        
-      } else if (pattern_type == 1) {
-        
-      } else {
+    // NOTE: These are filling at byte level. The interpretation may vary
+    //       Depending on how a user is going to specify the dtype.
+    if (pattern_type == 0) {
+      // Use a linear congruential generator for the PNRG pattern type
+      hd_std::uint32_t state { seed ^ static_cast<hd_std::uint32_t>(seq_no * 0x9E3779B9u + 1) };
+      for (hd_std::uint32_t i = 0; i < size; ++i) {
+        state = state * 1664525u + 1013904223u;
+        payload[i] = static_cast<hd_std::uint8_t>(state >> 24);
+      }
+    } else if (pattern_type == 1) {
+      // Fill in based on the current sequence number
+      for (hd_std::uint32_t i = 0; i < size; ++i) {
+        payload[i] = static_cast<hd_std::uint8_t>((seq_no + i) & 0xFF);
+      }
+    } else {
+      // The fixed pattern is just 0x5A
+      for (hd_std::uint32_t i = 0; i < size; ++i) {
         payload[i] = 0x5A;
       }
     }
@@ -290,20 +303,22 @@ namespace sbio::randfmt {
     data_sb_size += total_det_bytes + (num_detectors * sizeof(Header));
     // Final SuperBlock has the IndexBlock.
     hd_std::uint64_t idx_blk_offset { curr_offset + (total_events * data_sb_size) };
+    // Store the starting point too, `idx_blk_offset` will be incremented as we go
+    hd_std::uint64_t idx_blk_initial { idx_blk_offset }; // For writing the final Trailer
 
     // Total SuperBlocks = 1 Config/Metadata + N data + 1 IndexBlock at the end.
     hd_std::uint64_t num_super_blocks { total_events + 1 + 1 };
     if (test_feature_flag(flags, FormatFlags::SuperBlockOffsetTable)) {
       // Terribly inefficient... but go back and forth writing the offset.
       // Write just the Config/MetadataBlock entry now.
-      hd_std::uint8_t idx_payload[sizeof(IndexBlock) + sizeof(IndexEntry)];
-
-      new (idx_payload) IndexBlock { num_super_blocks, 0 };
-      new (idx_payload + sizeof(IndexBlock)) IndexEntry { seq_no, 0, meta_sb_size };
-
       hd_std::uint32_t total_idx_sb_size {
         static_cast<hd_std::uint32_t>(sizeof(IndexBlock) + (num_super_blocks * sizeof(IndexEntry)))
       };
+      hd_std::uint8_t* idx_payload = new hd_std::uint8_t[total_idx_sb_size];
+      hd_std::memset(idx_payload, 0, total_idx_sb_size);
+
+      new (idx_payload) IndexBlock { num_super_blocks, 0 };
+      new (idx_payload + sizeof(IndexBlock)) IndexEntry { seq_no, 0, meta_sb_size };
 
       payloads[0] = reinterpret_cast<void*>(idx_payload);
       block_types[0] = BlockType::Index;
@@ -318,6 +333,12 @@ namespace sbio::randfmt {
                         &total_idx_sb_size,
                         idx_blk_offset);
       // After this, no more super-blocks -> Will just append IndexEntry directly.
+      delete [] idx_payload;
+
+      // Reset the idx_blk_offset -> The above write_super_block function expects
+      // the full payload when total_idx_sb_size was passed in. Instead of adding flags
+      // or whatever, just decrement the offset again... Messy....
+      idx_blk_offset -= (num_super_blocks - 1) * sizeof(IndexEntry);
     }
 
     hd_std::uint8_t* data_payload { new hd_std::uint8_t[total_det_bytes] };
@@ -327,7 +348,7 @@ namespace sbio::randfmt {
       for (hd_std::uint8_t d = 0; d < num_detectors; ++d) {
         block_types[d] = BlockType::Data;
         auto* blk_data_ptr { data_payload + offset };
-        construct_data_block(payload_sizes[d], pattern_type, blk_data_ptr);
+        construct_data_block(payload_sizes[d], pattern_type, blk_data_ptr, seed, seq_no);
         payloads[d] = data_payload + offset;
 
         offset += payload_sizes[d];
@@ -359,8 +380,13 @@ namespace sbio::randfmt {
 
     // idx_blk_offset was incremented if writing the SuperBlock offsets.
     // If NOT using SuperBlock offsets, that value is meaningless anyway.
+    if (test_feature_flag(flags, FormatFlags::SuperBlockOffsetTable)) {
+      // Jump to the end of the file if we've been writing the IndexEntry parts
+      // Need to include the single additional slot for the final SuperBlock
+      curr_offset = idx_blk_offset + sizeof(IndexEntry);
+    }
     FileTrailer trailer {
-      (idx_blk_offset - (sizeof(IndexEntry) * total_events) - sizeof(IndexBlock)),
+      idx_blk_initial,
       { 'S', 'B', 'I', 'O', 'T', 'A', 'I', 'L' }
     };
     write_bytes(f_handle, &trailer, sizeof(FileTrailer), curr_offset);

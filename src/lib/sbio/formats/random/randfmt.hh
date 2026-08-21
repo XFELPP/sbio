@@ -333,7 +333,9 @@ namespace sbio::randfmt {
 
   void construct_data_block(hd_std::uint32_t size,
                             hd_std::uint8_t pattern_type,
-                            hd_std::uint8_t*& payload);
+                            hd_std::uint8_t*& payload,
+                            hd_std::uint32_t seed = 42,
+                            hd_std::uint64_t seq_no = 0);
 
   void construct_cfg_block(hd_std::uint32_t seed,
                            hd_std::uint8_t pattern_type,
