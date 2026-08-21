@@ -59,7 +59,10 @@ namespace sbio {
       static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x0 }; // 0b00 - NONE
 
-    static void configure_impl(const Config&) {}
+    static void configure_impl(const Config&) {
+      // Just reset collective state, nothing else to configure
+      m_event_idx = 0;
+    }
 
     /**
      * Allocate HostBuffer storage for requested roles.
@@ -127,30 +130,33 @@ namespace sbio {
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static typename FTraits::StepIdxType event_idx { 0 };
-
-      if (event_idx >= max_capacity) {
+      if (m_event_idx >= max_capacity) {
         if (!trigger()) {
           m_logger->debug("Trigger returned exhausted: "
                           "max_cap = {}, local_idx = {}",
                           max_capacity,
-                          event_idx);
+                          m_event_idx);
           return FTraits::ExhaustedSentinel;
         }
 
-        if (event_idx >= max_capacity) {
+        if (m_event_idx >= max_capacity) {
           m_logger->debug("Index exceeded capacity: "
                           "max_cap = {}, local_idx = {}",
                           max_capacity,
-                          event_idx);
+                          m_event_idx);
           return FTraits::ExhaustedSentinel;
         }
       }
 
-      return event_idx++;
+      return m_event_idx++;
     }
 
   private:
+    /**
+     * The event/step index counter for distribution.
+     */
+    static inline std::size_t m_event_idx { 0 };
+
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 } // namespace sbio
