@@ -511,7 +511,9 @@ sbio_headers = include_directories('src/lib')
 subdir('src')
 
 # Build example programs
-# subdir('examples')
+if build_examples_opt
+    subdir('examples')
+endif
 
 # Build the test suite
 # subdir('tests')
