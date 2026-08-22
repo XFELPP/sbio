@@ -169,7 +169,6 @@ namespace sbio {
                 std::size_t num_segments,
                 DataSegmentRef* segments) {
       m_topology.num_segments = num_segments;
-      m_topology.strategy = FTraits::PartitioningStrategy;
 
       std::size_t i { 0 };
       for (; i < FTraits::MaxNameSize - 1 && name[i] != '\0'; ++i) {
@@ -361,18 +360,12 @@ namespace sbio {
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
-        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % this->num_segments() };
-          auto adjusted_step_idx { step_idx / this->num_segments() };
-          const auto& access_ptn { m_topology.access_ptn(active_stream_idx) };
+        auto* broker { m_topology.active_stream_broker(step_idx, i) };
+        const auto& access_ptn { m_topology.active_access_ptn(step_idx, i) };
 
-          return
-            m_topology.stream_broker(active_stream_idx)->fetch_step(adjusted_step_idx, access_ptn);
-        } else {
-          const auto& access_ptn { m_topology.access_ptn(i) };
+        auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
 
-          return m_topology.stream_broker(i)->fetch_step(step_idx, access_ptn);
-        }
+        return broker->fetch_step(remapped_step_idx, access_ptn);
       };
 
       auto get_data_cb = [&](std::size_t i) {
@@ -473,18 +466,12 @@ namespace sbio {
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
-        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % this->num_segments() };
-          auto adjusted_step_idx { step_idx / this->num_segments() };
-          const auto& access_ptn { m_topology.access_ptn(active_stream_idx) };
+        auto* broker { m_topology.active_stream_broker(step_idx, i) };
+        const auto& access_ptn { m_topology.active_access_ptn(step_idx, i) };
 
-          return
-            m_topology.stream_broker(active_stream_idx)->fetch_step(adjusted_step_idx, access_ptn);
-        } else {
-          const auto& access_ptn { m_topology.access_ptn(i) };
+        auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
 
-          return m_topology.stream_broker(i)->fetch_step(step_idx, access_ptn);
-        }
+        return broker->fetch_step(remapped_step_idx, access_ptn);
       };
 
       auto get_data_cb = [&](std::size_t i) {

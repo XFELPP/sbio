@@ -95,10 +95,7 @@ namespace sbio {
    * The topology organization is established once during the DISCOVERY state
    * transition when metadata is parsed.
    */
-  template <
-    IsStreamBroker BrokerType,
-    hd_std::size_t MaxSegments = 128
-  >
+  template <IsStreamBroker BrokerType, hd_std::size_t MaxSegments = 128>
   struct GroupTopology {
     /**
      * The type of data being read.
@@ -110,6 +107,18 @@ namespace sbio {
      */
     using DataAccessPtn = typename DataFormat::DataAccessPtn;
 
+    /**
+     * The type used to request a specific step from the Stream.
+     *
+     * This type is required and guaranteed to be convertible std::size_t; however,
+     * different data format's may use different underlying types.
+     */
+    using StepIdxType = typename DataFormat::StepIdxType;
+
+    static constexpr StreamPartitioningStrategy strategy {
+      DataFormat::PartitioningStrategy
+    };
+
     char group_name[256] { 0 };
     char group_type[256] { 0 };
 
@@ -120,10 +129,94 @@ namespace sbio {
     hd_std::array<SegmentRef<BrokerType>, MaxSegments> segments {};
     hd_std::size_t num_segments { 0 };
 
-    StreamPartitioningStrategy strategy { StreamPartitioningStrategy::SubDivide };
-
     bool empty() const { return num_segments == 0; }
 
+    // --- Strategy and traits aware getters --- //
+    /**
+     * Retrieve the correct, active, StreamBroker for a specified step.
+     *
+     * Depending on the data format and various traits and strategies, not all
+     * StreamBrokers may be active/available for every step. This function translates
+     * a request for a specific broker, for a specific step, into the correct active
+     * StreamBroker.
+     *
+     * @param[in] step_idx The step for which the active broker is needed.
+     * @param[in] broker_no The uncorrected index for the StreamBroker.
+     * @returns The active StreamBroker - this may more may not correspond to the
+     *          StreamBroker indicated by `broker_no`.
+     */
+    BrokerType* active_stream_broker(hd_std::size_t step_idx,
+                                     hd_std::size_t broker_no) {
+      if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
+        auto active_broker_idx { step_idx % num_segments };
+
+        return stream_brokers[active_broker_idx];
+      } else {
+        auto active_broker_idx { broker_no };
+
+        return stream_brokers[active_broker_idx];
+      }
+    }
+
+    /**
+     * Retrieve the correct DataAccessPtn for the currently active StreamBroker.
+     *
+     * Depending on the data format and various traits and strategies, not all
+     * StreamBrokers may be active/available for every step. This function translates
+     * a request for a specific broker, for a specific step, into the correct active
+     * StreamBroker and returns its associated DataAccessPtn.
+     *
+     * @param[in] step_idx The step for which the active broker is needed.
+     * @param[in] broker_no The uncorrected index for the StreamBroker.
+     * @returns The DataAccessPtn for the active StreamBroker.
+     */
+    const DataAccessPtn& active_access_ptn(hd_std::size_t step_idx,
+                                           hd_std::size_t broker_no) {
+      if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
+        auto active_broker_idx { step_idx % num_segments };
+
+        return broker_access_ptns[active_broker_idx];
+      } else {
+        auto active_broker_idx { broker_no };
+
+        return broker_access_ptns[active_broker_idx];
+      }
+    }
+
+    /**
+     * Remap a specific step index to account for StreamBroker inactivity and types.
+     *
+     * Depending on the data format and various traits and strategies, not all
+     * StreamBrokers may be active/available for every step. As a result, the step
+     * indices may increment faster than the logical count of steps (because it is
+     * simultaneously counting steps, and cycling between active brokers). This
+     * function will appropriately remap an uncorrected step index to account for
+     * this.
+     *
+     * Furthermore, all data formats are required to use a type (StepIdxType) that can
+     * be converted into a simple integral value (size_t). How this conversion is done
+     * is not explicitly specified - this function will convert the index to a size_t.
+     * Anything downstream of this can use size_t instead of the data format specific
+     * types.
+     *
+     * @param[in] step_idx The unadjusted step index.
+     * @returns The 'corrected' step index, accounting for any StreamBroker activity
+     *          cycling, and in a size_t integral format.
+     */
+    const hd_std::size_t remap_step_idx(hd_std::size_t step_idx) {
+      // All formats currently just use size_t directly, but can add in a conversion
+      // function to the FormatTraits specifications if it becomes necessary.
+      // That call/interface would then be hidden here.
+      if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
+        return static_cast<hd_std::size_t>(step_idx / num_segments);
+      } else {
+        // No remapping required, so this is a no-op for the SubDivide strategy
+        return static_cast<hd_std::size_t>(step_idx);
+      }
+    }
+
+
+    // --- Direct getters/setters --- //
     const SegmentRef<BrokerType>& segment(hd_std::size_t seg_no) const {
       return segments[seg_no];
     }
