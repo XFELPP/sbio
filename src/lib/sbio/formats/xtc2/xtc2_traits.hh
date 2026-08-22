@@ -49,6 +49,7 @@ typedef SSIZE_T ssize_t;
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -889,6 +890,48 @@ namespace sbio {
     SBIO_HD std::uint32_t resolve_names_id(const DataRequest& req) const;
 
     SBIO_HD std::uint32_t resolve_field_idx(std::uint32_t nid, const char* field) const;
+
+    SBIO_HD inline bool entry_matches(std::size_t entry_no,
+                                      const char* name_query,
+                                      DataAccessPtn ptn) const {
+      if (entry_no >= m_names_id_count) {
+        return false;
+      }
+
+      const auto& entry { m_names_id_table[entry_no] };
+
+      if (ptn == DataAccessPtn::L1Accept) {
+        return hd_std::strcmp(entry.key.detname, name_query) == 0;
+      } else if (ptn == DataAccessPtn::SlowUpdate) {
+        // All EPICS (ie EPICSArch) detectors are under the `epics` name
+        // So check if there is a field under that detector for a semantic lookup
+        if (hd_std::strcmp(entry.key.detname, "epics") == 0) {
+          return resolve_field_idx(entry.names_id, name_query) != 0xFFFFFFFF;
+        }
+      } else if (ptn == DataAccessPtn::BeginStep) {
+        // NOTE: The `scan` detector behaves much like the normal detectors, but
+        // has the data in BeginStep buffers, instead of L1Accept buffers.
+        // It can always be access via `scan` detector above. However, for a syntactic
+        // sugar, like with EPICS above, we'll allow detectors to be created based on
+        // the scan variable name directly.
+        // Normally, the scan will have a single algorithm, with these fields:
+        // - `step_value`     : INT64
+        // - `step_docstring` : CHARSTR, optional (but usually present)
+        // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
+        // So we'll match the scan_var_names as we did above with EPICS
+        if (hd_std::strcmp(entry.key.detname, "scan") == 0) {
+          return resolve_field_idx(entry.names_id, name_query) != 0xFFFFFFFF;
+        }
+      }
+    }
+
+    SBIO_HD inline auto metadata_for(std::size_t entry_no) const {
+      const auto& entry { m_names_id_table[entry_no] };
+
+      return std::make_pair(entry.key.dettype, entry.key.segment);
+    }
+
+    SBIO_HD std::size_t num_entries() const { return m_names_id_count; }
   };
 
   template <class DataBrokerType, class SegmentRef>

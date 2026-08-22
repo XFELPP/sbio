@@ -38,6 +38,7 @@
 #include <cuda/std/cstddef>
 #include <cuda/std/cstdint>
 #include <cuda/std/cstring>
+#include <cuda/std/utility>
 
 namespace hd_std = cuda::std;
 
@@ -50,6 +51,7 @@ namespace hd_std = cuda::std;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 namespace hd_std = std;
 
@@ -132,6 +134,7 @@ namespace sbio {
 
         for (hd_std::size_t s = 0; s < streams_per_det; ++s) {
           int cnt = snprintf(name_buf, MaxNameSize, "sbio_random_stream_%zu", nstream);
+          (void)cnt;
 
           StreamParameters stream_cfg { base_cfg };
 
@@ -256,6 +259,23 @@ namespace sbio {
                                 hd_std::uint16_t rank_,
                                 const hd_std::uint32_t* shape_,
                                 ncarray::DType dtype);
+
+      SBIO_HD inline bool entry_matches(hd_std::size_t entry_no,
+                                        const char* name_query,
+                                        DataAccessPtn ptn) const {
+        if (entry_no >= count) {
+          return false;
+        }
+
+        return (hd_std::strcmp(entries[entry_no].name, name_query) == 0);
+      }
+
+      SBIO_HD inline auto metadata_for(hd_std::size_t entry_no) const {
+        return hd_std::make_pair(entries[entry_no].type,
+                                 static_cast<hd_std::uint32_t>(entry_no));
+      }
+
+      SBIO_HD inline hd_std::size_t num_entries() const { return count; }
     };
 
     template <class DataBrokerType, class SegmentRef>
@@ -323,7 +343,6 @@ namespace sbio {
                                               MetadataInventory& inv) {
       auto* buf =
         storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-      hd_std::size_t buf_size { storage.template size<MetadataRole>() };
 
       IOStatus status = streams[Data].read_one(buf,
                                                storage.template size<MetadataRole>());

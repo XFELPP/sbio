@@ -31,6 +31,7 @@
 #include "sbio/formats/format_traits.hh"
 
 #include <concepts>
+#include <cstdint>
 #include <initializer_list>
 #include <utility> // std::forward
 
@@ -643,6 +644,9 @@ namespace sbio {
     }
 
     ~StreamBroker() = default;
+
+    // TODO: Needs to implement some sortable index (mostly for Chronological mode)
+    SBIO_HD std::uint32_t stream_idx() const { return 0; }
 
   protected:
     StreamType m_streams[StreamCount];

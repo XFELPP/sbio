@@ -159,10 +159,7 @@ namespace sbio {
     using DataSegmentRef = SegmentRef<BrokerType>;
 
     // Default constructor for DataSource abstraction
-    BrokerGroup() {
-      m_name[0] = '\0';
-      m_type[0] = '\0';
-    }
+    BrokerGroup() = default;
 
     BrokerGroup(const char* name,
                 const char* type,
@@ -170,17 +167,8 @@ namespace sbio {
                 DataSegmentRef* segments) {
       m_topology.num_segments = num_segments;
 
-      std::size_t i { 0 };
-      for (; i < FTraits::MaxNameSize - 1 && name[i] != '\0'; ++i) {
-        m_name[i] = name[i];
-      }
-      m_name[i] = '\0';
-
-      i = 0;
-      for (; i < FTraits::MaxNameSize - 1 && type[i] != '\0'; ++i) {
-        m_type[i] = type[i];
-      }
-      m_type[i] = '\0';
+      safe_strncpy(m_topology.group_name, name, 256);
+      safe_strncpy(m_topology.group_type, type, 256);
 
       std::uint32_t final_segment_indices[MaxSegments] {};
       if constexpr (FTraits::PartitioningStrategy != StreamPartitioningStrategy::Chronological) {
@@ -252,10 +240,20 @@ namespace sbio {
 
     BrokerGroup(const GroupTopology<BrokerType, MaxSegments>& topo)
       : m_topology(topo)
-    {}
+    {
 
-    const char* group_name() const { return m_name; }
-    const char* group_type() const { return m_type; }
+      std::size_t max_batch_count { 1 };
+      if (!m_topology.empty() && m_topology.broker_for_segment(0) != nullptr) {
+        max_batch_count = FTraits::max_batch_count(m_topology.broker_for_segment(0)->config());
+      }
+
+      m_ptr_storage =
+        ExecutionPolicy::template allocate_group_storage<IOPolicy, FTraits>(this->num_segments(),
+                                                                            max_batch_count);
+    }
+
+    const char* group_name() const { return m_topology.group_name; }
+    const char* group_type() const { return m_topology.group_type; }
 
     inline std::size_t num_segments() const { return m_topology.num_segments; }
     inline const DataSegmentRef* segments() const {
@@ -476,6 +474,7 @@ namespace sbio {
 
       auto get_data_cb = [&](std::size_t i) {
         const auto& seg { m_topology.segment(i) };
+
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           auto active_stream_idx { step_idx % this->num_segments() };
           auto res = get_data_for(req, active_stream_idx);
@@ -709,12 +708,6 @@ namespace sbio {
 
 
   private:
-    char m_name[FTraits::MaxNameSize];
-    char m_type[FTraits::MaxNameSize];
-
-    BrokerType* m_stream_brokers[MaxSegments];
-    DataAccessPtn m_access_ptns[MaxSegments];
-
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
 
     mutable GroupTopology<BrokerType, MaxSegments> m_topology;
