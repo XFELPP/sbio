@@ -151,25 +151,17 @@ namespace sbio {
   template <typename T, typename IO, typename StorageViewT>
   concept CanDiscoverMetadata = requires(Stream<IO, T>* streams,
                                          StorageViewT& storage,
-                                         typename T::MetadataInventory& inv) {
+                                         typename T::MetadataInventory& inv,
+                                         std::size_t entry_no,
+                                         const char* name,
+                                         typename T::DataAccessPtn ptn) {
     { T::discover_metadata(streams, storage, inv) } -> std::convertible_to<IOStatus>;
-  };
 
-  template <typename T>
-  concept CanFindGroupSegments = requires(const typename T::MetadataInventory& inv,
-                                          const char* name,
-                                          impl::PlaceholderSegmentRef* ref_out,
-                                          std::size_t max_out,
-                                          impl::PlaceholderBroker* broker,
-                                          char* dettype,
-                                          typename T::DataAccessPtn ptn) {
-    { T::find_group_segments(inv,
-                             name,
-                             ref_out,
-                             max_out,
-                             broker,
-                             dettype,
-                             ptn) } -> std::convertible_to<std::size_t>;
+    // The inventory also exposes the following interface to allow Topology and Group
+    // formation
+    { inv.entry_matches(entry_no, name, ptn) } -> std::same_as<bool>;
+    { inv.metadata_for(entry_no) } -> std::convertible_to<std::pair<const char*, std::uint32_t>>;
+    { inv.num_entries() } -> std::same_as<std::size_t>;
   };
 
   template <typename T, typename IO, typename StorageViewT>
@@ -285,21 +277,20 @@ namespace sbio {
    *   template <IOTraits IO>
    *   static IOStatus open_streams(Stream<IO, T>* streams, const StreamParameters& cfg);
    *
-   *   // CanDiscoverMetadata && CanFindGroupSegments
+   *   // CanDiscoverMetadata
    *   // -------------------------------------------
    *   template <IOTraits IO, class StorageViewT>
    *   static IOStatus discover_metadata(Stream<IO, T>* streams,
    *                                     StorageViewT& storage,
    *                                     MetadataInventory& inv);
    *
-   *    template <class DataBrokerType, class SegmentRef>
-   *    static std::size_t find_group_segments(const MetadataInventory& inv,
-   *                                           const char* name,
-   *                                           SegmentRef* ref_out,
-   *                                           std::size_t max_out,
-   *                                           DataBrokerType* broker,
-   *                                           char* grouptype = nullptr,
-   *                                           DataAccessPtn ptn = DataAccessPtn::L1Accept);
+   *    // After discovery of metadata, the inventory interface below allows
+   *    // building topologies and groups.
+   *    bool entry_matches(std::size_t entry_no,
+   *                       const char* name_query,
+   *                       DataAccessPtn ptn) const;
+   *    std::pair<const char*, std::uint32_t> metadata_for(std::size_t entry_no) const;
+   *    std::size_t MetadataInventory::num_entries() const;
    *
    *   // CanIndexStreams  [[ OPTIONAL ]]
    *   // ---------------
@@ -352,7 +343,6 @@ namespace sbio {
       T,
       IO,
       StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
-    CanFindGroupSegments<T>                                                         &&
     CanFetchStreamData<
       T,
       IO,

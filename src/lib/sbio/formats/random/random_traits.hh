@@ -278,29 +278,6 @@ namespace sbio {
       SBIO_HD inline hd_std::size_t num_entries() const { return count; }
     };
 
-    template <class DataBrokerType, class SegmentRef>
-    SBIO_HD static std::size_t find_group_segments(const MetadataInventory& inv,
-                                                   const char* name,
-                                                   SegmentRef* ref_out,
-                                                   std::size_t max_out,
-                                                   DataBrokerType* broker,
-                                                   char* dettype = nullptr,
-                                                   DataAccessPtn ptn = DataAccessPtn::Default) {
-      hd_std::size_t matched { 0 };
-      for (hd_std::size_t i = 0; i < inv.count && matched < max_out; ++i) {
-        if (hd_std::strcmp(inv.entries[i].name, name) == 0 || std::strcmp(name, "*") == 0) {
-          if (dettype != nullptr) {
-            safe_strncpy(dettype, inv.entries[i].type, MaxNameSize);
-          }
-
-          ref_out[matched] = SegmentRef { broker, i };
-          matched++;
-        }
-      }
-
-      return matched;
-    }
-
     SBIO_HD static AllocationRequest<RandomTraits> get_allocation_request(StreamParameters& cfg) {
       AllocationRequest<RandomTraits> request;
 
