@@ -242,20 +242,6 @@ namespace sbio {
      */
     struct SBIO_API MetadataInventory;
 
-    /**
-     * The struct to be used to return results when data is requested.
-     * This is defined in the XTC2 namespace and aliased here.
-     * It has the structure:
-     * struct DataResult {
-     *   const void* data;           ///< Pointer to the raw data
-     *   std::size_t size;           ///< Total bytes of payload
-     *   std::uint16_t rank;         ///< Rank of data (num dimensions)
-     *   const std::uint32_t* shape; ///< Shape of the data
-     *   XTC2::DType dtype;          ///< Data type
-     * };
-     */
-    using DataResult = typename XTC2::DataResult;
-
     // Defined at end of the header, after MetadataInventory is completed
     template <class DataBrokerType, class SegmentRef>
     SBIO_HD static std::size_t find_group_segments(const MetadataInventory& inv,
@@ -666,7 +652,6 @@ namespace sbio {
       return IOStatus::GeneralIOError;
     }
 
-
     template <class StorageViewT>
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
                                                  const MetadataInventory& inv,
@@ -925,7 +910,7 @@ namespace sbio {
           // So don't record it again
           bool duplicate { false };
           for (std::size_t j = 0; j < n_found; ++j) {
-            if (ref_out[j].segment_no == segment_no) {
+            if (ref_out[j].format_segment_id == segment_no) {
               duplicate = true;
               break;
             }

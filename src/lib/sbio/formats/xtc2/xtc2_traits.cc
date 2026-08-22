@@ -19,9 +19,13 @@
 
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 
+#include "sbio/core/result.hh"
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/util/string.hh"
 
+#include <ncarray/dtype.hh>
+
+#include <array>
 #include <cstdint>
 
 #ifndef SBIO_HD
@@ -102,6 +106,34 @@ namespace {
     std::sort(inventory.m_field_table,
               inventory.m_field_table + inventory.m_field_count);
   }
+
+  SBIO_HD ncarray::DType to_ncarray_dtype(XTC2::DType type) {
+    switch (type) {
+    case XTC2::DType::UINT8:
+      return ncarray::DType::uint8;
+    case XTC2::DType::UINT16:
+      return ncarray::DType::uint16;
+    case XTC2::DType::UINT32:
+      return ncarray::DType::uint32;
+    case XTC2::DType::UINT64:
+      return ncarray::DType::uint64;
+    case XTC2::DType::INT8:
+      return ncarray::DType::int8;
+    case XTC2::DType::INT16:
+      return ncarray::DType::int16;
+    case XTC2::DType::INT32:
+      return ncarray::DType::int32;
+    case XTC2::DType::INT64:
+      return ncarray::DType::int64;
+    case XTC2::DType::FLOAT:
+      return ncarray::DType::float32;
+    case XTC2::DType::DOUBLE:
+      return ncarray::DType::float64;
+    default:
+      return ncarray::DType::uint8;
+    }
+  }
+
 } // anonymous namespace
 
 namespace sbio {
@@ -115,9 +147,9 @@ namespace sbio {
     }
   }
 
-  SBIO_HD XTC2Traits::DataResult XTC2Traits::resolve_data(void* buffer,
-                                                          const XTC2Traits::MetadataInventory& inv,
-                                                          const XTC2Traits::DataRequest& req) {
+  SBIO_HD DataResult XTC2Traits::resolve_data(void* buffer,
+                                              const XTC2Traits::MetadataInventory& inv,
+                                              const XTC2Traits::DataRequest& req) {
     std::uint32_t nid = inv.resolve_names_id(req);
     if (nid == 0xFFFFFFFF) {
       // Detector/Algorithm not found
@@ -156,7 +188,27 @@ namespace sbio {
       }
       sd_offset = inv.get_sd_offset(nid);
     }
-    return XTC2::resolve_xtc2_pointer(buffer, sd_offset, field_schema, nid, f_idx);
+
+    // TODO: THIS COPY NEEDS TO BE FIXED!!!
+    // But, don't want to link the format lib with the ncarray/sbio deps etc.
+    XTC2::DataResult xtc2_res =
+      XTC2::resolve_xtc2_pointer(buffer, sd_offset, field_schema, nid, f_idx);
+
+    DataResult res {
+      xtc2_res.data,
+      xtc2_res.size,
+      xtc2_res.rank,
+      std::array<std::uint32_t, 10> {
+        xtc2_res.shape[0],
+        xtc2_res.shape[1],
+        xtc2_res.shape[2],
+        xtc2_res.shape[3],
+        xtc2_res.shape[4]
+      },
+      to_ncarray_dtype(xtc2_res.dtype)
+    };
+
+    return res;
   }
 
 

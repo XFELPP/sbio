@@ -21,9 +21,11 @@
 #define SBIO_FORMATS_FORMAT_TRAITS_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
+#include "sbio/core/types.hh"
 
 #include <concepts>
 #include <cstdint>
@@ -37,29 +39,6 @@
 #endif
 
 namespace sbio {
-  /**
-   * @brief Indicates the strategy used to partition data across streams.
-   *
-   * When partitioning data from a single "logical unit" across multiple data streams
-   * written over time, one can imagine two basic strategies:
-   *  1. At each point in time, the logical unit is sub-divided and a portion
-   *     is written to each data stream.
-   *  2. At each point in time, the entire logical unit is written to one stream,
-   *     and then the data is round-robined (or via some other selection mechanism
-   *     distributed) across the other streams.
-   * - SubDivide indicates the format uses strategy 1.
-   * - Chronological indicates the format uses strategy 2.
-   */
-  enum class StreamPartitioningStrategy : std::uint8_t {
-    SubDivide = 0,
-    Chronological = 1
-  };
-
-  enum class StreamSentinels : std::uint8_t {
-    RequestExhausted = 0, ///< All data units from this read request were read
-    StreamExhausted = 1   ///< The stream is entirely exhausted (no more data)
-  };
-
   /**
    * Base class tag for a data-format implementation.
    *
@@ -94,6 +73,14 @@ namespace sbio {
     struct PlaceholderSegmentRef {};
     struct PlaceholderDataSource {};
   }; // namespace impl
+
+  template <typename T>
+  concept CanBuildTopology = requires(const typename T::MetadataInventory& inv,
+                                      const char* name,
+                                      impl::PlaceholderBroker* brokers,
+                                      std::size_t num_brokers) {
+    { T::build_group_topology(inv, name, brokers, num_brokers) };
+  };
 
   template <typename T>
   concept CanFindAndConfigureStreams = requires(impl::PlaceholderDataSource& ds,
@@ -207,9 +194,8 @@ namespace sbio {
   concept CanResolveData = requires(void* buf,
                                     const typename T::MetadataInventory& inv,
                                     const typename T::DataRequest& req) {
-    // Defines a struct for the result of data resolution requests
-    typename T::DataResult;
-    { T::resolve_data(buf, inv, req) } -> std::same_as<typename T::DataResult>;
+    // Can resolve data into a sbio DataResult
+    { T::resolve_data(buf, inv, req) } -> std::same_as<DataResult>;
 
     // Can give the total size of the retrieved data
     { T::get_payload_size(buf) } -> std::convertible_to<std::size_t>;
@@ -221,7 +207,7 @@ namespace sbio {
                                    const typename T::DataRequest& req,
                                    typename T::DataAccessPtn ptn,
                                    std::size_t batch_idx) {
-    { T::get_data_in_buffer(storage, inv, req, ptn, batch_idx) } -> std::convertible_to<typename T::DataResult>;
+    { T::get_data_in_buffer(storage, inv, req, ptn, batch_idx) } -> std::convertible_to<DataResult>;
   };
 
   template <typename T>
