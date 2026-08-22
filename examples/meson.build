@@ -1,4 +1,4 @@
-if sbio_build_sbiofmt
+if build_core_opt and sbio_build_sbiofmt
     executable(
         'test_random_ds',
         'test_random_ds.cc',

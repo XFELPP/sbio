@@ -23,6 +23,7 @@
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/random/randfmt.hh"
 
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/sync.hh"
@@ -255,14 +256,6 @@ namespace sbio {
                                 hd_std::uint16_t rank_,
                                 const hd_std::uint32_t* shape_,
                                 ncarray::DType dtype);
-    };
-
-    struct DataResult {
-      const void* data;
-      hd_std::size_t size;
-      hd_std::uint16_t rank;
-      hd_std::uint32_t shape[MaxRank];
-      ncarray::DType dtype;
     };
 
     template <class DataBrokerType, class SegmentRef>

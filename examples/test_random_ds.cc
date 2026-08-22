@@ -19,6 +19,7 @@
 
 #include "sbio/core/datasource.hh"
 #include "sbio/core/execution.hh"
+#include "sbio/core/result.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
 #include "sbio/formats/random/random_traits.hh"
@@ -74,7 +75,7 @@ int main(int argc, char* argv[]) {
       std::cout << "[Pass] Retrieved stream group for `test`." << std::endl;
 
       for (auto step = ds.next(); step < 500; step = ds.next()) {
-        auto cb = [&](sbio::RandomTraits::DataResult res) {
+        auto cb = [&](sbio::DataResult res) {
           if (step % 20 == 0) {
             std::cout << "Processed step " << step << std::endl;
           }

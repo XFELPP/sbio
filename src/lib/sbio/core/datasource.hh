@@ -24,6 +24,7 @@
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/formats/format_traits.hh"
@@ -140,10 +141,6 @@ namespace sbio {
      * The type of a request object used to query for data.
      */
     using DataRequest = typename FTraits::DataRequest;
-    /**
-     * The type of a result object received as a response when querying for data.
-     */
-    using DataResult = typename FTraits::DataResult;
     /**
      * The type used to request a specific step from the Stream.
      *
@@ -320,7 +317,7 @@ namespace sbio {
     SBIO_HD inline BrokerGroup<BrokerType, FTraits, MaxSegments>
     get_stream_group(const char* name) {
       using BrokerGroupType = BrokerGroup<BrokerType, FTraits, MaxSegments>;
-      typename BrokerGroupType::DataSegmentRef segments[MaxSegments] {};
+      SegmentRef<BrokerType, DataAccessPtn> segments[MaxSegments] {};
 
       std::uint32_t stream_indices[MaxSegments] {};
 
@@ -331,7 +328,7 @@ namespace sbio {
       // in turn, as just given a name, it cannot be known which access pattern is needed.
       char final_type[FTraits::MaxNameSize] = "unknown";
       for (std::size_t pass = 0; pass < FTraits::DataAccessPtnCount; ++pass) {
-        auto ptn = static_cast<typename FTraits::DataAccessPtn>(pass);
+        auto ptn = static_cast<DataAccessPtn>(pass);
         for (std::size_t i = 0; i < m_num_data_streams && n_streams_found < MaxSegments; ++i) {
           char dettype[FTraits::MaxNameSize] = "unknown";
           n_streams_found += FTraits::find_group_segments(m_data_streams[i].metadata(),
@@ -400,7 +397,7 @@ namespace sbio {
           // Use the sorted stream indices as the "segment"
           // The broker will know that Chronological partitioning requires a different
           // interpretation of the segment numbering
-          typename BrokerGroupType::DataSegmentRef sorted_segments[MaxSegments] {};
+          SegmentRef<BrokerType, DataAccessPtn> sorted_segments[MaxSegments] {};
           for (std::size_t j = 0; j < num_segments; ++j) {
             sorted_segments[j] = segments[final_stream_indices[j]];
             sorted_segments[j].segment_no = 0;

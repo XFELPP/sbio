@@ -22,10 +22,12 @@
 
 #include "sbio/core/broker.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/core/sync.hh"
-#include "sbio/core/utility.hh"
+#include "sbio/core/topology.hh"
+#include "sbio/core/types.hh"
 #include "sbio/formats/format_traits.hh"
 
 #include <ncarray/ncarrays.hh>
@@ -130,10 +132,6 @@ namespace sbio {
      */
     using DataRequest = typename FTraits::DataRequest;
     /**
-     * The type of a result object received as a response when querying for data.
-     */
-    using DataResult = typename FTraits::DataResult;
-    /**
      * The type used to request a specific step from the Stream.
      *
      * This type is required and guaranteed to be convertible std::size_t; however,
@@ -144,18 +142,6 @@ namespace sbio {
     using PtrTableRequirements =
       TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
     using PtrStorageType = Storage<PtrTableRequirements, ExecutionPolicy>;
-
-    /**
-     * A reference to a specific piece of data, a numerical identifier, and pointer to its broker.
-     *
-     * The access_ptn enumerator is determined by the file format traits, and indicates
-     * which kind of data it is.
-     */
-    struct DataSegmentRef {
-      BrokerType* broker;
-      std::uint32_t segment_no;
-      DataAccessPtn access_ptn;
-    };
 
     /**
      * Based on choice of ExecutionPolicy, data will return in host or device buffers.
@@ -170,6 +156,8 @@ namespace sbio {
       ncarray::DevTag
     >;
 
+    using DataSegmentRef = SegmentRef<BrokerType, DataAccessPtn>;
+
     // Default constructor for DataSource abstraction
     BrokerGroup() {
       m_name[0] = '\0';
@@ -179,8 +167,9 @@ namespace sbio {
     BrokerGroup(const char* name,
                 const char* type,
                 std::size_t num_segments,
-                DataSegmentRef* segments) {
-      m_num_segments = num_segments;
+                SegmentRef<BrokerType, DataAccessPtn>* segments) {
+      m_topology.num_segments = num_segments;
+      m_topology.strategy = FTraits::PartitioningStrategy;
 
       std::size_t i { 0 };
       for (; i < FTraits::MaxNameSize - 1 && name[i] != '\0'; ++i) {
@@ -201,19 +190,19 @@ namespace sbio {
           // For the other case -- sort the indices by the "segment_no" to handle the
           // possibility of missing segments but maintain the segment numbering where it
           // is significant
-          std::uint32_t smallest { segments[0].segment_no };
+          std::uint32_t smallest { segments[0].format_segment_id };
           for (std::size_t j = 0; j < num_segments; ++j) {
             final_segment_indices[j] = j;
-            if (segments[j].segment_no < smallest) {
-              smallest = segments[j].segment_no;
+            if (segments[j].format_segment_id < smallest) {
+              smallest = segments[j].format_segment_id;
             }
           }
 
           for (std::size_t i = 0; i < num_segments - 1; ++i) {
             std::uint32_t best { static_cast<std::uint32_t>(i) };
             for (std::size_t j = i + 1; j < num_segments; ++j) {
-              std::uint32_t diff_best { segments[final_segment_indices[best]].segment_no - smallest };
-              std::uint32_t diff_j { segments[final_segment_indices[j]].segment_no - smallest };
+              std::uint32_t diff_best { segments[final_segment_indices[best]].format_segment_id - smallest };
+              std::uint32_t diff_j { segments[final_segment_indices[j]].format_segment_id - smallest };
 
               if (diff_j < diff_best) {
                 best = j;
@@ -233,58 +222,74 @@ namespace sbio {
         }
       }
 
-      for (std::size_t n_seg = 0; n_seg < m_num_segments; ++n_seg) {
+      for (std::size_t n_seg = 0; n_seg < m_topology.num_segments; ++n_seg) {
         std::uint32_t working_idx { final_segment_indices[n_seg] };
-        m_segments[n_seg] = segments[working_idx];
+        m_topology.set_segment(n_seg, segments[working_idx]);
 
-        auto* broker = m_segments[n_seg].broker;
-        auto access_ptn = m_segments[n_seg].access_ptn;
+        auto* broker { m_topology.broker_for_segment(n_seg) };
+        auto& access_ptn { m_topology.pattern_for_segment(n_seg) };
 
         // Also store the broker pointer directly
         std::size_t n_broker { 0 };
-        for (; n_broker < m_num_brokers; ++n_broker) {
-          if (m_stream_brokers[n_broker] == broker) {
+        for (; n_broker < m_topology.num_stream_brokers; ++n_broker) {
+          if (m_topology.stream_broker(n_broker) == broker) {
             break;
           }
         }
-        if (n_broker == m_num_brokers) {
-          m_stream_brokers[n_broker] = broker;
-          m_access_ptns[n_broker] = access_ptn;
-          m_num_brokers++;
+        if (n_broker == m_topology.num_stream_brokers) {
+          m_topology.set_stream_broker(n_broker, broker, access_ptn);
         }
       }
 
       std::size_t max_batch_count { 1 };
-      if (m_num_brokers > 0 && m_segments[0].broker != nullptr) {
-        max_batch_count = FTraits::max_batch_count(m_segments[0].broker->config());
+      if (!m_topology.empty() && m_topology.broker_for_segment(0) != nullptr) {
+        max_batch_count = FTraits::max_batch_count(m_topology.broker_for_segment(0)->config());
       }
 
       m_ptr_storage =
-        ExecutionPolicy::template allocate_group_storage<IOPolicy, FTraits>(m_num_segments,
+        ExecutionPolicy::template allocate_group_storage<IOPolicy, FTraits>(this->num_segments(),
                                                                             max_batch_count);
     }
+
+    BrokerGroup(const GroupTopology<BrokerType, DataAccessPtn, MaxSegments>& topo)
+      : m_topology(topo)
+    {}
 
     const char* group_name() const { return m_name; }
     const char* group_type() const { return m_type; }
 
-    inline std::size_t num_segments() const { return m_num_segments; }
-    inline const DataSegmentRef* segments() const { return m_segments; }
-    inline const DataSegmentRef& segment(std::size_t i) const { return m_segments[i]; }
+    inline std::size_t num_segments() const { return m_topology.num_segments; }
+    inline const SegmentRef<BrokerType, DataAccessPtn>* segments() const {
+      if (!m_topology.empty()) {
+        return &m_topology.segments[0];
+      }
 
-    inline BrokerType** stream_brokers() { return m_stream_brokers; }
-    inline std::size_t num_stream_brokers() const { return m_num_brokers; }
+      return nullptr;
+    }
+    inline const SegmentRef<BrokerType, DataAccessPtn>& segment(std::size_t i) const {
+      return m_topology.segments(i);
+    }
+
+    inline BrokerType** stream_brokers() {
+      if (!m_topology.empty()) {
+        return &m_topology.stream_brokers[0];
+      }
+
+      return nullptr;
+    }
+    inline std::size_t num_stream_brokers() const { return m_topology.num_stream_brokers; }
 
     inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
-      auto* stream_broker = m_stream_brokers[broker_no];
-      auto& access_ptn = m_access_ptns[broker_no];
+      auto* stream_broker { m_topology.stream_broker(broker_no) };
+      const auto& access_ptn { m_topology.access_ptn(broker_no) };
 
       return stream_broker->fetch_step(step_idx, access_ptn);
     }
 
     inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
                                     std::size_t broker_no) const {
-      auto* stream_broker = m_stream_brokers[broker_no];
-      auto& access_ptn = m_access_ptns[broker_no];
+      auto* stream_broker { m_topology.stream_broker(broker_no) };
+      const auto& access_ptn { m_topology.access_ptn(broker_no) };
 
       return stream_broker->fetch_steps(steps, access_ptn);
     }
@@ -294,10 +299,10 @@ namespace sbio {
                                    std::size_t segment_no,
                                    CBType&& callback,
                                    std::size_t batch_idx = 0) const {
-      req.segment_number = m_segments[segment_no].segment_no;
+      req.segment_number = m_topology.segment(segment_no).format_segment_id;
 
-      auto* stream_broker = m_segments[segment_no].broker;
-      auto& access_ptn = m_segments[segment_no].access_ptn;
+      auto* stream_broker { m_topology.broker_for_segment(segment_no) };
+      const auto& access_ptn { m_topology.pattern_for_segment(segment_no) };
 
       auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
 
@@ -312,10 +317,10 @@ namespace sbio {
     inline DataResult get_data_for(DataRequest& req,
                                    std::size_t segment_no,
                                    std::size_t batch_idx = 0) const {
-      req.segment_number = m_segments[segment_no].segment_no;
+      req.segment_number = m_topology.segment(segment_no).format_segment_id;
 
-      auto* stream_broker = m_segments[segment_no].broker;
-      auto& access_ptn = m_segments[segment_no].access_ptn;
+      auto* stream_broker { m_topology.broker_for_segment(segment_no) };
+      auto& access_ptn { m_topology.pattern_for_segment(segment_no) };
 
       auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
       return res;
@@ -352,25 +357,29 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
-      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+      auto& ptr_buf { this->m_ptr_storage.template get<TableRole>() };
+      const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % m_num_segments };
-          auto adjusted_step_idx { step_idx / m_num_segments };
-          auto& access_ptn = m_access_ptns[active_stream_idx];
+          auto active_stream_idx { step_idx % this->num_segments() };
+          auto adjusted_step_idx { step_idx / this->num_segments() };
+          const auto& access_ptn { m_topology.access_ptn(active_stream_idx) };
 
-          return m_stream_brokers[active_stream_idx]->fetch_step(adjusted_step_idx, access_ptn);
+          return
+            m_topology.stream_broker(active_stream_idx)->fetch_step(adjusted_step_idx, access_ptn);
         } else {
-          auto& access_ptn = m_access_ptns[i];
-          return m_stream_brokers[i]->fetch_step(step_idx, access_ptn);
+          const auto& access_ptn { m_topology.access_ptn(i) };
+
+          return m_topology.stream_broker(i)->fetch_step(step_idx, access_ptn);
         }
       };
 
       auto get_data_cb = [&](std::size_t i) {
+        const auto& seg { m_topology.segment(i) };
+
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % m_num_segments };
+          auto active_stream_idx { step_idx % this->num_segments() };
 
           auto res = get_data_for(req,
                                   active_stream_idx,
@@ -395,7 +404,7 @@ namespace sbio {
           // -> This way segment 0 gets put into m_ptrs[0]
           // HOWEVER - we pre-sort the segments during construction. This avoids
           // problems if only "segment 2" is provided without 0 and 1, e.g.
-          ptr_tbl[i] = const_cast<void*>(res.data);
+          ptr_tbl[seg.logical_slot] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
@@ -410,8 +419,8 @@ namespace sbio {
         }
       };
 
-      std::size_t num_brokers { m_num_brokers };
-      std::size_t num_segments { m_num_segments };
+      std::size_t num_brokers { this->num_stream_brokers() };
+      std::size_t num_segments { this->num_segments() };
 
       if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
         num_brokers = 1;
@@ -426,7 +435,15 @@ namespace sbio {
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
 
-      return as_ncarray<MemTag>(ptr_table, num_segments, ref_res);
+      CompositeDataResult<MemTag> composite {
+        ptr_table,
+        m_topology.num_segments,
+        1,
+        ref_res.rank,
+        ref_res.shape,
+        ref_res.dtype
+      };
+      return composite.as_ncarray();
     }
 
     /**
@@ -452,25 +469,28 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
-      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+      auto& ptr_buf { this->m_ptr_storage.template get<TableRole>() };
+      const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % m_num_segments };
-          auto adjusted_step_idx { step_idx / m_num_segments };
-          auto& access_ptn = m_access_ptns[active_stream_idx];
+          auto active_stream_idx { step_idx % this->num_segments() };
+          auto adjusted_step_idx { step_idx / this->num_segments() };
+          const auto& access_ptn { m_topology.access_ptn(active_stream_idx) };
 
-          return m_stream_brokers[active_stream_idx]->fetch_step(adjusted_step_idx, access_ptn);
+          return
+            m_topology.stream_broker(active_stream_idx)->fetch_step(adjusted_step_idx, access_ptn);
         } else {
-          auto& access_ptn = m_access_ptns[i];
-          return m_stream_brokers[i]->fetch_step(step_idx, access_ptn);
+          const auto& access_ptn { m_topology.access_ptn(i) };
+
+          return m_topology.stream_broker(i)->fetch_step(step_idx, access_ptn);
         }
       };
 
       auto get_data_cb = [&](std::size_t i) {
+        const auto& seg { m_topology.segment(i) };
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % m_num_segments };
+          auto active_stream_idx { step_idx % this->num_segments() };
           auto res = get_data_for(req, active_stream_idx);
 
           ptr_tbl[0] = const_cast<void*>(res.data);
@@ -490,7 +510,7 @@ namespace sbio {
           // -> This way segment 0 gets put into m_ptrs[0]
           // HOWEVER - we pre-sort the segments during construction. This avoids
           // problems if only "segment 2" is provided without 0 and 1, e.g.
-          ptr_tbl[i] = const_cast<void*>(res.data);
+          ptr_tbl[seg.logical_slot] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
             ref_res.data = res.data;
@@ -505,8 +525,8 @@ namespace sbio {
         }
       };
 
-      std::size_t num_brokers { m_num_brokers };
-      std::size_t num_segments { m_num_segments };
+      std::size_t num_brokers { this->num_stream_brokers() };
+      std::size_t num_segments { this->num_segments() };
 
       if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
         num_brokers = 1;
@@ -519,7 +539,16 @@ namespace sbio {
                                                   get_data_cb,
                                                   num_segments);
 
-      return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res);
+      CompositeDataResult<MemTag> composite {
+        ptr_tbl,
+        m_topology.num_segments,
+        1,
+        ref_res.rank,
+        ref_res.shape,
+        ref_res.dtype
+      };
+
+      return composite.as_ncarray();
     }
 
     template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
@@ -537,19 +566,21 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
-      const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+      auto& ptr_buf { this->m_ptr_storage.template get<TableRole>() };
+      const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           /// TODO: Setup Chronological
         } else {
-          auto& access_ptn = m_access_ptns[i];
-          return m_stream_brokers[i]->fetch_steps(steps, access_ptn);
+          const auto& access_ptn { m_topology.access_ptn(i) };
+
+          return m_topology.stream_broker(i)->fetch_steps(steps, access_ptn);
         }
       };
 
       auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
+        const auto& seg { m_topology.segment(i) };
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           /// TODO: Setup Chronological
         } else {
@@ -563,7 +594,7 @@ namespace sbio {
           // -> This way segment 0 gets put into m_ptrs[0]
           // HOWEVER - we pre-sort the segments during construction. This avoids
           // problems if only "segment 2" is provided without 0 and 1, e.g.
-          std::size_t ptr_idx { cnt * m_num_segments + i };
+          std::size_t ptr_idx { cnt * this->num_segments() + seg.logical_slot };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
           if (i == 0) {
             // This assumes all segments are same shape...
@@ -580,8 +611,8 @@ namespace sbio {
         }
       };
 
-      std::size_t num_brokers { m_num_brokers };
-      std::size_t num_segments { m_num_segments };
+      std::size_t num_brokers { this->num_stream_brokers() };
+      std::size_t num_segments { this->num_segments() };
 
       if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
         num_brokers = 1;
@@ -596,7 +627,16 @@ namespace sbio {
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
 
-      return as_ncarray<MemTag>(ptr_table, num_segments, ref_res, count);
+      CompositeDataResult<MemTag> composite {
+        ptr_table,
+        m_topology.num_segments,
+        count,
+        ref_res.rank,
+        ref_res.shape,
+        ref_res.dtype
+      };
+
+      return composite.as_ncarray();
     }
 
     template <typename MemTag = ncarray::HostTag, typename... Args>
@@ -619,12 +659,14 @@ namespace sbio {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           // TODO: Setup Chronological
         } else {
-          auto& access_ptn = m_access_ptns[i];
-          return m_stream_brokers[i]->fetch_steps(steps, access_ptn);
+          const auto& access_ptn { m_topology.access_ptn(i) };
+
+          return m_topology.stream_broker(i)->fetch_steps(steps, access_ptn);
         }
       };
 
       auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
+        const auto& seg { m_topology.segment(i) };
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           // TODO: Setup Chronological
         } else {
@@ -635,7 +677,7 @@ namespace sbio {
           // -> This way segment 0 gets put into m_ptrs[0]
           // HOWEVER - we pre-sort the segments during construction. This avoids
           // problems if only "segment 2" is provided without 0 and 1, e.g.
-          std::size_t ptr_idx { cnt * m_num_segments + i };
+          std::size_t ptr_idx { cnt * this->num_segments() + seg.logical_slot };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
           if (i == 0 && cnt == 0) {
             // This assumes all segments are same shape...
@@ -652,8 +694,8 @@ namespace sbio {
         }
       };
 
-      std::size_t num_brokers { m_num_brokers };
-      std::size_t num_segments { m_num_segments };
+      std::size_t num_brokers { this->num_stream_brokers() };
+      std::size_t num_segments { this->num_segments() };
 
       if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
         num_brokers = 1;
@@ -666,21 +708,29 @@ namespace sbio {
                                                         get_data_cb,
                                                         num_segments);
 
-      return as_ncarray<MemTag>(ptr_tbl, num_segments, ref_res, count);
+      CompositeDataResult<MemTag> composite {
+        ptr_tbl,
+        m_topology.num_segments,
+        count,
+        ref_res.rank,
+        ref_res.shape,
+        ref_res.dtype
+      };
+
+      return composite.as_ncarray();
     }
 
 
   private:
     char m_name[FTraits::MaxNameSize];
     char m_type[FTraits::MaxNameSize];
-    DataSegmentRef m_segments[MaxSegments];
-    mutable std::size_t m_num_segments;
 
     BrokerType* m_stream_brokers[MaxSegments];
     DataAccessPtn m_access_ptns[MaxSegments];
-    mutable std::size_t m_num_brokers { 0 };
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
+
+    mutable GroupTopology<BrokerType, DataAccessPtn, MaxSegments> m_topology;
 
     mutable PtrStorageType m_ptr_storage;
   };

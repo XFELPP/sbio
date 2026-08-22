@@ -5,11 +5,14 @@ installed_core_headers = [
     'datasource.hh',
     'execution.hh',
     'io.hh',
+    'result.hh',
     'storage.hh',
     'storage_view.hh',
     'stream.hh',
     'sync.hh',
+    'topology.hh',
     'transaction.hh',
+    'types.hh',
     'utility.hh',
 ]
 
