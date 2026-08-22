@@ -317,7 +317,7 @@ namespace sbio {
     SBIO_HD inline BrokerGroup<BrokerType, FTraits, MaxSegments>
     get_stream_group(const char* name) {
       using BrokerGroupType = BrokerGroup<BrokerType, FTraits, MaxSegments>;
-      SegmentRef<BrokerType, DataAccessPtn> segments[MaxSegments] {};
+      SegmentRef<BrokerType> segments[MaxSegments] {};
 
       std::uint32_t stream_indices[MaxSegments] {};
 
@@ -397,7 +397,7 @@ namespace sbio {
           // Use the sorted stream indices as the "segment"
           // The broker will know that Chronological partitioning requires a different
           // interpretation of the segment numbering
-          SegmentRef<BrokerType, DataAccessPtn> sorted_segments[MaxSegments] {};
+          SegmentRef<BrokerType> sorted_segments[MaxSegments] {};
           for (std::size_t j = 0; j < num_segments; ++j) {
             sorted_segments[j] = segments[final_stream_indices[j]];
             sorted_segments[j].segment_no = 0;

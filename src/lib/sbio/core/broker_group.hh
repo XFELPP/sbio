@@ -156,7 +156,7 @@ namespace sbio {
       ncarray::DevTag
     >;
 
-    using DataSegmentRef = SegmentRef<BrokerType, DataAccessPtn>;
+    using DataSegmentRef = SegmentRef<BrokerType>;
 
     // Default constructor for DataSource abstraction
     BrokerGroup() {
@@ -167,7 +167,7 @@ namespace sbio {
     BrokerGroup(const char* name,
                 const char* type,
                 std::size_t num_segments,
-                SegmentRef<BrokerType, DataAccessPtn>* segments) {
+                DataSegmentRef* segments) {
       m_topology.num_segments = num_segments;
       m_topology.strategy = FTraits::PartitioningStrategy;
 
@@ -251,7 +251,7 @@ namespace sbio {
                                                                             max_batch_count);
     }
 
-    BrokerGroup(const GroupTopology<BrokerType, DataAccessPtn, MaxSegments>& topo)
+    BrokerGroup(const GroupTopology<BrokerType, MaxSegments>& topo)
       : m_topology(topo)
     {}
 
@@ -259,14 +259,14 @@ namespace sbio {
     const char* group_type() const { return m_type; }
 
     inline std::size_t num_segments() const { return m_topology.num_segments; }
-    inline const SegmentRef<BrokerType, DataAccessPtn>* segments() const {
+    inline const DataSegmentRef* segments() const {
       if (!m_topology.empty()) {
         return &m_topology.segments[0];
       }
 
       return nullptr;
     }
-    inline const SegmentRef<BrokerType, DataAccessPtn>& segment(std::size_t i) const {
+    inline const DataSegmentRef& segment(std::size_t i) const {
       return m_topology.segments(i);
     }
 
@@ -730,7 +730,7 @@ namespace sbio {
 
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
 
-    mutable GroupTopology<BrokerType, DataAccessPtn, MaxSegments> m_topology;
+    mutable GroupTopology<BrokerType, MaxSegments> m_topology;
 
     mutable PtrStorageType m_ptr_storage;
   };

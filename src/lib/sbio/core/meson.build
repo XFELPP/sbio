@@ -13,7 +13,6 @@ installed_core_headers = [
     'topology.hh',
     'transaction.hh',
     'types.hh',
-    'utility.hh',
 ]
 
 if not sbio_as_wheel_opt and build_core_opt

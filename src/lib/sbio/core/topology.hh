@@ -53,8 +53,18 @@ namespace sbio {
   /**
    * Map a StreamBroker to a logical position within a BrokerGroup.
    */
-  template <IsStreamBroker BrokerType, typename DataAccessPtn>
+  template <IsStreamBroker BrokerType>
   struct SegmentRef {
+    /**
+     * The type of data being read.
+     */
+    using DataFormat = typename BrokerType::DataFormat;
+
+    /**
+     * The type of the enumerator used to specify access patterns used for the format.
+     */
+    using DataAccessPtn = typename DataFormat::DataAccessPtn;
+
     /**
      * The pointer to the StreamBroker where you find this logical segment.
      */
@@ -87,10 +97,19 @@ namespace sbio {
    */
   template <
     IsStreamBroker BrokerType,
-    typename DataAccessPtn,
     hd_std::size_t MaxSegments = 128
   >
   struct GroupTopology {
+    /**
+     * The type of data being read.
+     */
+    using DataFormat = typename BrokerType::DataFormat;
+
+    /**
+     * The type of the enumerator used to specify access patterns used for the format.
+     */
+    using DataAccessPtn = typename DataFormat::DataAccessPtn;
+
     char group_name[256] { 0 };
     char group_type[256] { 0 };
 
@@ -98,18 +117,17 @@ namespace sbio {
     hd_std::array<DataAccessPtn, MaxSegments> broker_access_ptns {};
     hd_std::size_t num_stream_brokers { 0 };
 
-    hd_std::array<SegmentRef<BrokerType, DataAccessPtn>, MaxSegments> segments {};
+    hd_std::array<SegmentRef<BrokerType>, MaxSegments> segments {};
     hd_std::size_t num_segments { 0 };
 
     StreamPartitioningStrategy strategy { StreamPartitioningStrategy::SubDivide };
 
     bool empty() const { return num_segments == 0; }
 
-    const SegmentRef<BrokerType, DataAccessPtn>& segment(hd_std::size_t seg_no) const {
+    const SegmentRef<BrokerType>& segment(hd_std::size_t seg_no) const {
       return segments[seg_no];
     }
-    void set_segment(hd_std::size_t seg_no,
-                     SegmentRef<BrokerType, DataAccessPtn>& seg) {
+    void set_segment(hd_std::size_t seg_no, SegmentRef<BrokerType>& seg) {
       segments[seg_no] = seg;
     }
     void set_stream_broker(hd_std::size_t broker_no,
