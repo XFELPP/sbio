@@ -196,33 +196,35 @@ namespace sbio {
 
       std::uint32_t final_segment_indices[MaxSegments] {};
       if constexpr (FTraits::PartitioningStrategy != StreamPartitioningStrategy::Chronological) {
-        // Chronological streams are provided time-sorted already
-        // For the other case -- sort the indices by the "segment_no" to handle the
-        // possibility of missing segments but maintain the segment numbering where it
-        // is significant
-        std::uint32_t smallest { segments[0].segment_no };
-        for (std::size_t j = 0; j < num_segments; ++j) {
-          final_segment_indices[j] = j;
-          if (segments[j].segment_no < smallest) {
-            smallest = segments[j].segment_no;
-          }
-        }
-
-        for (std::size_t i = 0; i < num_segments - 1; ++i) {
-          std::uint32_t best { static_cast<std::uint32_t>(i) };
-          for (std::size_t j = i + 1; j < num_segments; ++j) {
-            std::uint32_t diff_best { segments[final_segment_indices[best]].segment_no - smallest };
-            std::uint32_t diff_j { segments[final_segment_indices[j]].segment_no - smallest };
-
-            if (diff_j < diff_best) {
-              best = j;
+        if (num_segments > 0) {
+          // Chronological streams are provided time-sorted already
+          // For the other case -- sort the indices by the "segment_no" to handle the
+          // possibility of missing segments but maintain the segment numbering where it
+          // is significant
+          std::uint32_t smallest { segments[0].segment_no };
+          for (std::size_t j = 0; j < num_segments; ++j) {
+            final_segment_indices[j] = j;
+            if (segments[j].segment_no < smallest) {
+              smallest = segments[j].segment_no;
             }
           }
 
-          if (best != i) {
-            std::uint32_t tmp { final_segment_indices[i] };
-            final_segment_indices[i] = final_segment_indices[best];
-            final_segment_indices[best] = tmp;
+          for (std::size_t i = 0; i < num_segments - 1; ++i) {
+            std::uint32_t best { static_cast<std::uint32_t>(i) };
+            for (std::size_t j = i + 1; j < num_segments; ++j) {
+              std::uint32_t diff_best { segments[final_segment_indices[best]].segment_no - smallest };
+              std::uint32_t diff_j { segments[final_segment_indices[j]].segment_no - smallest };
+
+              if (diff_j < diff_best) {
+                best = j;
+              }
+            }
+
+            if (best != i) {
+              std::uint32_t tmp { final_segment_indices[i] };
+              final_segment_indices[i] = final_segment_indices[best];
+              final_segment_indices[best] = tmp;
+            }
           }
         }
       } else {

@@ -50,6 +50,12 @@ namespace sbio {
 
     IOStatus connect(const char* path);
 
+#ifdef _WIN32
+    IOStatus connect(HANDLE h_file);
+#else
+    IOStatus connect(int fd);
+#endif
+
     IOStatus read(std::uint64_t offset, std::size_t size, void* dest);
 
   private:

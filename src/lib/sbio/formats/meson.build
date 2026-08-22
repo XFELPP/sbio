@@ -1,5 +1,6 @@
 subdir('xtc1')
 subdir('xtc2')
+subdir('random')
 
 installed_formats_headers = [
     'format_traits.hh',

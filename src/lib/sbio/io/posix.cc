@@ -28,6 +28,7 @@ typedef SSIZE_T ssize_t;
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -84,6 +85,30 @@ namespace sbio {
     m_file_size = fs::file_size(fs_path);
     return IOStatus::Success;
   }
+
+#ifdef _WIN32
+  IOStatus SyncPOSIXIO::connect(HANDLE h_file) {
+    m_file = h_file;
+
+    LARGE_INTEGER sz {};
+    if (::GetFileSize(h_file, &sz)) {
+      m_file_size = static_cast<std::size_t>(sz.QuadPart);
+    }
+
+    return IOStatus::Success;
+  }
+#else
+  IOStatus SyncPOSIXIO::connect(int fd) {
+    m_fd = fd;
+
+    struct stat st;
+    if (::fstat(fd, &st) == 0) {
+      m_file_size = st.st_size;
+    }
+
+    return IOStatus::Success;
+  }
+#endif // _WIN32
 
   IOStatus SyncPOSIXIO::read(std::uint64_t offset, std::size_t size, void* dest) {
 #ifdef _WIN32

@@ -108,6 +108,7 @@ sbio_as_wheel_opt = get_option('sbio_as_wheel')
 
 # Add-ons and development
 build_examples_opt = get_option('build_examples')
+build_tests_opt = get_option('build_tests')
 
 #### Parse CUDA architectures and set CUDA args ####
 ####################################################
@@ -184,10 +185,12 @@ endif
 ############################################
 sbio_build_xtc1 = false
 sbio_build_xtc2 = false
+sbio_build_sbiofmt = false
 
 if sbio_data_formats_opt == 'all'
     sbio_build_xtc1 = true
     sbio_build_xtc2 = true
+    sbio_build_sbiofmt = true
 else
     selected_formats = sbio_data_formats_opt.split(',')
     foreach data_fmt : selected_formats
@@ -196,6 +199,8 @@ else
             sbio_build_xtc1 = true
         elif data_fmt == 'xtc2'
             sbio_build_xtc2 = true
+        elif data_fmt == 'sbiofmt'
+            sbio_build_sbiofmt = true
         else
             warning('Provided unrecognized data format which will be skipped: ' + data_fmt)
         endif
@@ -214,6 +219,11 @@ if sbio_build_xtc2
     add_project_arguments('-DSBIO_HAS_XTC2', language: ['cpp', 'cuda'])
     message('Will build XTC2 data format support.')
     enabled_formats += ['xtc2']
+endif
+if sbio_build_sbiofmt
+    add_project_arguments('-DSBIO_HAS_SBIOFMT', language: ['cpp', 'cuda'])
+    message('Will build sbiofmt data format(s) support.')
+    enabled_formats += ['sbiofmt']
 endif
 
 sbio_enabled_formats = {
@@ -502,10 +512,14 @@ sbio_headers = include_directories('src/lib')
 subdir('src')
 
 # Build example programs
-# subdir('examples')
+if build_examples_opt
+    subdir('examples')
+endif
 
 # Build the test suite
-# subdir('tests')
+if build_tests_opt
+    subdir('tests')
+endif
 
 # Setup a pkgconfig file now after the build completed.
 pkg = import('pkgconfig')
@@ -530,6 +544,10 @@ if sbio_build_xtc2
     pc_libs += [libxtc2slim]
 endif
 
+if sbio_build_sbiofmt
+    pc_libs += [libsbiofmt]
+endif
+
 feature_flags = []
 if sbio_has_cuda
     feature_flags += ['-DSBIO_HAS_CUDA']
@@ -541,6 +559,10 @@ endif
 
 if sbio_build_xtc2
     feature_flags += ['-DSBIO_HAS_XTC2']
+endif
+
+if sbio_build_sbiofmt
+    feature_flags += ['-DSBIO_HAS_SBIOFMT']
 endif
 
 if get_variable('found_mpi', false)

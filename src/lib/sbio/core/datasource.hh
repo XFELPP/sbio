@@ -161,6 +161,7 @@ namespace sbio {
      */
     explicit DataSource(const EPolicyConfig& ecfg) {
       configure_execution_policy(ecfg);
+      m_epolicy_configured = true;
     }
 
     /**
@@ -173,6 +174,7 @@ namespace sbio {
      */
     inline void configure_execution_policy(const EPolicyConfig& ecfg) {
       EPolicy::configure(ecfg);
+      m_epolicy_configured = true;
     }
 
     /**
@@ -217,6 +219,12 @@ namespace sbio {
      * @returns The IOStatus result from performing metadata discovery.
      */
     SBIO_HD inline IOStatus discover_metadata() {
+      // If the EPolicy configuration did NOT already take place, make sure a reset
+      // happens here.
+      if (!m_epolicy_configured) {
+        EPolicy::configure(EPolicyConfig{}); // Use the default since none provided
+        m_epolicy_configured = true;
+      }
       std::size_t steps_capacity { std::numeric_limits<std::size_t>::lowest() };
       for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
         IOStatus status = m_data_streams[n_stream].prepare();
@@ -537,6 +545,16 @@ namespace sbio {
      * The current steps capacity before reindexing is required.
      */
     mutable std::size_t m_steps_capacity { 0 };
+    /**
+     * Flag to track whether the Execution policy has been configured.
+     *
+     * Since there may be global state in the policy, ensure that a configuration
+     * gets called. If its explicitly provided, then that gets used. Otherwise, a
+     * default configuration will be invoked before any IO. This allows any global
+     * state to be reset if iteratively creating multiple DataSource instantiations
+     * over time.
+     */
+    bool m_epolicy_configured { false };
   };
 } // namespace sbio
 

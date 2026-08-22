@@ -161,11 +161,11 @@ namespace sbio {
     { T::open_streams(streams, cfg) } -> std::convertible_to<IOStatus>;
   };
 
-  template <typename T>
-  concept CanDiscoverMetadata = requires(typename T::DataUnit* buf,
-                                         typename T::MetadataInventory& inv,
-                                         std::size_t offset) {
-    { T::discover_metadata(buf, inv, offset) } -> std::same_as<void>;
+  template <typename T, typename IO, typename StorageViewT>
+  concept CanDiscoverMetadata = requires(Stream<IO, T>* streams,
+                                         StorageViewT& storage,
+                                         typename T::MetadataInventory& inv) {
+    { T::discover_metadata(streams, storage, inv) } -> std::convertible_to<IOStatus>;
   };
 
   template <typename T>
@@ -362,7 +362,11 @@ namespace sbio {
       T,
       StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
     CanOpenStreams<T, IO>                                                           &&
-    CanDiscoverMetadata<T> && CanFindGroupSegments<T>                               &&
+    CanDiscoverMetadata<
+      T,
+      IO,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+    CanFindGroupSegments<T>                                                         &&
     CanFetchStreamData<
       T,
       IO,

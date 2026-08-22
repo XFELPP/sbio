@@ -18,6 +18,10 @@ if build_core_opt
         core_sources += ['formats/xtc2/xtc2_traits.cc']
     endif
 
+    if sbio_build_sbiofmt
+        core_sources += ['formats/random/random_traits.cc']
+    endif
+
     # There seems to be no possible way to have a soversion included in the
     # import lib .lib in Windows. This causes problems with delvewheel when trying
     # to package the import libs in Python wheels. Just remove it for Windows....
@@ -56,6 +60,10 @@ else
     if sbio_build_xtc2
         libxtc2slim = cpp.find_library('xtc2slim', required: true)
         found_libs += [libxtc2slim]
+    endif
+    if sbio_build_sbiofmt
+        libsbiofmt = cpp.find_library('sbiofmt', required: true)
+        found_libs += [libsbiofmt]
     endif
     sbio_dep = declare_dependency(
         dependencies: deps_for_sbio + found_libs,

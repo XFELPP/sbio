@@ -73,6 +73,11 @@ namespace sbio {
 
     static void configure_impl(const Config& config) {
       m_num_threads = config.num_threads;
+
+      // Reset collective state
+      m_shared_capacity.store(0, std::memory_order_release);
+      m_event_idx.store(0, std::memory_order_release);
+      m_exhausted.store(false, std::memory_order_release);
     }
 
     /**
@@ -257,72 +262,65 @@ namespace sbio {
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static std::atomic<typename FTraits::StepIdxType> event_idx { 0 };
-
-      static std::mutex trigger_mutex;
-
-      static std::atomic<typename FTraits::StepIdxType> shared_capacity { 0 };
-      static std::atomic<bool> exhausted { false };
-
-      typename FTraits::StepIdxType current { event_idx.load(std::memory_order_acquire) };
+      typename FTraits::StepIdxType current { m_event_idx.load(std::memory_order_acquire) };
 
       while (true) {
-        if (exhausted.load(std::memory_order_acquire)) {
+        if (m_exhausted.load(std::memory_order_acquire)) {
           m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
                           "shared_cap = {}, max_cap = {}, event_idx = {}",
                           std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          shared_capacity.load(),
+                          m_shared_capacity.load(),
                           max_capacity,
-                          event_idx.load());
+                          m_event_idx.load());
           return FTraits::ExhaustedSentinel;
         }
 
         typename FTraits::StepIdxType current_cap =
-          shared_capacity.load(std::memory_order_acquire);
+          m_shared_capacity.load(std::memory_order_acquire);
 
         if (current >= current_cap) {
-          std::lock_guard<std::mutex> lock(trigger_mutex);
+          std::lock_guard<std::mutex> lock(m_trigger_mutex);
 
-          if (exhausted.load(std::memory_order_acquire)) {
+          if (m_exhausted.load(std::memory_order_acquire)) {
             m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
                             "shared_cap = {}, max_cap = {}, event_idx = {}",
                             std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            shared_capacity.load(),
+                            m_shared_capacity.load(),
                             max_capacity,
-                            event_idx.load());
+                            m_event_idx.load());
             return FTraits::ExhaustedSentinel;
           }
 
-          if (shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
-            shared_capacity.store(max_capacity, std::memory_order_release);
+          if (m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            m_shared_capacity.store(max_capacity, std::memory_order_release);
           }
 
-          current = event_idx.load(std::memory_order_acquire);
-          current_cap = shared_capacity.load(std::memory_order_relaxed);
+          current = m_event_idx.load(std::memory_order_acquire);
+          current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (current >= current_cap) {
             if (!trigger()) {
-              exhausted.store(true, std::memory_order_release);
+              m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Thread {}] Trigger returned exhausted: "
                               "shared_cap = {}, max_cap = {}, event_idx = {}",
                               std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              shared_capacity.load(),
+                              m_shared_capacity.load(),
                               max_capacity,
-                              event_idx.load());
+                              m_event_idx.load());
               return FTraits::ExhaustedSentinel;
             }
 
-            shared_capacity.store(max_capacity, std::memory_order_release);
+            m_shared_capacity.store(max_capacity, std::memory_order_release);
             current_cap = max_capacity;
           }
         }
 
         while (current < current_cap) {
-          if (event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
+          if (m_event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
             return current;
           }
 
-          current_cap = shared_capacity.load(std::memory_order_acquire);
+          current_cap = m_shared_capacity.load(std::memory_order_acquire);
         }
 
         // Do NOT return exhausted here. The trigger must be entered in a coordinated
@@ -332,6 +330,14 @@ namespace sbio {
 
   private:
     static inline std::size_t m_num_threads { 0 };
+
+    static inline std::atomic<std::size_t> m_event_idx { 0 };
+
+    static inline std::mutex m_trigger_mutex;
+
+    static inline std::atomic<std::size_t> m_shared_capacity { 0 };
+
+    static inline std::atomic<bool> m_exhausted { false };
 
     /**
      * Set of mutexes to allow different brokers of a group from different threads
