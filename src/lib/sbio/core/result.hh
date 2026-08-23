@@ -102,7 +102,7 @@ namespace sbio {
     hd_std::array<hd_std::uint32_t, SBIO_MAX_NDIM> segment_shape {};
     ncarray::DType dtype { ncarray::DType::uint8 };
 
-    SBIO_HD inline ncarray::SOViewFor<MemTag> as_ncarray() const {
+    SBIO_HD inline ncarray::SOViewFor<MemTag> to_array() const {
       hd_std::uint16_t composite_rank { segment_rank + 1 };
 
       ncarray::Metadata meta_shape;

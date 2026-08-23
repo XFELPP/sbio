@@ -434,7 +434,7 @@ namespace sbio {
         ref_res.shape,
         ref_res.dtype
       };
-      return composite.as_ncarray();
+      return composite.to_array();
     }
 
     /**
@@ -534,7 +534,7 @@ namespace sbio {
         ref_res.dtype
       };
 
-      return composite.as_ncarray();
+      return composite.to_array();
     }
 
     template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
@@ -622,7 +622,7 @@ namespace sbio {
         ref_res.dtype
       };
 
-      return composite.as_ncarray();
+      return composite.to_array();
     }
 
     template <typename MemTag = ncarray::HostTag, typename... Args>
@@ -703,7 +703,7 @@ namespace sbio {
         ref_res.dtype
       };
 
-      return composite.as_ncarray();
+      return composite.to_array();
     }
 
 

@@ -75,14 +75,6 @@ namespace sbio {
   }; // namespace impl
 
   template <typename T>
-  concept CanBuildTopology = requires(const typename T::MetadataInventory& inv,
-                                      const char* name,
-                                      impl::PlaceholderBroker* brokers,
-                                      std::size_t num_brokers) {
-    { T::build_group_topology(inv, name, brokers, num_brokers) };
-  };
-
-  template <typename T>
   concept CanFindAndConfigureStreams = requires(impl::PlaceholderDataSource& ds,
                                                 const typename T::DataSourceParameters& spec,
                                                 typename T::StreamParameters& cfg) {
