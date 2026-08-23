@@ -22,6 +22,7 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -30,6 +31,7 @@
 #include "sbio/formats/format_traits.hh"
 
 #include <concepts>
+#include <cstdint>
 #include <initializer_list>
 #include <utility> // std::forward
 
@@ -54,7 +56,7 @@ namespace sbio {
     { broker.open_data_stream() } -> std::convertible_to<IOStatus>;
     { broker.discover_metadata() } -> std::convertible_to<IOStatus>;
     { broker.fetch_step(step_idx, ptn) } -> std::convertible_to<IOStatus>;
-    { broker.get_data_in_buffer(req, ptn) } -> std::convertible_to<typename T::DataResult>;
+    { broker.get_data_in_buffer(req, ptn) } -> std::convertible_to<DataResult>;
     { broker.process() } -> std::convertible_to<IOStatus>;
     { broker.capacity() } -> std::convertible_to<std::size_t>;
     { broker.sync_vars() };
@@ -177,10 +179,6 @@ namespace sbio {
      * The type of a request object used to query for data.
      */
     using DataRequest = typename FTraits::DataRequest;
-    /**
-     * The type of a result object received as a response when querying for data.
-     */
-    using DataResult = typename FTraits::DataResult;
     /**
      * The type used to request a specific step from the Stream.
      *
@@ -646,6 +644,9 @@ namespace sbio {
     }
 
     ~StreamBroker() = default;
+
+    // TODO: Needs to implement some sortable index (mostly for Chronological mode)
+    SBIO_HD std::uint32_t stream_idx() const { return 0; }
 
   protected:
     StreamType m_streams[StreamCount];

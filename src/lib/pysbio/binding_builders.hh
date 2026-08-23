@@ -23,6 +23,7 @@
 #include "pysbio/formats/pyformat_traits.hh"
 
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
@@ -107,7 +108,7 @@ namespace pysbio::impl {
              // explicitly... I don't know an elegant way atm to handle the
              // forwarding otherwise.
 
-             using DataResult = typename BrokerGroupT::DataResult;
+             using DataResult = sbio::DataResult;
 
              auto cpp_cb = [&](DataResult res) {
                py::gil_scoped_acquire acquire;
@@ -161,7 +162,7 @@ namespace pysbio::impl {
              // explicitly... I don't know an elegant way atm to handle the
              // forwarding otherwise.
 
-             using DataResult = typename BrokerGroupT::DataResult;
+             using DataResult = typename sbio::DataResult;
 
              auto cpp_cb = [&](DataResult res) {
                py::gil_scoped_acquire acquire;

@@ -23,6 +23,7 @@
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/random/randfmt.hh"
 
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/sync.hh"
@@ -37,6 +38,7 @@
 #include <cuda/std/cstddef>
 #include <cuda/std/cstdint>
 #include <cuda/std/cstring>
+#include <cuda/std/utility>
 
 namespace hd_std = cuda::std;
 
@@ -49,6 +51,7 @@ namespace hd_std = cuda::std;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 namespace hd_std = std;
 
@@ -131,6 +134,7 @@ namespace sbio {
 
         for (hd_std::size_t s = 0; s < streams_per_det; ++s) {
           int cnt = snprintf(name_buf, MaxNameSize, "sbio_random_stream_%zu", nstream);
+          (void)cnt;
 
           StreamParameters stream_cfg { base_cfg };
 
@@ -255,38 +259,24 @@ namespace sbio {
                                 hd_std::uint16_t rank_,
                                 const hd_std::uint32_t* shape_,
                                 ncarray::DType dtype);
-    };
 
-    struct DataResult {
-      const void* data;
-      hd_std::size_t size;
-      hd_std::uint16_t rank;
-      hd_std::uint32_t shape[MaxRank];
-      ncarray::DType dtype;
-    };
-
-    template <class DataBrokerType, class SegmentRef>
-    SBIO_HD static std::size_t find_group_segments(const MetadataInventory& inv,
-                                                   const char* name,
-                                                   SegmentRef* ref_out,
-                                                   std::size_t max_out,
-                                                   DataBrokerType* broker,
-                                                   char* dettype = nullptr,
-                                                   DataAccessPtn ptn = DataAccessPtn::Default) {
-      hd_std::size_t matched { 0 };
-      for (hd_std::size_t i = 0; i < inv.count && matched < max_out; ++i) {
-        if (hd_std::strcmp(inv.entries[i].name, name) == 0 || std::strcmp(name, "*") == 0) {
-          if (dettype != nullptr) {
-            safe_strncpy(dettype, inv.entries[i].type, MaxNameSize);
-          }
-
-          ref_out[matched] = SegmentRef { broker, i };
-          matched++;
+      SBIO_HD inline bool entry_matches(hd_std::size_t entry_no,
+                                        const char* name_query,
+                                        DataAccessPtn ptn) const {
+        if (entry_no >= count) {
+          return false;
         }
+
+        return (hd_std::strcmp(entries[entry_no].name, name_query) == 0);
       }
 
-      return matched;
-    }
+      SBIO_HD inline auto metadata_for(hd_std::size_t entry_no) const {
+        return hd_std::make_pair(entries[entry_no].type,
+                                 static_cast<hd_std::uint32_t>(entry_no));
+      }
+
+      SBIO_HD inline hd_std::size_t num_entries() const { return count; }
+    };
 
     SBIO_HD static AllocationRequest<RandomTraits> get_allocation_request(StreamParameters& cfg) {
       AllocationRequest<RandomTraits> request;
@@ -330,7 +320,6 @@ namespace sbio {
                                               MetadataInventory& inv) {
       auto* buf =
         storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-      hd_std::size_t buf_size { storage.template size<MetadataRole>() };
 
       IOStatus status = streams[Data].read_one(buf,
                                                storage.template size<MetadataRole>());

@@ -21,9 +21,11 @@
 #define SBIO_FORMATS_FORMAT_TRAITS_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
+#include "sbio/core/types.hh"
 
 #include <concepts>
 #include <cstdint>
@@ -37,29 +39,6 @@
 #endif
 
 namespace sbio {
-  /**
-   * @brief Indicates the strategy used to partition data across streams.
-   *
-   * When partitioning data from a single "logical unit" across multiple data streams
-   * written over time, one can imagine two basic strategies:
-   *  1. At each point in time, the logical unit is sub-divided and a portion
-   *     is written to each data stream.
-   *  2. At each point in time, the entire logical unit is written to one stream,
-   *     and then the data is round-robined (or via some other selection mechanism
-   *     distributed) across the other streams.
-   * - SubDivide indicates the format uses strategy 1.
-   * - Chronological indicates the format uses strategy 2.
-   */
-  enum class StreamPartitioningStrategy : std::uint8_t {
-    SubDivide = 0,
-    Chronological = 1
-  };
-
-  enum class StreamSentinels : std::uint8_t {
-    RequestExhausted = 0, ///< All data units from this read request were read
-    StreamExhausted = 1   ///< The stream is entirely exhausted (no more data)
-  };
-
   /**
    * Base class tag for a data-format implementation.
    *
@@ -164,25 +143,17 @@ namespace sbio {
   template <typename T, typename IO, typename StorageViewT>
   concept CanDiscoverMetadata = requires(Stream<IO, T>* streams,
                                          StorageViewT& storage,
-                                         typename T::MetadataInventory& inv) {
+                                         typename T::MetadataInventory& inv,
+                                         std::size_t entry_no,
+                                         const char* name,
+                                         typename T::DataAccessPtn ptn) {
     { T::discover_metadata(streams, storage, inv) } -> std::convertible_to<IOStatus>;
-  };
 
-  template <typename T>
-  concept CanFindGroupSegments = requires(const typename T::MetadataInventory& inv,
-                                          const char* name,
-                                          impl::PlaceholderSegmentRef* ref_out,
-                                          std::size_t max_out,
-                                          impl::PlaceholderBroker* broker,
-                                          char* dettype,
-                                          typename T::DataAccessPtn ptn) {
-    { T::find_group_segments(inv,
-                             name,
-                             ref_out,
-                             max_out,
-                             broker,
-                             dettype,
-                             ptn) } -> std::convertible_to<std::size_t>;
+    // The inventory also exposes the following interface to allow Topology and Group
+    // formation
+    { inv.entry_matches(entry_no, name, ptn) } -> std::same_as<bool>;
+    { inv.metadata_for(entry_no) } -> std::convertible_to<std::pair<const char*, std::uint32_t>>;
+    { inv.num_entries() } -> std::same_as<std::size_t>;
   };
 
   template <typename T, typename IO, typename StorageViewT>
@@ -207,9 +178,8 @@ namespace sbio {
   concept CanResolveData = requires(void* buf,
                                     const typename T::MetadataInventory& inv,
                                     const typename T::DataRequest& req) {
-    // Defines a struct for the result of data resolution requests
-    typename T::DataResult;
-    { T::resolve_data(buf, inv, req) } -> std::same_as<typename T::DataResult>;
+    // Can resolve data into a sbio DataResult
+    { T::resolve_data(buf, inv, req) } -> std::same_as<DataResult>;
 
     // Can give the total size of the retrieved data
     { T::get_payload_size(buf) } -> std::convertible_to<std::size_t>;
@@ -221,7 +191,7 @@ namespace sbio {
                                    const typename T::DataRequest& req,
                                    typename T::DataAccessPtn ptn,
                                    std::size_t batch_idx) {
-    { T::get_data_in_buffer(storage, inv, req, ptn, batch_idx) } -> std::convertible_to<typename T::DataResult>;
+    { T::get_data_in_buffer(storage, inv, req, ptn, batch_idx) } -> std::convertible_to<DataResult>;
   };
 
   template <typename T>
@@ -299,21 +269,20 @@ namespace sbio {
    *   template <IOTraits IO>
    *   static IOStatus open_streams(Stream<IO, T>* streams, const StreamParameters& cfg);
    *
-   *   // CanDiscoverMetadata && CanFindGroupSegments
+   *   // CanDiscoverMetadata
    *   // -------------------------------------------
    *   template <IOTraits IO, class StorageViewT>
    *   static IOStatus discover_metadata(Stream<IO, T>* streams,
    *                                     StorageViewT& storage,
    *                                     MetadataInventory& inv);
    *
-   *    template <class DataBrokerType, class SegmentRef>
-   *    static std::size_t find_group_segments(const MetadataInventory& inv,
-   *                                           const char* name,
-   *                                           SegmentRef* ref_out,
-   *                                           std::size_t max_out,
-   *                                           DataBrokerType* broker,
-   *                                           char* grouptype = nullptr,
-   *                                           DataAccessPtn ptn = DataAccessPtn::L1Accept);
+   *    // After discovery of metadata, the inventory interface below allows
+   *    // building topologies and groups.
+   *    bool entry_matches(std::size_t entry_no,
+   *                       const char* name_query,
+   *                       DataAccessPtn ptn) const;
+   *    std::pair<const char*, std::uint32_t> metadata_for(std::size_t entry_no) const;
+   *    std::size_t MetadataInventory::num_entries() const;
    *
    *   // CanIndexStreams  [[ OPTIONAL ]]
    *   // ---------------
@@ -366,7 +335,6 @@ namespace sbio {
       T,
       IO,
       StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
-    CanFindGroupSegments<T>                                                         &&
     CanFetchStreamData<
       T,
       IO,

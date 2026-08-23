@@ -5,12 +5,14 @@ installed_core_headers = [
     'datasource.hh',
     'execution.hh',
     'io.hh',
+    'result.hh',
     'storage.hh',
     'storage_view.hh',
     'stream.hh',
     'sync.hh',
+    'topology.hh',
     'transaction.hh',
-    'utility.hh',
+    'types.hh',
 ]
 
 if not sbio_as_wheel_opt and build_core_opt

@@ -24,6 +24,7 @@
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/formats/format_traits.hh"
@@ -140,10 +141,6 @@ namespace sbio {
      * The type of a request object used to query for data.
      */
     using DataRequest = typename FTraits::DataRequest;
-    /**
-     * The type of a result object received as a response when querying for data.
-     */
-    using DataResult = typename FTraits::DataResult;
     /**
      * The type used to request a specific step from the Stream.
      *
@@ -319,101 +316,12 @@ namespace sbio {
     template <std::size_t MaxSegments = 128>
     SBIO_HD inline BrokerGroup<BrokerType, FTraits, MaxSegments>
     get_stream_group(const char* name) {
-      using BrokerGroupType = BrokerGroup<BrokerType, FTraits, MaxSegments>;
-      typename BrokerGroupType::DataSegmentRef segments[MaxSegments] {};
+      using GroupTopologyType = GroupTopology<BrokerType, MaxSegments>;
 
-      std::uint32_t stream_indices[MaxSegments] {};
+      auto topo =
+        GroupTopologyType::build_topology(name, m_data_streams, m_num_data_streams);
 
-      std::size_t n_streams_found { 0 };
-
-      // File formats may have various logical groupings of the data streams, which
-      // in turn may require different lookup procedures. The pass loop tests them
-      // in turn, as just given a name, it cannot be known which access pattern is needed.
-      char final_type[FTraits::MaxNameSize] = "unknown";
-      for (std::size_t pass = 0; pass < FTraits::DataAccessPtnCount; ++pass) {
-        auto ptn = static_cast<typename FTraits::DataAccessPtn>(pass);
-        for (std::size_t i = 0; i < m_num_data_streams && n_streams_found < MaxSegments; ++i) {
-          char dettype[FTraits::MaxNameSize] = "unknown";
-          n_streams_found += FTraits::find_group_segments(m_data_streams[i].metadata(),
-                                                          name,
-                                                          &segments[n_streams_found],
-                                                          MaxSegments - n_streams_found,
-                                                          &m_data_streams[i],
-                                                          dettype,
-                                                          ptn);
-
-          if constexpr (FTraits::PartitioningStrategy ==
-                        StreamPartitioningStrategy::Chronological) {
-            // In this case there will be 1 per stream, so on each iteration
-            // collect the appropriate stream_idx to sort.
-            stream_indices[n_streams_found - 1] =
-              segments[n_streams_found - 1].broker->stream_idx();
-          }
-
-          if (std::strcmp(dettype, "unknown") != 0) {
-            std::strcpy(final_type, dettype);
-          }
-        }
-        // TODO: FIX SEARCH TO AVOID NAME COLLISIONS (E.G. "jungfrau" and PVs..)
-        if (n_streams_found >= MaxSegments) {
-          break;
-        }
-      }
-
-      std::size_t num_segments { n_streams_found };
-
-      // Some file formats will divide the data chronologically across streams
-      // instead of sub-dividing a single logical unit for each time point. (e.g. XTC1)
-      // The exposed stream_idx() returns a value that can be used to order the
-      // the streams then. Use this to attach the correct ordering to the segment_no.
-      // stream(s). The traits indicate whether they should forcibly be sequenced.
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        if (num_segments > 0) {
-          std::uint32_t final_stream_indices[MaxSegments] {};
-          std::uint32_t smallest { stream_indices[0] };
-          for (std::size_t j = 0; j < num_segments; ++j) {
-            final_stream_indices[j] = j;
-            if (stream_indices[j] < smallest) {
-              smallest = stream_indices[j];
-            }
-          }
-
-          // Sort with a circular wrapping accounted for in the fiducial.
-          for (std::size_t i = 0; i < num_segments - 1; ++i) {
-            std::uint32_t best { static_cast<std::uint32_t>(i) };
-            for (std::size_t j = i + 1; j < num_segments; ++j) {
-              std::uint32_t diff_best { stream_indices[final_stream_indices[best]] - smallest };
-              std::uint32_t diff_j { stream_indices[final_stream_indices[j]] - smallest };
-
-              if (diff_j < diff_best) {
-                best = j;
-              }
-            }
-
-            if (best != i) {
-              std::uint32_t tmp { final_stream_indices[i] };
-              final_stream_indices[i] = final_stream_indices[best];
-              final_stream_indices[best] = tmp;
-            }
-          }
-
-          // Use the sorted stream indices as the "segment"
-          // The broker will know that Chronological partitioning requires a different
-          // interpretation of the segment numbering
-          typename BrokerGroupType::DataSegmentRef sorted_segments[MaxSegments] {};
-          for (std::size_t j = 0; j < num_segments; ++j) {
-            sorted_segments[j] = segments[final_stream_indices[j]];
-            sorted_segments[j].segment_no = 0;
-            // segments[j].segment_no = final_stream_indices[j];
-          }
-
-          return BrokerGroupType(name, final_type, num_segments, sorted_segments);
-        } else {
-          return BrokerGroupType(name, final_type, num_segments, segments);
-        }
-      } else {
-        return BrokerGroupType(name, final_type, num_segments, segments);
-      }
+      return BrokerGroup<BrokerType, FTraits, MaxSegments>(topo);
     }
 
     /**

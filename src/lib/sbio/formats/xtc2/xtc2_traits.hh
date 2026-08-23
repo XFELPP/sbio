@@ -49,6 +49,7 @@ typedef SSIZE_T ssize_t;
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -241,30 +242,6 @@ namespace sbio {
      * a datagram for a combination of (Detector, Algorithm, Field)
      */
     struct SBIO_API MetadataInventory;
-
-    /**
-     * The struct to be used to return results when data is requested.
-     * This is defined in the XTC2 namespace and aliased here.
-     * It has the structure:
-     * struct DataResult {
-     *   const void* data;           ///< Pointer to the raw data
-     *   std::size_t size;           ///< Total bytes of payload
-     *   std::uint16_t rank;         ///< Rank of data (num dimensions)
-     *   const std::uint32_t* shape; ///< Shape of the data
-     *   XTC2::DType dtype;          ///< Data type
-     * };
-     */
-    using DataResult = typename XTC2::DataResult;
-
-    // Defined at end of the header, after MetadataInventory is completed
-    template <class DataBrokerType, class SegmentRef>
-    SBIO_HD static std::size_t find_group_segments(const MetadataInventory& inv,
-                                                   const char* name,
-                                                   SegmentRef* ref_out,
-                                                   std::size_t max_out,
-                                                   DataBrokerType* broker,
-                                                   char* dettype = nullptr,
-                                                   DataAccessPtn ptn = DataAccessPtn::L1Accept);
 
     SBIO_HD static inline std::size_t get_payload_size(void* buf) {
       return reinterpret_cast<XTC2::Dgram*>(buf)->xtc.sizeofPayload();
@@ -666,7 +643,6 @@ namespace sbio {
       return IOStatus::GeneralIOError;
     }
 
-
     template <class StorageViewT>
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
                                                  const MetadataInventory& inv,
@@ -904,100 +880,49 @@ namespace sbio {
     SBIO_HD std::uint32_t resolve_names_id(const DataRequest& req) const;
 
     SBIO_HD std::uint32_t resolve_field_idx(std::uint32_t nid, const char* field) const;
-  };
 
-  template <class DataBrokerType, class SegmentRef>
-  SBIO_HD inline std::size_t XTC2Traits::find_group_segments(const XTC2Traits::MetadataInventory& inv,
-                                                             const char* name,
-                                                             SegmentRef* ref_out,
-                                                             std::size_t max_out,
-                                                             DataBrokerType* broker,
-                                                             char* dettype,
-                                                             XTC2Traits::DataAccessPtn ptn) {
-    std::size_t n_found { 0 };
+    SBIO_HD inline bool entry_matches(std::size_t entry_no,
+                                      const char* name_query,
+                                      DataAccessPtn ptn) const {
+      if (entry_no >= m_names_id_count) {
+        return false;
+      }
 
-    if (ptn == DataAccessPtn::L1Accept) {
-      for (std::size_t i = 0; i < inv.m_names_id_count && n_found < max_out; ++i) {
-        if (std::strcmp(inv.m_names_id_table[i].key.detname, name) == 0) {
-          std::uint32_t segment_no = inv.m_names_id_table[i].key.segment;
+      const auto& entry { m_names_id_table[entry_no] };
 
-          // If the detector has multiple algorithms it will appear various times
-          // So don't record it again
-          bool duplicate { false };
-          for (std::size_t j = 0; j < n_found; ++j) {
-            if (ref_out[j].segment_no == segment_no) {
-              duplicate = true;
-              break;
-            }
-          }
-
-          if (!duplicate) {
-            ref_out[n_found++] = {
-              broker,
-              segment_no,
-              ptn
-            };
-
-            // If provided, populate the detector type as well
-            const char* dettype_ = inv.m_names_id_table[i].key.dettype;
-            std::size_t k { 0 };
-
-            for (; k < XTC2Traits::MaxNameSize - 1 &&  dettype_[k] != '\0'; ++k) {
-              dettype[k] = dettype_[k];
-            }
-            dettype[k] = '\0';
-          }
+      if (ptn == DataAccessPtn::L1Accept) {
+        return hd_std::strcmp(entry.key.detname, name_query) == 0;
+      } else if (ptn == DataAccessPtn::SlowUpdate) {
+        // All EPICS (ie EPICSArch) detectors are under the `epics` name
+        // So check if there is a field under that detector for a semantic lookup
+        if (hd_std::strcmp(entry.key.detname, "epics") == 0) {
+          return resolve_field_idx(entry.names_id, name_query) != 0xFFFFFFFF;
         }
-      }
-
-      if (n_found > 0) {
-        return n_found;
-      }
-    } else if (ptn == DataAccessPtn::SlowUpdate) {
-      // Continue on to check for EPICS detectors
-      // All EPICS (ie EPICSArch) detectors are under the `epics` name
-      for (std::size_t i = 0; i < inv.m_names_id_count && n_found < max_out; ++i) {
-        if (std::strcmp(inv.m_names_id_table[i].key.detname, "epics") == 0) {
-          std::uint32_t nid = inv.m_names_id_table[i].names_id;
-          if (inv.resolve_field_idx(nid, name) != 0xFFFFFFFF) {
-            ref_out[n_found++] = {
-              broker,
-              inv.m_names_id_table[i].key.segment,
-              DataAccessPtn::SlowUpdate
-            };
-          }
-        }
-      }
-
-      if (n_found > 0) {
-        return n_found;
-      }
-    } else {
-      // NOTE: The `scan` detector behaves much like the normal detectors, but
-      // has the data in BeginStep buffers, instead of L1Accept buffers.
-      // It can always be access via `scan` detector above. However, for a syntactic
-      // sugar, like with EPICS above, we'll allow detectors to be created based on
-      // the scan variable name directly.
-      // Normally, the scan will have a single algorithm, with these fields:
-      // - `step_value`     : INT64
-      // - `step_docstring` : CHARSTR, optional (but usually present)
-      // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
-      // So we'll match the scan_var_names as we did above with EPICS
-      for (std::size_t i = 0; i < inv.m_names_id_count && n_found < max_out; ++i) {
-        if (std::strcmp(inv.m_names_id_table[i].key.detname, "scan") == 0) {
-          std::uint32_t nid = inv.m_names_id_table[i].names_id;
-          if (inv.resolve_field_idx(nid, name) != 0xFFFFFFFF) {
-            ref_out[n_found++] = {
-              broker,
-              inv.m_names_id_table[i].key.segment,
-              DataAccessPtn::BeginStep
-            };
-          }
+      } else if (ptn == DataAccessPtn::BeginStep) {
+        // NOTE: The `scan` detector behaves much like the normal detectors, but
+        // has the data in BeginStep buffers, instead of L1Accept buffers.
+        // It can always be access via `scan` detector above. However, for a syntactic
+        // sugar, like with EPICS above, we'll allow detectors to be created based on
+        // the scan variable name directly.
+        // Normally, the scan will have a single algorithm, with these fields:
+        // - `step_value`     : INT64
+        // - `step_docstring` : CHARSTR, optional (but usually present)
+        // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
+        // So we'll match the scan_var_names as we did above with EPICS
+        if (hd_std::strcmp(entry.key.detname, "scan") == 0) {
+          return resolve_field_idx(entry.names_id, name_query) != 0xFFFFFFFF;
         }
       }
     }
-    return n_found;
-  }
+
+    SBIO_HD inline auto metadata_for(std::size_t entry_no) const {
+      const auto& entry { m_names_id_table[entry_no] };
+
+      return std::make_pair(entry.key.dettype, entry.key.segment);
+    }
+
+    SBIO_HD std::size_t num_entries() const { return m_names_id_count; }
+  };
 } // namespace sbio
 
 #endif // SBIO_FORMATS_XTC2_XTC2_TRAITS_HH
