@@ -40,6 +40,7 @@ endif # build_core_opt
 installed_formats_xtc2_headers = [
     'traversal.hh',
     'xtc2.hh',
+    'xtc2_locator.hh',
     'xtc2_traits.hh',
 ]
 

@@ -27,6 +27,7 @@
 #include "sbio/formats/format_traits.hh"
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
+#include "sbio/locators/path_pattern.hh"
 #include "sbio/util/string.hh"
 
 #ifndef SBIO_HD
@@ -55,6 +56,8 @@ namespace fs = std::filesystem;
 
 namespace sbio {
   struct SBIO_API XTC2Traits : public BaseTraits {
+    using DefaultLocator = PathPatternLocator;
+
     // Sizeof dgram header
     // 4 bytes + 4 bytes + 4 bytes + sizeof(Xtc)
     // Xtc: 4 bytes (src) + 2 bytes (damage) + 2 (TypeId) + 4 bytes extent

@@ -20,7 +20,6 @@
 #ifndef SBIO_FORMATS_RANDOM_RANDOM_TRAITS_HH
 #define SBIO_FORMATS_RANDOM_RANDOM_TRAITS_HH
 
-#include "sbio/formats/format_traits.hh"
 #include "sbio/formats/random/randfmt.hh"
 
 #include "sbio/core/result.hh"
@@ -29,6 +28,7 @@
 #include "sbio/core/sync.hh"
 #include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
+#include "sbio/locators/custom_lambda.hh"
 #include "sbio/util/string.hh"
 
 #include <ncarray/ncarrays.hh>
@@ -69,6 +69,8 @@ namespace hd_std = std;
 
 namespace sbio {
   struct SBIO_API RandomTraits : public BaseTraits {
+    using DefaultLocator = CustomLambdaLocator;
+
     static constexpr hd_std::size_t HeaderSize { sizeof(randfmt::Header) };
     static constexpr hd_std::uint16_t MaxRank { 5 };
     static constexpr hd_std::uint16_t MaxNameSize { 64 };

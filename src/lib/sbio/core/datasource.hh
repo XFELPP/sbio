@@ -24,6 +24,7 @@
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/locator.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
@@ -204,6 +205,24 @@ namespace sbio {
       auto ds_params = typename FTraits::DataSourceParameters(std::forward<Args>(args)...);
 
       return FTraits::make_stream_brokers(*this, ds_params, base_cfg);
+    }
+
+    template <typename... Args>
+    bool load_source(const StreamConfig& base_cfg, Args&&... args) {
+      using Locator = typename FTraits::DefaultLocator;
+      auto locator_params {
+        typename Locator::template LocatorParameters<DataFormat>(std::forward<Args>(args)...)
+      };
+
+      return Locator::find_streams(*this, locator_params, base_cfg);
+    }
+
+    template <IsLocator<DataSource> Locator, typename... Args>
+    bool load_source_with(const StreamConfig& base_cfg, Args&&... args) {
+      using LocatorParams = typename Locator::template LocatorParameters<DataFormat>;
+      auto locator_params { LocatorParams(std::forward<Args>(args)...) };
+
+      return Locator::find_streams(*this, locator_params, base_cfg);
     }
 
     /**
