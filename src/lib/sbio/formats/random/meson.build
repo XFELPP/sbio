@@ -38,6 +38,7 @@ endif # build_core_opt
 
 installed_formats_randfmt_headers = [
     'randfmt.hh',
+    'random_locator.hh',
     'random_traits.hh',
 ]
 

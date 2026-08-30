@@ -19,8 +19,11 @@
 
 #include "sbio/core/datasource.hh"
 #include "sbio/execution/serial.hh"
+#include "sbio/formats/random/randfmt.hh"
+#include "sbio/formats/random/random_locator.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/io/posix.hh"
+#include "sbio/locators/custom_lambda.hh"
 
 #include <gtest/gtest.h>
 #include <ncarray/ncarrays.hh>
@@ -47,28 +50,29 @@ protected:
 
 TEST_F(BrokerGroupTest, WildcardDetectorMatching) {
   RandomDataSource ds;
-  sbio::RandomTraits::DataSourceParameters ds_params;
-  ds_params.num_detectors = 2;
-  snprintf(ds_params.detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
-  snprintf(ds_params.detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det0");
-  ds_params.detectors[0].rank = 2;
-  ds_params.detectors[0].shape[0] = 16;
-  ds_params.detectors[0].shape[1] = 16;
-  ds_params.detectors[0].dtype = ncarray::DType::uint8;
+  sbio::randfmt::DetectorSpec detectors[10];
+  std::uint8_t num_detectors { 2 };
 
-  snprintf(ds_params.detectors[1].name, sbio::RandomTraits::MaxNameSize, "det1");
-  snprintf(ds_params.detectors[1].type, sbio::RandomTraits::MaxNameSize, "test_det1");
-  ds_params.detectors[1].rank = 2;
-  ds_params.detectors[1].shape[0] = 16;
-  ds_params.detectors[1].shape[1] = 16;
-  ds_params.detectors[1].dtype = ncarray::DType::uint8;
+  snprintf(detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
+  snprintf(detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det0");
+  detectors[0].rank = 2;
+  detectors[0].shape[0] = 16;
+  detectors[0].shape[1] = 16;
+  detectors[0].dtype = ncarray::DType::uint8;
+
+  snprintf(detectors[1].name, sbio::RandomTraits::MaxNameSize, "det1");
+  snprintf(detectors[1].type, sbio::RandomTraits::MaxNameSize, "test_det1");
+  detectors[1].rank = 2;
+  detectors[1].shape[0] = 16;
+  detectors[1].shape[1] = 16;
+  detectors[1].dtype = ncarray::DType::uint8;
 
   sbio::RandomTraits::StreamParameters base_cfg;
   base_cfg.num_events = 10;
   base_cfg.pattern_type = 2;
   base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
 
-  ASSERT_TRUE(ds.load_run(base_cfg, ds_params));
+  ASSERT_TRUE(ds.load_source_with<sbio::CustomLambdaLocator>(base_cfg, detectors, num_detectors));
   ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
 
   // Wildcard match '*'

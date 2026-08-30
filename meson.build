@@ -423,22 +423,14 @@ if build_python_opt
     endif # pybind11 not found
 endif
 
-if host_machine.system() == 'darwin'
-    # macOS CI is the worst. Fails in all psosible configurations
-    # BUILD ONLY WITH SUBPROJECT, STATIC ONLY, DONT ALLOW ANYTHING TO BE PULLED BY HOMEBREW
-    fmt_proj = subproject('fmt', default_options: ['default_library=static'])
-    fmt_dep = fmt_proj.get_variable('fmt_dep')
-    deps_for_sbio += fmt_dep
-    spdlog_proj = subproject('spdlog', default_options: ['default_library=static'])
-    spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
-else
-    spdlog_dep = dependency('spdlog', required: false, static: true)
-    if not spdlog_dep.found()
-        message('spdlog not found - using subproject')
-        spdlog_proj = subproject('spdlog', default_options: ['default_library=static'])
-        spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
-    endif
-endif
+#### fmt
+fmt_proj = subproject('fmt', default_options: ['default_library=static'])
+fmt_dep = fmt_proj.get_variable('fmt_dep')
+deps_for_sbio += fmt_dep
+
+#### spdlog
+spdlog_proj = subproject('spdlog', default_options: ['default_library=static'])
+spdlog_dep = spdlog_proj.get_variable('spdlog_dep')
 deps_for_sbio += spdlog_dep
 
 #### Path Setup ####

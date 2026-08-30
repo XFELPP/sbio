@@ -74,6 +74,7 @@ endif
 subdir('core')
 subdir('execution')
 subdir('io')
+subdir('locators')
 subdir('storage')
 subdir('util')
 
