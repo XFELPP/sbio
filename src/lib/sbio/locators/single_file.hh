@@ -30,6 +30,8 @@ namespace sbio {
 
   template <typename FTraits>
   struct SingleFileLocatorTraits {
+    static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
+
     struct Parameters {
       char path[1024];
 
@@ -54,7 +56,7 @@ namespace sbio {
     static std::size_t id_chain_order() { return 0; }
 
     static void update_stream_parameters(typename FTraits::StreamParameters& cfg,
-                                         std::array<const char*, FTraits::RoleCount>& paths) {
+                                         std::array<const char*, VariantCount>& paths) {
     }
   };
 

@@ -23,6 +23,7 @@
 #include "sbio/formats/random/randfmt.hh"
 
 #include "sbio/core/result.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/sync.hh"
@@ -83,8 +84,11 @@ namespace sbio {
         StreamPartitioningStrategy::SubDivide
     };
 
-    enum Roles { Data };
-    static constexpr hd_std::size_t RoleCount { 1 };
+    struct DataStream
+      : public StreamVariant<roles::Metadata, roles::Index, roles::Data> {};
+
+    using StreamTypes = StreamSet<DataStream>;
+
     enum class DataAccessPtn : hd_std::uint8_t {
       Default = 0
     };
@@ -119,89 +123,6 @@ namespace sbio {
 
       DataSourceParameters() = default;
     };
-
-    template <typename DS>
-    static bool make_stream_brokers(DS& ds,
-                                    const DataSourceParameters& ds_params,
-                                    StreamParameters& base_cfg) {
-      // For now, will create the file(s) when trying to look for them...
-#ifndef __CUDA_ARCH__
-      hd_std::size_t nstream { 0 };
-      char name_buf[MaxNameSize];
-      for (hd_std::uint8_t d = 0; d < ds_params.num_detectors; ++d) {
-        randfmt::DetectorSpec spec { ds_params.detectors[d] };
-
-        // TODO: In the future, will want to add ability to split data into multiple streams
-        hd_std::size_t streams_per_det { 1 };
-
-        for (hd_std::size_t s = 0; s < streams_per_det; ++s) {
-          int cnt = snprintf(name_buf, MaxNameSize, "sbio_random_stream_%zu", nstream);
-          (void)cnt;
-
-          StreamParameters stream_cfg { base_cfg };
-
-#ifdef _WIN32
-          HANDLE h_file = CreateFileA(name_buf,
-                                      GENERIC_READ | GENERIC_WRITE,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                      nullptr,
-                                      CREATE_ALWAYS,
-                                      FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
-                                      nullptr);
-          if (h_file == INVALID_HANDLE_VALUE) {
-            return false;
-          }
-
-          stream_cfg.h_file = h_file;
-          randfmt::FileHandle f_handle { h_file };
-#else
-          int fd = memfd_create(name_buf, 0);
-          if (fd < 0) {
-            return false;
-          }
-
-          stream_cfg.fd = fd;
-          randfmt::FileHandle f_handle { fd };
-#endif
-          // Write the SuperBlock offsets only if the NoIndex mode was NOT requested
-          bool enable_superblock_offsets { true };
-          if (stream_cfg.indexing_mode == IndexingMode::NoIndex) {
-            enable_superblock_offsets = false;
-          }
-
-          hd_std::uint64_t curr_offset { 0 };
-
-          hd_std::uint8_t flags { 0 };
-          if (stream_cfg.enable_subblock_offsets) {
-            flags |= (1 << static_cast<hd_std::uint8_t>(randfmt::FormatFlags::SubBlockOffsetTable));
-          }
-          if (enable_superblock_offsets) {
-            flags |= (1 << static_cast<hd_std::uint8_t>(randfmt::FormatFlags::SuperBlockOffsetTable));
-          }
-          // Just write 1 detector per stream for now...
-          randfmt::DetectorSpec* stream_detectors { &spec };
-          hd_std::uint8_t num_detectors_per_stream { 1 };
-          hd_std::uint8_t* det_block_ids { &d };
-          randfmt::write_sbiornd_file(f_handle,
-                                      curr_offset,
-                                      num_detectors_per_stream,
-                                      stream_detectors,
-                                      det_block_ids,
-                                      stream_cfg.seed,
-                                      stream_cfg.pattern_type,
-                                      stream_cfg.num_events,
-                                      flags);
-
-          ds.add_data_stream(stream_cfg);
-          nstream++;
-        }
-      }
-
-      return ds.num_data_streams() > 0;
-#else
-      return false;
-#endif
-    }
 
     struct EventOffset {
       hd_std::uint64_t offset;
@@ -304,11 +225,11 @@ namespace sbio {
     SBIO_HD static IOStatus open_streams(Stream<IO, RandomTraits>* streams,
                                          const StreamParameters& cfg) {
 #ifdef _WIN32
-      if (streams[Data].connect(cfg.h_file) != IOStatus::Success) {
+      if (get_stream<DataStream>(streams).connect(cfg.h_file) != IOStatus::Success) {
         return IOStatus::OpenFailed;
       }
 #else
-      if (streams[Data].connect(cfg.fd) != IOStatus::Success) {
+      if (get_stream<DataStream>(streams).connect(cfg.fd) != IOStatus::Success) {
         return IOStatus::OpenFailed;
       }
 #endif
@@ -323,8 +244,8 @@ namespace sbio {
       auto* buf =
         storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
-      IOStatus status = streams[Data].read_one(buf,
-                                               storage.template size<MetadataRole>());
+      IOStatus status = get_stream<DataStream>(streams).read_one(buf,
+                                                                 storage.template size<MetadataRole>());
 
       if (status != IOStatus::Success) {
         storage.template release<MetadataRole, 0>(buf);
@@ -372,7 +293,8 @@ namespace sbio {
                                          const StreamParameters& cfg) {
       auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
       auto* event_offsets { reinterpret_cast<EventOffset*>(idx_buf) };
-      hd_std::size_t stream_size { streams[Data].file_size() };
+
+      hd_std::size_t stream_size { get_stream<DataStream>(streams).file_size() };
       hd_std::size_t event_count { 0 };
 
       // TODO: Double check... I think maybe right path. Need scratch buffer I think...
@@ -382,7 +304,8 @@ namespace sbio {
           randfmt::FileTrailer trailer {};
           hd_std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
 
-          IOStatus status = streams[Data].read_at(&trailer, trailer_offset, sizeof(trailer));
+
+          IOStatus status = get_stream<DataStream>(streams).read_at(&trailer, trailer_offset, sizeof(trailer));
           if (status == IOStatus::Success) {
             if (hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
               auto* meta_buf =
@@ -393,9 +316,7 @@ namespace sbio {
                 read_size = stream_size - trailer.idx_blk_offset;
               }
 
-              status = streams[Data].read_at(meta_buf,
-                                             trailer.idx_blk_offset,
-                                             read_size);
+              status = get_stream<DataStream>(streams).read_at(meta_buf, trailer.idx_blk_offset, read_size);
 
               const auto* super_blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
               if (status == IOStatus::Success &&
@@ -459,7 +380,8 @@ namespace sbio {
 
       // TODO: This is bad....
       randfmt::Block blk{};
-      IOStatus status = streams[Data].read_at(&blk, stream_state.curr_offset, sizeof(blk));
+
+      IOStatus status = get_stream<DataStream>(streams).read_at(&blk, stream_state.curr_offset, sizeof(blk));
       if (status != IOStatus::Success || !blk.valid_magic()) {
         stream_state.num_events = 0;
         storage.template release<IndexRole, 0>(idx_buf);
@@ -469,9 +391,10 @@ namespace sbio {
 
       if (blk.block_type() == randfmt::BlockType::Super) {
         randfmt::SuperBlock sb{};
-        status = streams[Data].read_at(&sb,
-                                       stream_state.curr_offset + sizeof(randfmt::Header),
-                                       sizeof(sb));
+
+        status = get_stream<DataStream>(streams).read_at(&sb,
+                                                         stream_state.curr_offset + sizeof(randfmt::Header),
+                                                         sizeof(sb));
         if (status != IOStatus::Success) {
           stream_state.num_events = 0;
           storage.template release<IndexRole, 0>(idx_buf);
@@ -488,7 +411,7 @@ namespace sbio {
             return IOStatus::AllRequestedRead;
           }
 
-          status = streams[Data].read_at(&blk, stream_state.curr_offset, sizeof(blk));
+          status = get_stream<DataStream>(streams).read_at(&blk, stream_state.curr_offset, sizeof(blk));
         }
       }
 
@@ -532,7 +455,7 @@ namespace sbio {
       std::size_t read_size { evt_off.size };
 
       auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
-      IOStatus status = streams[Data].read_at(data_buf, file_offset, read_size);
+      IOStatus status = get_stream<DataStream>(streams).read_at(data_buf, file_offset, read_size);
 
       storage.template release<IndexRole, 0>(idx_buf);
       storage.template release<DataRole, 0>(data_buf);
@@ -570,7 +493,7 @@ namespace sbio {
         hd_std::size_t read_size { (end_off.offset + end_off.size) - file_offset };
 
         auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
-        IOStatus status = streams[Data].read_at(data_buf, file_offset, read_size);
+        IOStatus status = get_stream<DataStream>(streams).read_at(data_buf, file_offset, read_size);
 
         storage.template release<IndexRole, 0>(idx_buf);
         storage.template release<DataRole, 0>(data_buf);
@@ -589,9 +512,9 @@ namespace sbio {
           hd_std::size_t file_offset { off.offset };
           hd_std::size_t read_size { off.size };
 
-          IOStatus status = streams[Data].read_at(reinterpret_cast<char*>(data_buf) + cummulative_offset,
-                                                  file_offset,
-                                                  read_size);
+          IOStatus status = get_stream<DataStream>(streams).read_at(reinterpret_cast<char*>(data_buf) + cummulative_offset,
+                                                                    file_offset,
+                                                                    read_size);
           storage.template release<IndexRole, 0>(idx_buf);
           if (c < count - 1) {
             cummulative_offset += read_size;

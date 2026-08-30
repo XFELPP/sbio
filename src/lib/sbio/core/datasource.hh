@@ -196,17 +196,6 @@ namespace sbio {
       return true;
     }
 
-    /**
-     * load_run: Scans the standard hutch directory and automatically registers
-     * all streams for a given experiment and run number.
-     */
-    template <typename... Args>
-    bool load_run(StreamConfig base_cfg, Args&&... args) {
-      auto ds_params = typename FTraits::DataSourceParameters(std::forward<Args>(args)...);
-
-      return FTraits::make_stream_brokers(*this, ds_params, base_cfg);
-    }
-
     template <typename... Args>
     bool load_source(const StreamConfig& base_cfg, Args&&... args) {
       using Locator = typename FTraits::DefaultLocator;

@@ -187,7 +187,7 @@ namespace sbio {
      */
     using StepIdxType = typename FTraits::StepIdxType;
 
-    static constexpr std::size_t StreamCount = FTraits::RoleCount;
+    static constexpr std::size_t StreamCount { FTraits::StreamTypes::size() };
 
     /**
      * A default constructor is provided for simplicity.

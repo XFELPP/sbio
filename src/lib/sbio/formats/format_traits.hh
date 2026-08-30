@@ -22,6 +22,7 @@
 
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -81,15 +82,15 @@ namespace sbio {
     // Master DataSource parameters for finding the streams
     typename T::DataSourceParameters;
 
-    // Fill in the StreamBrokers
-    { T::make_stream_brokers(ds, spec, cfg) } -> std::convertible_to<bool>;
-
     // Specifies the Stream partitioning strategy
     { T::PartitioningStrategy } -> std::convertible_to<StreamPartitioningStrategy>;
 
-    // Has enumerator of Stream roles and a count of the total roles
-    typename T::Roles;
-    { T::RoleCount } -> std::convertible_to<std::size_t>;
+    // Has a list of all possible Stream variants, with a size member on the list
+    typename T::StreamTypes;
+    requires IsStreamSet<typename T::StreamTypes>;
+    // StreamSet inherits this already from type_list, but just in case add it explicitly
+    // to prevent breaks unexpectedly if things are refactored
+    { T::StreamTypes::size() } -> std::convertible_to<std::size_t>;
 
     // Has definition of supported access patterns
     typename T::DataAccessPtn;
@@ -232,16 +233,13 @@ namespace sbio {
    *   static constexpr StreamPartitioningStrategy PartitioningStrategy {
    *     StreamPartitioningStrategy::SubDivide
    *   };
-   *   enum Roles { };
-   *   static constexpr std::size_t RoleCount { 0 };
+   *
+   *   struct DataStream : public StreamVariant<roles::Data> {};
+   *   using StreamTypes = StreamSet<DataStream>;
+   *
    *   enum class DataAccessPtn : std::uint8_t { };
    *   static constexpr std::size_t DataAccessPtnCount { 0 };
    *   struct StreamParameters {};
-   *
-   *   template <typename DS>
-   *   static bool make_stream_brokers(DS& ds,
-   *                                   const DataSourceParameters& ds_params,
-   *                                   StreamParameters& cfg);
    *
    *   // CanAllocateStorage
    *   // ------------------
@@ -378,6 +376,13 @@ namespace sbio {
   template <typename T, typename IO, class StorageViewT>
   concept OffsetBasedFormatTraits =
     FormatTraits<T, IO, StorageViewT> && HasEventOffset<T> && HasTransitionOffset<T>;
+
+  template <typename StreamVariant, typename FTraits, typename IO>
+  SBIO_HD constexpr auto& get_stream(Stream<IO, FTraits>* streams) {
+    constexpr std::size_t idx { FTraits::StreamTypes::template index_of<StreamVariant> };
+
+    return streams[idx];
+  }
 } // namespace sbio
 
 #endif // SBIO_FORMATS_FORMAT_TRAITS_HH

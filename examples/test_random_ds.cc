@@ -22,6 +22,8 @@
 #include "sbio/core/result.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
+#include "sbio/formats/random/randfmt.hh"
+#include "sbio/formats/random/random_locator.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/io/posix.hh"
 
@@ -42,14 +44,14 @@ int main(int argc, char* argv[]) {
 
   RandomDataSource ds;
 
-  sbio::RandomTraits::DataSourceParameters ds_params;
-  ds_params.num_detectors = 1;
-  snprintf(ds_params.detectors[0].name, sbio::RandomTraits::MaxNameSize, "test");
-  snprintf(ds_params.detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_type");
-  ds_params.detectors[0].rank = 2;
-  ds_params.detectors[0].shape[0] = 512;
-  ds_params.detectors[0].shape[1] = 512;
-  ds_params.detectors[0].dtype = ncarray::DType::uint16;
+  sbio::randfmt::DetectorSpec detectors[10];
+  std::uint8_t num_detectors { 1 };
+  snprintf(detectors[0].name, sbio::RandomTraits::MaxNameSize, "test");
+  snprintf(detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_type");
+  detectors[0].rank = 2;
+  detectors[0].shape[0] = 512;
+  detectors[0].shape[1] = 512;
+  detectors[0].dtype = ncarray::DType::uint16;
 
   sbio::RandomTraits::StreamParameters base_cfg;
   base_cfg.num_events = 500;
@@ -61,7 +63,7 @@ int main(int argc, char* argv[]) {
   base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
   base_cfg.indexing_batch_size = 100;
 
-  bool created { ds.load_run(base_cfg, ds_params) };
+  bool created { ds.load_source(base_cfg, detectors, num_detectors) };
   assert(created && "Failed to create random stream brokers");
 
   if (created) {

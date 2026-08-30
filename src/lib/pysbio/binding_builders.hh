@@ -25,9 +25,11 @@
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
 #ifdef SBIO_HAS_XTC1
+#include "sbio/formats/xtc1/xtc1_locator.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
 #ifdef SBIO_HAS_XTC2
+#include "sbio/formats/xtc2/xtc2_locator.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
@@ -224,7 +226,7 @@ namespace pysbio::impl {
       .def("configure_execution_policy",
            &DataSourceT::configure_execution_policy,
            py::arg("epolicy_cfg"))
-      .def("load_run",
+      .def("load_source",
            [](DataSourceT& self,
               typename DataSourceT::StreamConfig base_cfg,
               py::args args) {
@@ -237,9 +239,9 @@ namespace pysbio::impl {
                auto exp = args[0].cast<std::string>();
                auto run_num = args[1].cast<unsigned>();
 
-               return self.load_run(base_cfg, exp, run_num);
+               return self.load_source(base_cfg, exp, run_num);
              } else {
-               throw std::runtime_error("Unsupported number of arguments to load_run: " +
+               throw std::runtime_error("Unsupported number of arguments to load_source: " +
                                         std::to_string(args.size()));
              }
       })

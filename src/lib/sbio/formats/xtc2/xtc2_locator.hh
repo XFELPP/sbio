@@ -26,6 +26,7 @@
 #include "sbio/util/string.hh"
 
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <map>
 #include <string>
@@ -39,9 +40,17 @@ namespace sbio {
 
   template <>
   struct PathPatternLocatorTraits<XTC2Traits> {
+    static constexpr std::size_t VariantCount { XTC2Traits::StreamTypes::size() };
+
     struct Parameters {
       char experiment[XTC2Traits::MaxNameSize];
       unsigned run;
+
+      Parameters(std::string_view exp, unsigned run_)
+        : run(run_)
+      {
+        safe_strncpy(experiment, exp.data(), XTC2Traits::MaxNameSize);
+      }
 
       static constexpr auto get_metadata() {
         return std::make_tuple(make_named("exp", &Parameters::experiment),
@@ -49,7 +58,9 @@ namespace sbio {
       }
     };
 
-    static constexpr std::array<const char*, XTC2Traits::RoleCount> role_patterns {{
+    // Must update this to use SIT_PSDM_DATA
+    // Need Locator to understand env var syntax then?
+    static constexpr std::array<const char*, VariantCount> role_patterns {{
       "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}",
       "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}"
     }};
@@ -63,7 +74,7 @@ namespace sbio {
     }
 
     static void update_stream_parameters(typename XTC2Traits::StreamParameters& cfg,
-                                         std::array<const char*, XTC2Traits::RoleCount>& paths) {
+                                         const std::array<std::string, VariantCount>& paths) {
       safe_strncpy(cfg.smd_path, paths[0].c_str(), XTC2Traits::MaxNameSize);
       safe_strncpy(cfg.xtc_path, paths[1].c_str(), XTC2Traits::MaxNameSize);
     }
@@ -83,7 +94,7 @@ namespace sbio {
       std::size_t id { 0 };
 
       auto s_pos { filename.find(token_pattern) };
-      if (s_pos != std::string_view::npos && s_pos + 5 <= filname.size()) {
+      if (s_pos != std::string_view::npos && s_pos + 5 <= filename.size()) {
         std::size_t tmp { 0 };
         std::size_t start_pos { s_pos + 2 };
         std::size_t end_pos { s_pos + 5 };

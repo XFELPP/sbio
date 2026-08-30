@@ -39,9 +39,10 @@ namespace fs = std::filesystem;
 namespace sbio {
   template <typename FTraits>
   struct PathPatternLocatorTraits {
-    struct Parameters {};
+    static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
+    //struct Parameters {};
 
-    static constexpr std::array<const char*, FTraits::RoleCount> role_patterns {};
+    static constexpr std::array<const char*, VariantCount> role_patterns {};
 
     /**
      * Given a filename, determine the stream identifier number.
@@ -73,7 +74,7 @@ namespace sbio {
     static std::size_t id_chain_order(std::string_view filename) { return 0; }
 
     static void update_stream_parameters(typename FTraits::StreamParameters& cfg,
-                                         std::array<const char*, FTraits::RoleCount>& paths) {}
+                                         const std::array<std::string, VariantCount>& paths) {}
   };
 
   struct PathPatternLocator {
@@ -83,11 +84,11 @@ namespace sbio {
     template <typename FTraits>
     using LocatorParameters = typename LocatorTraits<FTraits>::Parameters;
 
-    template <std::size_t RoleCount>
-    using StreamChainMap = std::map<std::size_t, std::array<std::string, RoleCount>>;
+    template <std::size_t VariantCount>
+    using StreamChainMap = std::map<std::size_t, std::array<std::string, VariantCount>>;
 
-    template <std::size_t RoleCount>
-    using StreamMap = std::map<std::size_t, StreamChainMap<RoleCount>>;
+    template <std::size_t VariantCount>
+    using StreamMap = std::map<std::size_t, StreamChainMap<VariantCount>>;
 
     template <typename DS>
     static bool find_streams(DS& ds,
@@ -96,8 +97,9 @@ namespace sbio {
       using FTraits = typename DS::DataFormat;
       constexpr auto patterns { PathPatternLocatorTraits<FTraits>::role_patterns };
 
-      StreamMap<FTraits::RoleCount> streams;
-      for (std::size_t r = 0; r < FTraits::RoleCount; ++r) {
+      constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
+      StreamMap<VariantCount> streams;
+      for (std::size_t r = 0; r < VariantCount; ++r) {
         std::string base_pattern = format_parameter_string(patterns[r], params);
 
         fs::path prefix_path(base_pattern);
