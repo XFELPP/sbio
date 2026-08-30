@@ -19,6 +19,8 @@
 
 #include "sbio/core/datasource.hh"
 #include "sbio/execution/serial.hh"
+#include "sbio/formats/random/randfmt.hh"
+#include "sbio/formats/random/random_locator.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/io/posix.hh"
 
@@ -48,15 +50,16 @@ protected:
                         sbio::RandomTraits::IndexingMode mode,
                         std::size_t num_events = 50,
                         std::size_t batch_size = 10) {
-    sbio::RandomTraits::DataSourceParameters ds_params;
-    ds_params.num_detectors = 1;
-    snprintf(ds_params.detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
-    snprintf(ds_params.detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det");
+    sbio::randfmt::DetectorSpec detectors[10];
+    std::uint8_t num_detectors { 1 };
 
-    ds_params.detectors[0].rank = 2;
-    ds_params.detectors[0].shape[0] = 32;
-    ds_params.detectors[0].shape[1] = 32;
-    ds_params.detectors[0].dtype = ncarray::DType::uint16;
+    snprintf(detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
+    snprintf(detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det");
+
+    detectors[0].rank = 2;
+    detectors[0].shape[0] = 32;
+    detectors[0].shape[1] = 32;
+    detectors[0].dtype = ncarray::DType::uint16;
 
     sbio::RandomTraits::StreamParameters base_cfg;
     base_cfg.num_events = num_events;
@@ -64,7 +67,7 @@ protected:
     base_cfg.indexing_mode = mode;
     base_cfg.indexing_batch_size = batch_size;
 
-    ASSERT_TRUE(ds.load_run(base_cfg, ds_params));
+    ASSERT_TRUE(ds.load_source(base_cfg, detectors, num_detectors)); // Test loading with default Locator
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
   }
 };

@@ -24,6 +24,8 @@
 #include "sbio/execution/mpi.hh"
 #include "sbio/execution/mpi_threaded.hh"
 #endif
+#include "sbio/formats/random/randfmt.hh"
+#include "sbio/formats/random/random_locator.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/io/posix.hh"
 
@@ -66,26 +68,27 @@ TYPED_TEST(ExecutionPolicyTest, StreamBrokerPipeline) {
   using DS = typename TestFixture::DS;
   DS ds;
 
-  sbio::RandomTraits::DataSourceParameters ds_params;
-  ds_params.num_detectors = 2;
-  snprintf(ds_params.detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
-  snprintf(ds_params.detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det0");
-  ds_params.detectors[0].rank = 2;
-  ds_params.detectors[0].shape[0] = 128;
-  ds_params.detectors[0].shape[1] = 128;
-  ds_params.detectors[0].dtype = ncarray::DType::uint16;
+  sbio::randfmt::DetectorSpec detectors[10];
+  std::uint8_t num_detectors { 2 };
 
-  snprintf(ds_params.detectors[1].name, sbio::RandomTraits::MaxNameSize, "det1");
-  snprintf(ds_params.detectors[1].type, sbio::RandomTraits::MaxNameSize, "test_det1");
-  ds_params.detectors[1].rank = 1;
-  ds_params.detectors[1].shape[0] = 512;
-  ds_params.detectors[1].dtype = ncarray::DType::float32;
+  snprintf(detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
+  snprintf(detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det0");
+  detectors[0].rank = 2;
+  detectors[0].shape[0] = 128;
+  detectors[0].shape[1] = 128;
+  detectors[0].dtype = ncarray::DType::uint16;
+
+  snprintf(detectors[1].name, sbio::RandomTraits::MaxNameSize, "det1");
+  snprintf(detectors[1].type, sbio::RandomTraits::MaxNameSize, "test_det1");
+  detectors[1].rank = 1;
+  detectors[1].shape[0] = 512;
+  detectors[1].dtype = ncarray::DType::float32;
 
   sbio::RandomTraits::StreamParameters base_cfg;
   base_cfg.num_events = 25;
   base_cfg.pattern_type = 1; // Sequential
 
-  ASSERT_TRUE(ds.load_run(base_cfg, ds_params));
+  ASSERT_TRUE(ds.load_source(base_cfg, detectors, num_detectors)); // Test loading with default Locator
   ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
 
   auto grp0 = ds.get_stream_group("det0");
