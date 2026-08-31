@@ -37,10 +37,13 @@
 namespace fs = std::filesystem;
 
 namespace sbio {
+  struct PathPatternLocator;
+
   template <typename FTraits>
   struct PathPatternLocatorTraits {
+    using Parameters = LocatorParameters_t<PathPatternLocator, FTraits>;
+
     static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
-    //struct Parameters {};
 
     static constexpr std::array<const char*, VariantCount> role_patterns {};
 

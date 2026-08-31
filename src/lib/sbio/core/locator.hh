@@ -64,6 +64,14 @@ namespace sbio {
   make_named(const char* name, T Class::* ptr) {
     return { name, ptr };
   }
+
+  template <typename Locator, typename FTraits>
+  struct LocatorParameters {
+    struct Type {};
+  };
+
+  template <typename Locator, typename FTraits>
+  using LocatorParameters_t = typename LocatorParameters<Locator, FTraits>::Type;
 } // namespace sbio
 
 #endif // SBIO_CORE_LOCATOR_HH

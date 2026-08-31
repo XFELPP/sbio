@@ -37,9 +37,11 @@
 namespace fs = std::filesystem;
 
 namespace sbio {
+  struct CustomLambdaLocator;
+
   template <typename FTraits>
   struct CustomLambdaLocatorTraits {
-    struct Parameters {};
+    using Parameters = LocatorParameters_t<CustomLambdaLocator, FTraits>;
 
     static constexpr auto finder_lambda =
       []<typename DS>(DS& ds,

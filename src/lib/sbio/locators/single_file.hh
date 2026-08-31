@@ -27,18 +27,13 @@
 #include <tuple>
 
 namespace sbio {
+  struct SingleFileLocator;
 
   template <typename FTraits>
   struct SingleFileLocatorTraits {
+    using Parameters = LocatorParameters_t<SingleFileLocator, FTraits>;
+
     static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
-
-    struct Parameters {
-      char path[1024];
-
-      static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("path", &Parameters::path));
-      }
-    };
 
     /**
      * For a single file, there is only a single stream by definition.

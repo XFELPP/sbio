@@ -20,6 +20,7 @@
 #ifndef SBIO_FORMATS_XTC2_XTC2_LOCATOR_HH
 #define SBIO_FORMATS_XTC2_XTC2_LOCATOR_HH
 
+#include "sbio/core/locator.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #include "sbio/locators/path_pattern.hh"
 #include "sbio/locators/single_file.hh"
@@ -39,24 +40,29 @@ namespace sbio {
   // --- Specializations for locator traits --- //
 
   template <>
-  struct PathPatternLocatorTraits<XTC2Traits> {
-    static constexpr std::size_t VariantCount { XTC2Traits::StreamTypes::size() };
-
-    struct Parameters {
+  struct LocatorParameters<PathPatternLocator, XTC2Traits> {
+    struct Type {
       char experiment[XTC2Traits::MaxNameSize];
       unsigned run;
 
-      Parameters(std::string_view exp, unsigned run_)
+      Type(std::string_view exp, unsigned run_)
         : run(run_)
       {
         safe_strncpy(experiment, exp.data(), XTC2Traits::MaxNameSize);
       }
 
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("exp", &Parameters::experiment),
-                               make_named("run", &Parameters::run));
+        return std::make_tuple(make_named("exp", &Type::experiment),
+                               make_named("run", &Type::run));
       }
     };
+  };
+
+  template <>
+  struct PathPatternLocatorTraits<XTC2Traits> {
+    using Parameters = LocatorParameters_t<PathPatternLocator, XTC2Traits>;
+
+    static constexpr std::size_t VariantCount { XTC2Traits::StreamTypes::size() };
 
     // Must update this to use SIT_PSDM_DATA
     // Need Locator to understand env var syntax then?
@@ -111,14 +117,23 @@ namespace sbio {
   };
 
   template <>
-  struct SingleFileLocatorTraits<XTC2Traits> {
-    struct Parameters {
+  struct LocatorParameters<SingleFileLocator, XTC2Traits> {
+    struct Type {
       char path[1024];
 
+      Type(std::string_view path_) {
+        safe_strncpy(path, path_.data(), 1024);
+      }
+
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("path", &Parameters::path));
+        return std::make_tuple(make_named("path", &Type::path));
       }
     };
+  };
+
+  template <>
+  struct SingleFileLocatorTraits<XTC2Traits> {
+    using Parameters = LocatorParameters_t<SingleFileLocator, XTC2Traits>;
 
     /**
      * For a single file, there is only a single stream by definition.

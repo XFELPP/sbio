@@ -20,6 +20,7 @@
 #ifndef SBIO_FORMATS_RANDOM_RANDOM_LOCATOR_HH
 #define SBIO_FORMATS_RANDOM_RANDOM_LOCATOR_HH
 
+#include "sbio/core/locator.hh"
 #include "sbio/formats/random/randfmt.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/locators/custom_lambda.hh"
@@ -44,13 +45,13 @@ namespace sbio {
   // --- Specializations for locator traits --- //
 
   template <>
-  struct CustomLambdaLocatorTraits<RandomTraits> {
-    struct Parameters {
+  struct LocatorParameters<CustomLambdaLocator, RandomTraits> {
+    struct Type {
       randfmt::DetectorSpec detectors[10];
       hd_std::uint8_t num_detectors { 0 };
 
-      Parameters() = default;
-      Parameters(randfmt::DetectorSpec* dets, hd_std::uint8_t num)
+      Type() = default;
+      Type(randfmt::DetectorSpec* dets, hd_std::uint8_t num)
         : num_detectors(num)
       {
         for (hd_std::uint8_t i = 0; i < num; ++i) {
@@ -58,6 +59,11 @@ namespace sbio {
         }
       }
     };
+  };
+
+  template <>
+  struct CustomLambdaLocatorTraits<RandomTraits> {
+    using Parameters = LocatorParameters_t<CustomLambdaLocator, RandomTraits>;
 
     static constexpr auto finder_lam =
       [] <typename DS> (DS& ds,
