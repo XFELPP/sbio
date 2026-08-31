@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -276,7 +277,7 @@ namespace sbio {
     SBIO_HD inline IOStatus discover_metadata() {
       m_broker_state = BrokerState::DISCOVERY;
 
-      auto txn { Transaction<MetadataRole, ExecutionPolicy, SBStorageType>(m_storage) };
+      auto txn { Transaction<roles::Metadata, ExecutionPolicy, SBStorageType>(m_storage) };
       auto sv { txn.view() };
 
       IOStatus status;
@@ -343,7 +344,7 @@ namespace sbio {
     SBIO_HD inline IOStatus index_stream() {
       m_broker_state = BrokerState::INDEXING;
 
-      auto txn { Transaction<IndexRole, ExecutionPolicy, SBStorageType>(m_storage) };
+      auto txn { Transaction<roles::Index, ExecutionPolicy, SBStorageType>(m_storage) };
       auto sv { txn.view() };
 
       IOStatus status { IOStatus::Success };
@@ -388,7 +389,7 @@ namespace sbio {
                                        const DataAccessPtn ptn) {
       m_broker_state = BrokerState::STREAMING;
 
-      auto txn { Transaction<DataRole, ExecutionPolicy, SBStorageType>(m_storage) };
+      auto txn { Transaction<roles::Data, ExecutionPolicy, SBStorageType>(m_storage) };
       auto sv { txn.view() };
 
       IOStatus status { IOStatus::Success };
@@ -416,7 +417,7 @@ namespace sbio {
       } else if (steps.size() <= 3) {
         m_broker_state = BrokerState::STREAMING;
 
-        auto txn { Transaction<DataRole, ExecutionPolicy, SBStorageType>(m_storage) };
+        auto txn { Transaction<roles::Data, ExecutionPolicy, SBStorageType>(m_storage) };
         auto sv { txn.view() };
 
         // Passed begin/end, steps of 1 unit or explicit as 3rd item

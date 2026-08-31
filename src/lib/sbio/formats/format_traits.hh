@@ -243,7 +243,7 @@ namespace sbio {
    *
    *   // CanAllocateStorage
    *   // ------------------
-   *   using BrokerBufferRequirements = TypeList<>;
+   *   using BrokerBufferRequirements = RequirementsList<>;
    *   static AllocationRequest<T> get_allocation_request(StreamParameters& cfg);
    *   static std::size_t max_batch_count(StreamParameters& cfg);
    *

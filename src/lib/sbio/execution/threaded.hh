@@ -22,6 +22,7 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/thread_local_buffer.hh"
@@ -56,8 +57,8 @@ namespace sbio {
   public:
     template <typename Descriptor>
     using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, DataRole> ||
-      std::is_same_v<typename Descriptor::role, TableRole>,
+      std::is_same_v<typename Descriptor::role, roles::Data> ||
+      std::is_same_v<typename Descriptor::role, roles::Table>,
       ThreadLocalBuffer,
       HostBuffer
     >;
@@ -92,7 +93,7 @@ namespace sbio {
      * @param[in] request The allocation request.
      * @returns Allocated storage per the request.
      */
-    template <IsTypeList Requirements, class IO, class FTraits>
+    template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, ThreadedExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
@@ -107,9 +108,9 @@ namespace sbio {
     }
 
     template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
+    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
-      Storage<TypeList<Descriptors...>, ThreadedExecution> s;
+      Storage<RequirementsList<Descriptors...>, ThreadedExecution> s;
 
       std::size_t i { 0 };
 
@@ -120,8 +121,8 @@ namespace sbio {
         auto& buf { s.template get<Descriptor>() };
 
         using BufRole = typename Descriptor::role;
-        if constexpr (std::is_same_v<BufRole, DataRole> ||
-                      std::is_same_v<BufRole, TableRole>) {
+        if constexpr (std::is_same_v<BufRole, roles::Data> ||
+                      std::is_same_v<BufRole, roles::Table>) {
           buf.set_memory(nullptr, final_sz);
         } else {
           buf.set_memory(new char[final_sz], final_sz);

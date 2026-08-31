@@ -129,10 +129,10 @@ namespace sbio {
       hd_std::uint64_t size;
     };
 
-    using BrokerBufferRequirements = TypeList <
-      BufferDescriptor<MetadataRole, 0, sizeof(randfmt::Block)>,  /* Buffer for transition */
-      BufferDescriptor<DataRole, 0, sizeof(randfmt::Block)>,      /* Buffer for events */
-      BufferDescriptor<IndexRole, 0, sizeof(EventOffset)>         /* EventOffsets buffer */
+    using BrokerBufferRequirements = RequirementsList<
+      BufferDescriptor<roles::Metadata, 0, sizeof(randfmt::Block)>,  /* Buffer for transition */
+      BufferDescriptor<roles::Data, 0, sizeof(randfmt::Block)>,      /* Buffer for events */
+      BufferDescriptor<roles::Index, 0, sizeof(EventOffset)>         /* EventOffsets buffer */
     >;
 
     /**
@@ -242,20 +242,20 @@ namespace sbio {
                                               StorageViewT& storage,
                                               MetadataInventory& inv) {
       auto* buf =
-        storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+        storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
       IOStatus status = get_stream<DataStream>(streams).read_one(buf,
-                                                                 storage.template size<MetadataRole>());
+                                                                 storage.template size<roles::Metadata>());
 
       if (status != IOStatus::Success) {
-        storage.template release<MetadataRole, 0>(buf);
+        storage.template release<roles::Metadata, 0>(buf);
 
         return status;
       }
 
       const auto* blk0 { reinterpret_cast<const randfmt::Block*>(buf) };
       if (!blk0->valid_magic() || blk0->block_type() != randfmt::BlockType::Super) {
-        storage.template release<MetadataRole, 0>(buf);
+        storage.template release<roles::Metadata, 0>(buf);
 
         return IOStatus::HeaderReadError;
       }
@@ -282,7 +282,7 @@ namespace sbio {
         sub_blk = sub_blk->closest_block();
       }
 
-      storage.template release<MetadataRole, 0>(buf);
+      storage.template release<roles::Metadata, 0>(buf);
       return IOStatus::Success;
     }
 
@@ -291,7 +291,7 @@ namespace sbio {
                                          StorageViewT& storage,
                                          DiscoveryState& stream_state,
                                          const StreamParameters& cfg) {
-      auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
+      auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
       auto* event_offsets { reinterpret_cast<EventOffset*>(idx_buf) };
 
       hd_std::size_t stream_size { get_stream<DataStream>(streams).file_size() };
@@ -309,8 +309,8 @@ namespace sbio {
           if (status == IOStatus::Success) {
             if (hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
               auto* meta_buf =
-                storage.template acquire<MetadataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-              hd_std::size_t meta_buf_size { storage.template size<MetadataRole>() };
+                storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+              hd_std::size_t meta_buf_size { storage.template size<roles::Metadata>() };
               hd_std::size_t read_size { meta_buf_size };
               if (stream_size - trailer.idx_blk_offset < read_size) {
                 read_size = stream_size - trailer.idx_blk_offset;
@@ -357,13 +357,13 @@ namespace sbio {
                     stream_state.num_events = end_evt - start_evt;
                   }
 
-                  storage.template release<MetadataRole, 0>(meta_buf);
-                  storage.template release<IndexRole, 0>(idx_buf);
+                  storage.template release<roles::Metadata, 0>(meta_buf);
+                  storage.template release<roles::Index, 0>(idx_buf);
 
                   return IOStatus::Success;
                 }
 
-                storage.template release<MetadataRole, 0>(meta_buf);
+                storage.template release<roles::Metadata, 0>(meta_buf);
               }
             }
           }
@@ -373,7 +373,7 @@ namespace sbio {
       // IndexMode::NoIndex --> Always return the next step
       if (stream_state.curr_offset >= stream_size) {
         stream_state.num_events = 0;
-        storage.template release<IndexRole, 0>(idx_buf);
+        storage.template release<roles::Index, 0>(idx_buf);
 
         return IOStatus::AllRequestedRead;
       }
@@ -384,7 +384,7 @@ namespace sbio {
       IOStatus status = get_stream<DataStream>(streams).read_at(&blk, stream_state.curr_offset, sizeof(blk));
       if (status != IOStatus::Success || !blk.valid_magic()) {
         stream_state.num_events = 0;
-        storage.template release<IndexRole, 0>(idx_buf);
+        storage.template release<roles::Index, 0>(idx_buf);
 
         return IOStatus::HeaderReadError;
       }
@@ -397,7 +397,7 @@ namespace sbio {
                                                          sizeof(sb));
         if (status != IOStatus::Success) {
           stream_state.num_events = 0;
-          storage.template release<IndexRole, 0>(idx_buf);
+          storage.template release<roles::Index, 0>(idx_buf);
 
           return IOStatus::GeneralIOError;
         }
@@ -407,7 +407,7 @@ namespace sbio {
 
           if (stream_state.curr_offset >= stream_size) {
             stream_state.num_events = 0;
-            storage.template release<IndexRole, 0>(idx_buf);
+            storage.template release<roles::Index, 0>(idx_buf);
             return IOStatus::AllRequestedRead;
           }
 
@@ -421,7 +421,7 @@ namespace sbio {
 
       stream_state.curr_offset += event_sb_size;
       stream_state.num_events = 1;
-      storage.template release<IndexRole, 0>(idx_buf);
+      storage.template release<roles::Index, 0>(idx_buf);
 
       return IOStatus::Success;
     }
@@ -447,18 +447,18 @@ namespace sbio {
         return IOStatus::AllRequestedRead;
       }
 
-      auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
+      auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
       const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
 
       const auto& evt_off { event_offsets[adjusted_idx] };
       std::size_t file_offset { evt_off.offset };
       std::size_t read_size { evt_off.size };
 
-      auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
+      auto* data_buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
       IOStatus status = get_stream<DataStream>(streams).read_at(data_buf, file_offset, read_size);
 
-      storage.template release<IndexRole, 0>(idx_buf);
-      storage.template release<DataRole, 0>(data_buf);
+      storage.template release<roles::Index, 0>(idx_buf);
+      storage.template release<roles::Data, 0>(data_buf);
 
       return status;
     }
@@ -484,7 +484,7 @@ namespace sbio {
           return IOStatus::AllRequestedRead;
         }
 
-        auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
+        auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
         const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
         const auto& start_off { event_offsets[start_idx] };
         const auto& end_off { event_offsets[end_idx] };
@@ -492,20 +492,20 @@ namespace sbio {
         hd_std::size_t file_offset { start_off.offset };
         hd_std::size_t read_size { (end_off.offset + end_off.size) - file_offset };
 
-        auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
+        auto* data_buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
         IOStatus status = get_stream<DataStream>(streams).read_at(data_buf, file_offset, read_size);
 
-        storage.template release<IndexRole, 0>(idx_buf);
-        storage.template release<DataRole, 0>(data_buf);
+        storage.template release<roles::Index, 0>(idx_buf);
+        storage.template release<roles::Data, 0>(data_buf);
 
         return status;
       } else {
         // This is about the worst strategy you could use... but worth testing...
-        auto* data_buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
+        auto* data_buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
 
         hd_std::size_t cummulative_offset { 0 };
         for (hd_std::size_t c = 0; c < count; ++c) {
-          auto* idx_buf { storage.template acquire<IndexRole, 0, ncarray::HostTag>() };
+          auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
           const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
           const auto& off { event_offsets[0] };
 
@@ -515,7 +515,7 @@ namespace sbio {
           IOStatus status = get_stream<DataStream>(streams).read_at(reinterpret_cast<char*>(data_buf) + cummulative_offset,
                                                                     file_offset,
                                                                     read_size);
-          storage.template release<IndexRole, 0>(idx_buf);
+          storage.template release<roles::Index, 0>(idx_buf);
           if (c < count - 1) {
             cummulative_offset += read_size;
             index_stream(streams, storage, stream_state, cfg);
@@ -544,7 +544,7 @@ namespace sbio {
                                                  DataAccessPtn ptn,
                                                  std::size_t batch_idx = 0) {
       void* data_buf =
-          storage.template acquire<DataRole, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+          storage.template acquire<roles::Data, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
       const char* ptr { reinterpret_cast<const char*>(data_buf) };
       for (hd_std::size_t b = 0; b < batch_idx; ++b) {
@@ -553,7 +553,7 @@ namespace sbio {
       }
 
       DataResult res { resolve_data(const_cast<char*>(ptr), inv, req) };
-      res.data = storage.template release<DataRole, 0>(data_buf, res.data);
+      res.data = storage.template release<roles::Data, 0>(data_buf, res.data);
 
       return res;
     }
@@ -567,8 +567,8 @@ namespace sbio {
     template <class StorageViewT>
     SBIO_HD static auto current_buffer(StorageViewT& storage,
                                        const DiscoveryState& state) {
-      auto* buf { storage.template acquire<DataRole, 0, ncarray::HostTag>() };
-      storage.template release<DataRole, 0>(buf);
+      auto* buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
+      storage.template release<roles::Data, 0>(buf);
 
       return buf;
     }

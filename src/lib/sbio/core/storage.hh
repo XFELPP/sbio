@@ -20,6 +20,8 @@
 #ifndef SBIO_CORE_STORAGE_HH
 #define SBIO_CORE_STORAGE_HH
 
+#include "sbio/core/roles.hh"
+
 #ifdef __CUDACC__
 
 #include <cuda/std/concepts>
@@ -49,31 +51,15 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
-  // --- TypeList helper: Used by FormatTraits to specify buffer requirements --- //
-  template <typename... Ts>
-  struct TypeList {
-    static constexpr hd_std::size_t size = sizeof...(Ts);
-  };
+  namespace impl {
+    struct ReqListTag {};
+  } // namespace impl
 
-  template <typename T>
-  struct is_type_list : hd_std::false_type {};
+  template <typename... Descs>
+  struct RequirementsList : public type_list<Descs...>, public impl::ReqListTag {};
 
-  template <typename... Ts>
-  struct is_type_list<TypeList<Ts...>> : hd_std::true_type {};
-
-  template <typename T>
-  static constexpr bool is_type_list_v = is_type_list<T>::value;
-
-  template <typename List>
-  concept IsTypeList = is_type_list_v<List>;
-
-  // --- Tags for roles that a buffer may play. --- //
-  struct MetadataRole {};
-  struct DataRole {};
-  struct IndexRole {};
-  struct CalibrationRole {};
-  struct GroupRole {};
-  struct TableRole {};
+  template <typename RL>
+  concept IsRequirementsList = hd_std::is_base_of_v<impl::ReqListTag, RL>;
 
   // --- Tags for additional semantic hints as to what a buffer can do --- //
   struct Shareable {};      // Optimization: E.g., visible to MPI peers
@@ -114,8 +100,8 @@ namespace sbio {
 
   template <typename FTraits>
   struct AllocationRequest {
-    // One entry for every descriptor in the BrokerBufferRequirements TypeList
-    hd_std::size_t size_requests[FTraits::BrokerBufferRequirements::size] { 0 };
+    // One entry for every descriptor in the BrokerBufferRequirements type_list
+    hd_std::size_t size_requests[FTraits::BrokerBufferRequirements::size()] { 0 };
   };
 
   template <typename Role, typename BufferT>
@@ -157,16 +143,16 @@ namespace sbio {
   struct FindDescriptor;
 
   template <typename Role, hd_std::size_t Id, typename Head, typename... Tail>
-  struct FindDescriptor<Role, Id, TypeList<Head, Tail...>> {
+  struct FindDescriptor<Role, Id, RequirementsList<Head, Tail...>> {
     using type = hd_std::conditional_t<
       hd_std::is_same_v<typename Head::role, Role> && (Head::id == Id),
       Head,
-      typename FindDescriptor<Role, Id, TypeList<Tail...>>::type
+      typename FindDescriptor<Role, Id, RequirementsList<Tail...>>::type
     >;
   };
 
   template <typename Role, hd_std::size_t Id>
-  struct FindDescriptor<Role, Id, TypeList<>> {
+  struct FindDescriptor<Role, Id, RequirementsList<>> {
     using type = void;
   };
 
@@ -184,7 +170,7 @@ namespace sbio {
   struct Storage;
 
   template <typename... Roles, typename Policy>
-  struct Storage<TypeList<Roles...>, Policy>
+  struct Storage<RequirementsList<Roles...>, Policy>
     : public BufferMember<Roles, typename Policy::template BufferTypeFor<Roles>>... {
 
     static_assert((ValidBuffer<typename Policy::template BufferTypeFor<Roles>> && ...),
@@ -197,7 +183,7 @@ namespace sbio {
       using Descriptor = hd_std::conditional_t<
         IsDescriptor<RoleOrDescriptor>::value,
         RoleOrDescriptor,
-        typename FindDescriptor<RoleOrDescriptor, Id, TypeList<Roles...>>::type
+        typename FindDescriptor<RoleOrDescriptor, Id, RequirementsList<Roles...>>::type
       >;
 
       using BufferT = typename Policy::template BufferTypeFor<Descriptor>;

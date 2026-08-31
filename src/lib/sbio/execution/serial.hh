@@ -76,7 +76,7 @@ namespace sbio {
      * @param[in] request The allocation request.
      * @returns Allocated storage per the request.
      */
-    template <IsTypeList Requirements, class IO, class FTraits>
+    template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, SerialExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
@@ -90,9 +90,9 @@ namespace sbio {
     }
 
     template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
+    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
-      Storage<TypeList<Descriptors...>, SerialExecution> s;
+      Storage<RequirementsList<Descriptors...>, SerialExecution> s;
 
       std::size_t i { 0 };
 

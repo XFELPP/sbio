@@ -23,6 +23,7 @@
 #include "sbio/core/broker.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/core/sync.hh"
@@ -140,7 +141,7 @@ namespace sbio {
     using StepIdxType = typename FTraits::StepIdxType;
 
     using PtrTableRequirements =
-      TypeList<BufferDescriptor<TableRole, 0, sizeof(void*)>>;
+      RequirementsList<BufferDescriptor<roles::Table, 0, sizeof(void*)>>;
     using PtrStorageType = Storage<PtrTableRequirements, ExecutionPolicy>;
 
     /**
@@ -354,7 +355,7 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf { this->m_ptr_storage.template get<TableRole>() };
+      auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
@@ -460,7 +461,7 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf { this->m_ptr_storage.template get<TableRole>() };
+      auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
@@ -552,7 +553,7 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf { this->m_ptr_storage.template get<TableRole>() };
+      auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
       auto read_cb = [&](std::size_t i) {
@@ -638,7 +639,7 @@ namespace sbio {
       // Save a result reference to capture the data in the lambdas
       DataResult ref_res;
 
-      auto& ptr_buf = this->m_ptr_storage.template get<TableRole>();
+      auto& ptr_buf = this->m_ptr_storage.template get<roles::Table>();
       const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
 
       auto read_cb = [&](std::size_t i) {
