@@ -79,12 +79,6 @@ namespace sbio {
       return parse_stream_chunk_tokens(filename, "-c");
     }
 
-    static void update_stream_parameters(typename XTC2Traits::StreamParameters& cfg,
-                                         const std::array<std::string, VariantCount>& paths) {
-      safe_strncpy(cfg.smd_path, paths[0].c_str(), XTC2Traits::MaxNameSize);
-      safe_strncpy(cfg.xtc_path, paths[1].c_str(), XTC2Traits::MaxNameSize);
-    }
-
   private:
     /**
      * Return either the stream number or chunk number encoded in a filename.
@@ -149,12 +143,6 @@ namespace sbio {
      *          Zero by definition in this case.
      */
     static std::size_t id_chain_order() { return 0; }
-
-    static void update_stream_parameters(typename XTC2Traits::StreamParameters& cfg,
-                                         Parameters& params) {
-      safe_strncpy(cfg.smd_path, params.path, XTC2Traits::MaxNameSize);
-      safe_strncpy(cfg.xtc_path, params.path, XTC2Traits::MaxNameSize);
-    }
   };
 } // namespace sbio
 

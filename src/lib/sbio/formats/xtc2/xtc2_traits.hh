@@ -23,6 +23,7 @@
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/core/sync.hh"
 #include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
@@ -236,35 +237,21 @@ namespace sbio {
                                                 TransitionOffset* transition_offsets_buf,
                                                 std::size_t access_offset = 0);
 
-    SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(StreamParameters& cfg) {
+    SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(GenericStreamConfig<XTC2Traits>& cfg) {
       AllocationRequest<XTC2Traits> request;
-      request.size_requests[0] = cfg.max_dgram_size * cfg.max_dgram_batch; // Transition buf
+      request.size_requests[0] = cfg.format_params.max_dgram_size * cfg.format_params.max_dgram_batch; // Transition buf
       request.size_requests[1] = // Scratch buffer for reading ahead in smd file
-        cfg.events_per_read * (sizeof(XTC2::Dgram) + 80);
-      request.size_requests[2] = cfg.max_dgram_size * cfg.max_dgram_batch; // Event buf
-      request.size_requests[3] = cfg.events_per_read * sizeof(XTC2Traits::EventOffset);
+        cfg.format_params.events_per_read * (sizeof(XTC2::Dgram) + 80);
+      request.size_requests[2] = cfg.format_params.max_dgram_size * cfg.format_params.max_dgram_batch; // Event buf
+      request.size_requests[3] = cfg.format_params.events_per_read * sizeof(XTC2Traits::EventOffset);
       request.size_requests[4] =
-        cfg.events_per_read * sizeof(XTC2Traits::TransitionOffset);
+        cfg.format_params.events_per_read * sizeof(XTC2Traits::TransitionOffset);
 
       return request;
     }
 
-    SBIO_HD static std::size_t max_batch_count(StreamParameters& cfg) {
-      return cfg.max_dgram_batch;
-    }
-
-    template <IOTraits IO>
-    SBIO_HD static IOStatus open_streams(Stream<IO, XTC2Traits>* streams,
-                                         const StreamParameters& cfg) {
-      if (get_stream<SMD>(streams).connect(cfg.smd_path) != IOStatus::Success) {
-        return IOStatus::OpenFailed;
-      }
-
-      if (get_stream<BD>(streams).connect(cfg.xtc_path) != IOStatus::Success) {
-        return IOStatus::OpenFailed;
-      }
-
-      return IOStatus::Success;
+    SBIO_HD static std::size_t max_batch_count(GenericStreamConfig<XTC2Traits>& cfg) {
+      return cfg.format_params.max_dgram_batch;
     }
 
     template <IOTraits IO, class StorageViewT>
@@ -297,8 +284,8 @@ namespace sbio {
     SBIO_HD static IOStatus index_stream(Stream<IO, XTC2Traits>* streams,
                                          StorageViewT& storage,
                                          DiscoveryState& stream_state,
-                                         const StreamParameters& cfg) {
-      auto events_per_read { cfg.events_per_read };
+                                         const GenericStreamConfig<XTC2Traits>& cfg) {
+      auto events_per_read { cfg.format_params.events_per_read };
       stream_state.events_per_read = events_per_read;
 
       std::size_t read_size { (sizeof(XTC2::Dgram) + 80) * events_per_read };
@@ -374,10 +361,10 @@ namespace sbio {
     SBIO_HD static IOStatus fetch_step(Stream<IO, XTC2Traits>* streams,
                                        StorageViewT& storage,
                                        DiscoveryState& stream_state,
-                                       const StreamParameters& cfg,
+                                       const GenericStreamConfig<XTC2Traits>& cfg,
                                        StepIdxType step_idx,
                                        DataAccessPtn ptn) {
-      stream_state.events_per_read = cfg.events_per_read;
+      stream_state.events_per_read = cfg.format_params.events_per_read;
       stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         std::size_t adjusted_index { step_idx % stream_state.events_per_read };
@@ -508,11 +495,11 @@ namespace sbio {
     SBIO_HD static IOStatus fetch_multi_steps(Stream<IO, XTC2Traits>* streams,
                                               StorageViewT& storage,
                                               DiscoveryState& stream_state,
-                                              const StreamParameters& cfg,
+                                              const GenericStreamConfig<XTC2Traits>& cfg,
                                               StepIdxType step_idx,
                                               StepIdxType count,
                                               DataAccessPtn ptn) {
-      stream_state.events_per_read = cfg.events_per_read;
+      stream_state.events_per_read = cfg.format_params.events_per_read;
       stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         std::size_t start_index { step_idx % stream_state.events_per_read };
@@ -587,12 +574,12 @@ namespace sbio {
     SBIO_HD static IOStatus fetch_multi_steps_stride(Stream<IO, XTC2Traits>* streams,
                                                      StorageViewT& storage,
                                                      DiscoveryState& stream_state,
-                                                     const StreamParameters& cfg,
+                                                     const GenericStreamConfig<XTC2Traits>& cfg,
                                                      StepIdxType step_idx,
                                                      StepIdxType count,
                                                      StepIdxType stride,
                                                      DataAccessPtn ptn) {
-      stream_state.events_per_read = cfg.events_per_read;
+      stream_state.events_per_read = cfg.format_params.events_per_read;
       stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         /// TODO: Implement... something for this.

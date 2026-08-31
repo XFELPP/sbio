@@ -201,15 +201,16 @@ namespace sbio {
       SBIO_HD inline hd_std::size_t num_entries() const { return count; }
     };
 
-    SBIO_HD static AllocationRequest<RandomTraits> get_allocation_request(StreamParameters& cfg) {
+    SBIO_HD static AllocationRequest<RandomTraits>
+    get_allocation_request(GenericStreamConfig<RandomTraits>& cfg) {
       AllocationRequest<RandomTraits> request;
 
-      request.size_requests[0] = cfg.event_size;
-      request.size_requests[1] = cfg.event_size;
-      if (cfg.indexing_mode == IndexingMode::IndexAll) {
-        request.size_requests[2] = cfg.num_events * sizeof(EventOffset);
-      } else if (cfg.indexing_mode == IndexingMode::IndexBatch) {
-        request.size_requests[2] = cfg.indexing_batch_size * sizeof(EventOffset);
+      request.size_requests[0] = cfg.format_params.event_size;
+      request.size_requests[1] = cfg.format_params.event_size;
+      if (cfg.format_params.indexing_mode == IndexingMode::IndexAll) {
+        request.size_requests[2] = cfg.format_params.num_events * sizeof(EventOffset);
+      } else if (cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
+        request.size_requests[2] = cfg.format_params.indexing_batch_size * sizeof(EventOffset);
       } else {
         request.size_requests[2] = 2 * sizeof(EventOffset);
       }
@@ -217,24 +218,8 @@ namespace sbio {
       return request;
     }
 
-    SBIO_HD static std::size_t max_batch_count(StreamParameters& cfg) {
-      return cfg.max_batch;
-    }
-
-    template <IOTraits IO>
-    SBIO_HD static IOStatus open_streams(Stream<IO, RandomTraits>* streams,
-                                         const StreamParameters& cfg) {
-#ifdef _WIN32
-      if (get_stream<DataStream>(streams).connect(cfg.h_file) != IOStatus::Success) {
-        return IOStatus::OpenFailed;
-      }
-#else
-      if (get_stream<DataStream>(streams).connect(cfg.fd) != IOStatus::Success) {
-        return IOStatus::OpenFailed;
-      }
-#endif
-
-      return IOStatus::Success;
+    SBIO_HD static std::size_t max_batch_count(GenericStreamConfig<RandomTraits>& cfg) {
+      return cfg.format_params.max_batch;
     }
 
     template <IOTraits IO, class StorageViewT>
@@ -290,7 +275,7 @@ namespace sbio {
     SBIO_HD static IOStatus index_stream(Stream<IO, RandomTraits>* streams,
                                          StorageViewT& storage,
                                          DiscoveryState& stream_state,
-                                         const StreamParameters& cfg) {
+                                         const GenericStreamConfig<RandomTraits>& cfg) {
       auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
       auto* event_offsets { reinterpret_cast<EventOffset*>(idx_buf) };
 
@@ -298,8 +283,8 @@ namespace sbio {
       hd_std::size_t event_count { 0 };
 
       // TODO: Double check... I think maybe right path. Need scratch buffer I think...
-      if (cfg.indexing_mode == IndexingMode::IndexAll ||
-          cfg.indexing_mode == IndexingMode::IndexBatch) {
+      if (cfg.format_params.indexing_mode == IndexingMode::IndexAll ||
+          cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
         if (stream_size >= sizeof(randfmt::FileTrailer)) {
           randfmt::FileTrailer trailer {};
           hd_std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
@@ -334,12 +319,12 @@ namespace sbio {
 
                   hd_std::size_t start_evt { 0 };
                   hd_std::size_t end_evt { total_events };
-                  if (cfg.indexing_mode == IndexingMode::IndexBatch) {
+                  if (cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
                     // If reading in batches only index the chunk requested.
                     // NOTE: This is very wasteful ATM since everything is reread each time..
                     //       But... this is not supposed to be a high-performance format. Just testing...
                     start_evt = stream_state.num_events;
-                    end_evt = start_evt + cfg.indexing_batch_size;
+                    end_evt = start_evt + cfg.format_params.indexing_batch_size;
                     if (end_evt > total_events) {
                       end_evt = total_events;
                     }
@@ -351,7 +336,7 @@ namespace sbio {
                   }
 
                   event_count = end_evt;
-                  if (cfg.indexing_mode == IndexingMode::IndexAll) {
+                  if (cfg.format_params.indexing_mode == IndexingMode::IndexAll) {
                     stream_state.num_events = event_count;
                   } else {
                     stream_state.num_events = end_evt - start_evt;
@@ -434,13 +419,13 @@ namespace sbio {
     SBIO_HD static IOStatus fetch_step(Stream<IO, RandomTraits>* streams,
                                        StorageViewT& storage,
                                        DiscoveryState& stream_state,
-                                       const StreamParameters& cfg,
+                                       const GenericStreamConfig<RandomTraits>& cfg,
                                        StepIdxType step_idx,
                                        DataAccessPtn ptn) {
       hd_std::size_t adjusted_idx { step_idx };
-      if (cfg.indexing_mode == IndexingMode::IndexBatch) {
-        adjusted_idx = step_idx % cfg.indexing_batch_size;
-      } else if (cfg.indexing_mode == IndexingMode::NoIndex) {
+      if (cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
+        adjusted_idx = step_idx % cfg.format_params.indexing_batch_size;
+      } else if (cfg.format_params.indexing_mode == IndexingMode::NoIndex) {
         adjusted_idx = 0;
       }
       if (adjusted_idx >= stream_state.num_events) {
@@ -467,15 +452,15 @@ namespace sbio {
     SBIO_HD static IOStatus fetch_multi_steps(Stream<IO, RandomTraits>* streams,
                                               StorageViewT& storage,
                                               DiscoveryState& stream_state,
-                                              const StreamParameters& cfg,
+                                              const GenericStreamConfig<RandomTraits>& cfg,
                                               StepIdxType step_idx,
                                               StepIdxType count,
                                               DataAccessPtn ptn) {
-      if (cfg.indexing_mode == IndexingMode::IndexAll ||
-          cfg.indexing_mode == IndexingMode::IndexBatch) {
+      if (cfg.format_params.indexing_mode == IndexingMode::IndexAll ||
+          cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
         hd_std::size_t start_idx { step_idx };
-        if (cfg.indexing_mode == IndexingMode::IndexBatch) {
-          start_idx = step_idx % cfg.indexing_batch_size;
+        if (cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
+          start_idx = step_idx % cfg.format_params.indexing_batch_size;
         }
 
         hd_std::size_t end_idx { start_idx + count - 1 };
@@ -528,7 +513,7 @@ namespace sbio {
     SBIO_HD static IOStatus fetch_multi_steps_stride(Stream<IO, RandomTraits>* streams,
                                                      StorageViewT& storage,
                                                      DiscoveryState& stream_state,
-                                                     const StreamParameters& cfg,
+                                                     const GenericStreamConfig<RandomTraits>& cfg,
                                                      StepIdxType step_idx,
                                                      StepIdxType count,
                                                      StepIdxType stride,

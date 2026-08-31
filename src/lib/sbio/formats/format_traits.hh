@@ -78,7 +78,7 @@ namespace sbio {
   template <typename T>
   concept CanFindAndConfigureStreams = requires(impl::PlaceholderDataSource& ds,
                                                 const typename T::DataSourceParameters& spec,
-                                                typename T::StreamParameters& cfg) {
+                                                GenericStreamConfig<T>& cfg) {
     // Master DataSource parameters for finding the streams
     typename T::DataSourceParameters;
 
@@ -103,7 +103,7 @@ namespace sbio {
   };
 
   template <typename T>
-  concept CanAllocateStorage = requires(typename T::StreamParameters& cfg) {
+  concept CanAllocateStorage = requires(GenericStreamConfig<T>& cfg) {
     // Has a type list of buffer descriptors to provide StreamBroker with Storage reqs.
     typename T::BrokerBufferRequirements;
 
@@ -135,12 +135,6 @@ namespace sbio {
     { T::current_buffer(storage, state) } -> std::convertible_to<void*>;
   };
 
-  template <typename T, typename IO>
-  concept CanOpenStreams = requires(Stream<IO, T>* streams,
-                                    const typename T::StreamParameters& cfg) {
-    { T::open_streams(streams, cfg) } -> std::convertible_to<IOStatus>;
-  };
-
   template <typename T, typename IO, typename StorageViewT>
   concept CanDiscoverMetadata = requires(Stream<IO, T>* streams,
                                          StorageViewT& storage,
@@ -161,7 +155,7 @@ namespace sbio {
   concept CanIndexStreams = requires(Stream<IO, T>* streams,
                                      StorageViewT& storage,
                                      typename T::DiscoveryState& state,
-                                     const typename T::StreamParameters& cfg) {
+                                     const GenericStreamConfig<T>& cfg) {
     { T::index_stream(streams, storage, state, cfg) } -> std::convertible_to<IOStatus>;
   };
 
@@ -169,7 +163,7 @@ namespace sbio {
   concept CanFetchStreamData = requires(Stream<IO, T>* streams,
                                         StorageViewT& storage,
                                         typename T::DiscoveryState& state,
-                                        const typename T::StreamParameters& cfg,
+                                        const GenericStreamConfig<T>& cfg,
                                         typename T::StepIdxType step_idx,
                                         typename T::DataAccessPtn ptn) {
     { T::fetch_step(streams, storage, state, cfg, step_idx, ptn) } -> std::convertible_to<IOStatus>;
@@ -244,8 +238,8 @@ namespace sbio {
    *   // CanAllocateStorage
    *   // ------------------
    *   using BrokerBufferRequirements = RequirementsList<>;
-   *   static AllocationRequest<T> get_allocation_request(StreamParameters& cfg);
-   *   static std::size_t max_batch_count(StreamParameters& cfg);
+   *   static AllocationRequest<T> get_allocation_request(GenericStreamConfig<ImplementsFormatTraits>& cfg);
+   *   static std::size_t max_batch_count(GenericStreamConfig<ImplementsFormatTraits>& cfg);
    *
    *   // HasDataRequest
    *   // --------------
@@ -261,11 +255,6 @@ namespace sbio {
    *
    *   template <class StorageViewT>
    *   static auto current_buffer(StorageViewT& storage, const DiscoveryState& state);
-   *
-   *   // CanOpenStreams
-   *   // --------------
-   *   template <IOTraits IO>
-   *   static IOStatus open_streams(Stream<IO, T>* streams, const StreamParameters& cfg);
    *
    *   // CanDiscoverMetadata
    *   // -------------------------------------------
@@ -328,7 +317,6 @@ namespace sbio {
     HasStreamState<
       T,
       StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
-    CanOpenStreams<T, IO>                                                           &&
     CanDiscoverMetadata<
       T,
       IO,

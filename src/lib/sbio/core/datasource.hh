@@ -185,7 +185,7 @@ namespace sbio {
      * @returns Whether the incorporation of the StreamBroker, and subsequent
      *          configuration was successful.
      */
-    SBIO_HD inline bool add_data_stream(const StreamConfig& cfg) {
+    SBIO_HD inline bool add_data_stream(const GenericStreamConfig<DataFormat>& cfg) {
       if (m_num_data_streams >= MaxDataStreams) {
         return false;
       }
@@ -203,7 +203,9 @@ namespace sbio {
         typename Locator::template LocatorParameters<DataFormat>(std::forward<Args>(args)...)
       };
 
-      return Locator::find_streams(*this, locator_params, base_cfg);
+      GenericStreamConfig<DataFormat> gen_cfg;
+      gen_cfg.format_params = base_cfg;
+      return Locator::find_streams(*this, locator_params, gen_cfg);
     }
 
     template <IsLocator<DataSource> Locator, typename... Args>
@@ -211,7 +213,9 @@ namespace sbio {
       using LocatorParams = typename Locator::template LocatorParameters<DataFormat>;
       auto locator_params { LocatorParams(std::forward<Args>(args)...) };
 
-      return Locator::find_streams(*this, locator_params, base_cfg);
+      GenericStreamConfig<DataFormat> gen_cfg;
+      gen_cfg.format_params = base_cfg;
+      return Locator::find_streams(*this, locator_params, gen_cfg);
     }
 
     /**

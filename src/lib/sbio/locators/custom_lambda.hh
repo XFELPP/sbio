@@ -21,6 +21,7 @@
 #define SBIO_LOCATORS_CUSTOM_LAMBDA_HH
 
 #include "sbio/core/locator.hh"
+#include "sbio/core/stream.hh"
 
 #include <fmt/args.h>
 #include <fmt/format.h>
@@ -46,7 +47,7 @@ namespace sbio {
     static constexpr auto finder_lambda =
       []<typename DS>(DS& ds,
                       const Parameters& params,
-                      const typename DS::DataFormat::StreamParameters& base_cfg) {
+                      const GenericStreamConfig<typename DS::DataFormat>& base_cfg) {
       return ds.num_data_streams() > 0;
     };
 
@@ -78,8 +79,6 @@ namespace sbio {
      * @returns A numeric identifier for the stream's position in a sequence/chain.
      */
     static std::size_t id_chain_order() { return 0; }
-
-    static void update_stream_parameters(typename FTraits::StreamParameters& cfg) {}
   };
 
   struct CustomLambdaLocator {
@@ -92,7 +91,7 @@ namespace sbio {
     template <typename DS>
     static bool find_streams(DS& ds,
                              const LocatorParameters<typename DS::DataFormat>& params,
-                             const typename DS::DataFormat::StreamParameters& base_cfg) {
+                             const GenericStreamConfig<typename DS::DataFormat>& base_cfg) {
       using FTraits = typename DS::DataFormat;
 
       return LocatorTraits<FTraits>::finder_lam(ds, params, base_cfg);

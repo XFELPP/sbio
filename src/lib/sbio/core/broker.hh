@@ -205,7 +205,7 @@ namespace sbio {
      *
      * @param[in] cfg The data-format-dependent configuration parameters.
      */
-    StreamBroker(const StreamConfig& cfg)
+    StreamBroker(const GenericStreamConfig<DataFormat>& cfg)
       : m_config(cfg)
       , m_broker_state(BrokerState::INIT)
     {}
@@ -218,7 +218,7 @@ namespace sbio {
      *
      * @param[in] cfg The data format specif configuration parameters.
      */
-    SBIO_HD inline void configure_broker(const StreamConfig& cfg) {
+    SBIO_HD inline void configure_broker(const GenericStreamConfig<DataFormat>& cfg) {
       m_config = cfg;
       m_broker_state = BrokerState::INIT;
     }
@@ -261,7 +261,35 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->open_data_stream_impl();
       } else {
-        return FTraits::open_streams(m_streams, m_config);
+        for (std::size_t r = 0; r < m_config.VariantCount; ++r) {
+          const auto& res { m_config.resources[r] };
+
+          IOStatus status { IOStatus::OpenFailed };
+          switch (res.type) {
+          case StreamResourceType::Path: {
+            status = m_streams[r].connect(res.handle.path);
+            break;
+          }
+          case StreamResourceType::FileDescriptor: {
+            status = m_streams[r].connect(res.handle.fd);
+            break;
+          }
+          //case StreamResourceType::MemoryRegion: {
+          //  status = m_streams[r].connect(res.handle.memory.ptr,
+          //                                res.handle.memory.size);
+          //  break;
+          //}
+          default: {
+            return IOStatus::FunctionUnavailable;
+          }
+          }
+
+          if (status != IOStatus::Success) {
+            return status;
+          }
+        }
+
+        return IOStatus::Success;
       }
     }
 
@@ -600,13 +628,13 @@ namespace sbio {
      *
      * @returns The StreamParameters configuration.
      */
-    SBIO_HD inline StreamConfig& config() { return m_config; }
+    SBIO_HD inline GenericStreamConfig<DataFormat>& config() { return m_config; }
     /**
      * The set of StreamParameters configuration used to instantiate the broker.
      *
      * @returns The StreamParameters configuration.
      */
-    SBIO_HD inline const StreamConfig& config() const { return m_config; }
+    SBIO_HD inline const GenericStreamConfig<DataFormat>& config() const { return m_config; }
 
     /**
      * Configure the Broker with a set of metadata.
@@ -651,7 +679,7 @@ namespace sbio {
 
   protected:
     StreamType m_streams[StreamCount];
-    StreamConfig m_config;
+    GenericStreamConfig<DataFormat> m_config;
     BrokerState m_broker_state;
     StreamState m_stream_state;
     StreamMetadata m_metadata_inv;

@@ -20,6 +20,7 @@
 #ifndef SBIO_CORE_LOCATOR_HH
 #define SBIO_CORE_LOCATOR_HH
 
+#include "sbio/core/stream.hh"
 #include "sbio/export_macro.hh"
 
 #ifdef __CUDACC__
@@ -48,9 +49,9 @@ namespace sbio {
   template <typename T, typename DS>
   concept IsLocator = requires(DS& ds,
                                const typename T::template LocatorParameters<typename DS::DataFormat>& params,
-                               const typename DS::DataFormat::StreamParameters& base_cfg) {
+                               const GenericStreamConfig<typename DS::DataFormat>& cfg) {
     typename T::template LocatorParameters<typename DS::DataFormat>;
-    { T::template find_streams<DS>(ds, params, base_cfg) } -> hd_std::same_as<bool>;
+    { T::template find_streams<DS>(ds, params, cfg) } -> hd_std::same_as<bool>;
   };
 
   template <typename Class, typename T>

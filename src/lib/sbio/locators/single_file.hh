@@ -21,6 +21,7 @@
 #define SBIO_LOCATORS_SINGLE_FILE_HH
 
 #include "sbio/core/locator.hh"
+#include "sbio/core/stream.hh"
 
 #include <array>
 #include <cstddef>
@@ -49,10 +50,6 @@ namespace sbio {
      *          Zero by definition in this case.
      */
     static std::size_t id_chain_order() { return 0; }
-
-    static void update_stream_parameters(typename FTraits::StreamParameters& cfg,
-                                         std::array<const char*, VariantCount>& paths) {
-    }
   };
 
   struct SingleFileLocator {
@@ -63,12 +60,15 @@ namespace sbio {
     using LocatorParameters = typename LocatorTraits<FTraits>::Parameters;
 
     template <typename DS>
-    static bool find_streams(DS& ds, const typename DS::DataFormat::StreamParameters& base_cfg,
+    static bool find_streams(DS& ds,
+                             const GenericStreamConfig<typename DS::DataFormat>& base_cfg,
                              const char* filepath) {
       using FTraits = typename DS::DataFormat;
-      typename FTraits::StreamParameters cfg { base_cfg };
+      auto cfg { base_cfg };
 
-      LocatorTraits<FTraits>::update_stream_parameters(cfg, filepath);
+      for (std::size_t r = 0; r < cfg.VariantCount; ++r) {
+        cfg.resources[r] = StreamResource::from_path(filepath);
+      }
 
       ds.add_data_stream(cfg);
       return true;

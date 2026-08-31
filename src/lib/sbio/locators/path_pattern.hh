@@ -21,6 +21,7 @@
 #define SBIO_LOCATORS_PATH_PATTERN_HH
 
 #include "sbio/core/locator.hh"
+#include "sbio/core/stream.hh"
 
 #include <fmt/args.h>
 #include <fmt/format.h>
@@ -75,9 +76,6 @@ namespace sbio {
      * @returns A numeric identifier for the stream's position in a sequence/chain.
      */
     static std::size_t id_chain_order(std::string_view filename) { return 0; }
-
-    static void update_stream_parameters(typename FTraits::StreamParameters& cfg,
-                                         const std::array<std::string, VariantCount>& paths) {}
   };
 
   struct PathPatternLocator {
@@ -96,7 +94,7 @@ namespace sbio {
     template <typename DS>
     static bool find_streams(DS& ds,
                              const LocatorParameters<typename DS::DataFormat>& params,
-                             const typename DS::DataFormat::StreamParameters& base_cfg) {
+                             const GenericStreamConfig<typename DS::DataFormat>& base_cfg) {
       using FTraits = typename DS::DataFormat;
       constexpr auto patterns { PathPatternLocatorTraits<FTraits>::role_patterns };
 
@@ -129,10 +127,12 @@ namespace sbio {
       for (const auto& [stream_id, stream_chain_map] : streams) {
         if (stream_chain_map.size() == 1) {
           // Have one single StreamBroker to construct
-          typename FTraits::StreamParameters cfg { base_cfg };
+          auto cfg { base_cfg };
           const auto& role_paths { stream_chain_map.begin()->second };
 
-          LocatorTraits<FTraits>::update_stream_parameters(cfg, role_paths);
+          for (std::size_t r = 0; r < VariantCount; ++r) {
+            cfg.resources[r] = StreamResource::from_path(role_paths[r].c_str());
+          }
 
           ds.add_data_stream(cfg);
         } else {
