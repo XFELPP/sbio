@@ -20,6 +20,7 @@
 #include "sbio/core/datasource.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
 #include "sbio/formats/random/randfmt.hh"
@@ -63,7 +64,10 @@ int main(int argc, char* argv[]) {
   base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
   base_cfg.indexing_batch_size = 100;
 
-  bool created { ds.load_source(base_cfg, detectors, num_detectors) };
+  sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
+  cfg.format_params = base_cfg;
+
+  bool created { ds.load_source(cfg, detectors, num_detectors) };
   assert(created && "Failed to create random stream brokers");
 
   if (created) {

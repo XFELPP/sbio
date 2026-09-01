@@ -20,6 +20,7 @@
 #include "pysbio/io/pyio.hh"
 
 #include "sbio/core/io.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/io/posix.hh"
 
 #include <pybind11/native_enum.h>
@@ -37,6 +38,15 @@ PYBIND11_MODULE(pyio, io_module, py::mod_gil_not_used()) {
     .value("SyncPOSIX", pysbio::IOPolicy::SyncPOSIX)
     .export_values()
     .finalize();
+
+  py::classh<sbio::StreamIdentity>(io_module, "StreamIdentity")
+    .def(py::init<>())
+    .def(py::init<std::size_t, std::size_t>())
+    .def_readwrite("stream_id", &sbio::StreamIdentity::stream_id)
+    .def_readwrite("chain_id", &sbio::StreamIdentity::chain_id);
+
+  py::classh<sbio::StreamResource>(io_module, "StreamResource")
+    .def(py::init<>()); // TODO: Fill this in!
 
   py::native_enum<sbio::IOStatus>(io_module,
                                   "IOStatus",

@@ -24,6 +24,7 @@
 #include "pysbio/io/pyio.hh"
 #include "pysbio/pybroker_group.hh"
 
+#include "sbio/core/stream.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_locator.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -122,18 +123,18 @@ namespace pysbio {
   {
     if (data_fmt == pysbio::FTraits::XTC1) {
 #ifdef SBIO_HAS_XTC1
-      sbio::XTC1Traits::StreamParameters base_cfg;
-      base_cfg.events_per_read = evt_per_read;
-      base_cfg.max_dgram_size = dgram_size;
+      sbio::GenericStreamConfig<sbio::XTC1Traits> cfg;
+      cfg.index_batch_size = evt_per_read;
+      cfg.max_buffer_size = dgram_size;
       if (epolicy == pysbio::ExecutionPolicy::Serial) {
         SerialDataSource1 ds;
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (epolicy == pysbio::ExecutionPolicy::Threaded) {
         auto ecfg = parse_threaded_config(exec_cfg);
         ThreadedDataSource1 ds(ecfg);
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (epolicy == pysbio::ExecutionPolicy::MPI) {
@@ -150,7 +151,7 @@ namespace pysbio {
 
         auto ecfg = parse_mpi_config(exec_cfg);
         MPIDataSource1 ds(ecfg);
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else
@@ -176,7 +177,7 @@ namespace pysbio {
 
         auto ecfg = parse_mpi_threaded_config(exec_cfg);
         ThreadedMPIDataSource1 ds(ecfg);
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else
@@ -191,19 +192,19 @@ namespace pysbio {
 #endif
     } else if (data_fmt == pysbio::FTraits::XTC2){
 #ifdef SBIO_HAS_XTC2
-      sbio::XTC2Traits::StreamParameters base_cfg;
-      base_cfg.events_per_read = evt_per_read;
-      base_cfg.max_dgram_size = dgram_size;
+      sbio::GenericStreamConfig<sbio::XTC2Traits> cfg;
+      cfg.index_batch_size = evt_per_read;
+      cfg.max_buffer_size = dgram_size;
 
       if (epolicy == pysbio::ExecutionPolicy::Serial) {
         SerialDataSource2 ds;
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (epolicy == pysbio::ExecutionPolicy::Threaded) {
         auto ecfg = parse_threaded_config(exec_cfg);
         ThreadedDataSource2 ds(ecfg);
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
       } else if (epolicy == pysbio::ExecutionPolicy::MPI) {
@@ -220,7 +221,7 @@ namespace pysbio {
 
         auto ecfg = parse_mpi_config(exec_cfg);
         MPIDataSource2 ds(ecfg);
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else
@@ -246,7 +247,7 @@ namespace pysbio {
 
         auto ecfg = parse_mpi_threaded_config(exec_cfg);
         ThreadedMPIDataSource2 ds(ecfg);
-        ds.load_source(base_cfg, exp, run);
+        ds.load_source(cfg, exp, run);
         ds.discover_metadata();
         m_ds = std::move(ds);
 #else

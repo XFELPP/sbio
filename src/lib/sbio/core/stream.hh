@@ -111,6 +111,10 @@ namespace sbio {
 
     std::array<StreamResource, VariantCount> resources;
 
+    std::size_t max_buffer_size { 0x4000000 };
+    std::size_t max_batch_size { 1 };
+    std::size_t index_batch_size { 43200 };
+
     typename FTraits::StreamParameters format_params;
   };
 

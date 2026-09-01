@@ -231,7 +231,7 @@ namespace sbio {
 
       std::size_t max_batch_count { 1 };
       if (!m_topology.empty() && m_topology.broker_for_segment(0) != nullptr) {
-        max_batch_count = FTraits::max_batch_count(m_topology.broker_for_segment(0)->config());
+        max_batch_count = m_topology.broker_for_segment(0)->config().max_batch_size;
       }
 
       m_ptr_storage =
@@ -245,7 +245,7 @@ namespace sbio {
 
       std::size_t max_batch_count { 1 };
       if (!m_topology.empty() && m_topology.broker_for_segment(0) != nullptr) {
-        max_batch_count = FTraits::max_batch_count(m_topology.broker_for_segment(0)->config());
+        max_batch_count = m_topology.broker_for_segment(0)->config().max_batch_size;
       }
 
       m_ptr_storage =

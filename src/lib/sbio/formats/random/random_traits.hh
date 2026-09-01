@@ -103,7 +103,6 @@ namespace sbio {
     struct StreamParameters {
       hd_std::size_t num_events { 100000 };
       hd_std::size_t event_size { 0x100000 };
-      hd_std::size_t max_batch { 1 };
       hd_std::uint32_t seed { 42 };
       hd_std::uint8_t pattern_type { 0 }; ///< 0 = PNRG, 1 = Sequential, 2 = Fixed fill
       bool enable_subblock_offsets { true };
@@ -216,10 +215,6 @@ namespace sbio {
       }
 
       return request;
-    }
-
-    SBIO_HD static std::size_t max_batch_count(GenericStreamConfig<RandomTraits>& cfg) {
-      return cfg.format_params.max_batch;
     }
 
     template <IOTraits IO, class StorageViewT>

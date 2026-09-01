@@ -18,6 +18,7 @@
  */
 
 #include "sbio/core/datasource.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/formats/random/randfmt.hh"
 #include "sbio/formats/random/random_locator.hh"
@@ -68,7 +69,10 @@ protected:
     base_cfg.enable_subblock_offsets = true;
     base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
 
-    ASSERT_TRUE(ds.load_source_with<sbio::CustomLambdaLocator>(base_cfg, detectors, num_detectors));
+    sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
+    cfg.format_params = base_cfg;
+
+    ASSERT_TRUE(ds.load_source_with<sbio::CustomLambdaLocator>(cfg, detectors, num_detectors));
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
   }
 };

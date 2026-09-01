@@ -95,13 +95,7 @@ namespace sbio {
     using StepIdxType = std::size_t; // Unit type for indexing and selecting data units ("events")
     static constexpr StepIdxType ExhaustedSentinel { static_cast<StepIdxType>(-1) }; // Indicator all units read
 
-    struct StreamParameters {
-      char smd_path[MaxNameSize];
-      char xtc_path[MaxNameSize];
-      std::size_t max_dgram_size { 0x4000000 };
-      std::size_t max_dgram_batch { 1 };
-      std::size_t events_per_read { 43200 };
-    };
+    struct StreamParameters {};
 
     struct SBIO_API DataSourceParameters {
 #ifndef __CUDA_ARCH__
@@ -239,19 +233,15 @@ namespace sbio {
 
     SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(GenericStreamConfig<XTC2Traits>& cfg) {
       AllocationRequest<XTC2Traits> request;
-      request.size_requests[0] = cfg.format_params.max_dgram_size * cfg.format_params.max_dgram_batch; // Transition buf
+      request.size_requests[0] = cfg.max_buffer_size * cfg.max_batch_size; // Transition buf
       request.size_requests[1] = // Scratch buffer for reading ahead in smd file
-        cfg.format_params.events_per_read * (sizeof(XTC2::Dgram) + 80);
-      request.size_requests[2] = cfg.format_params.max_dgram_size * cfg.format_params.max_dgram_batch; // Event buf
-      request.size_requests[3] = cfg.format_params.events_per_read * sizeof(XTC2Traits::EventOffset);
+        cfg.index_batch_size * (sizeof(XTC2::Dgram) + 80);
+      request.size_requests[2] = cfg.max_buffer_size * cfg.max_batch_size; // Event buf
+      request.size_requests[3] = cfg.index_batch_size * sizeof(XTC2Traits::EventOffset);
       request.size_requests[4] =
-        cfg.format_params.events_per_read * sizeof(XTC2Traits::TransitionOffset);
+        cfg.index_batch_size * sizeof(XTC2Traits::TransitionOffset);
 
       return request;
-    }
-
-    SBIO_HD static std::size_t max_batch_count(GenericStreamConfig<XTC2Traits>& cfg) {
-      return cfg.format_params.max_dgram_batch;
     }
 
     template <IOTraits IO, class StorageViewT>
@@ -285,7 +275,7 @@ namespace sbio {
                                          StorageViewT& storage,
                                          DiscoveryState& stream_state,
                                          const GenericStreamConfig<XTC2Traits>& cfg) {
-      auto events_per_read { cfg.format_params.events_per_read };
+      auto events_per_read { cfg.index_batch_size };
       stream_state.events_per_read = events_per_read;
 
       std::size_t read_size { (sizeof(XTC2::Dgram) + 80) * events_per_read };
@@ -364,7 +354,7 @@ namespace sbio {
                                        const GenericStreamConfig<XTC2Traits>& cfg,
                                        StepIdxType step_idx,
                                        DataAccessPtn ptn) {
-      stream_state.events_per_read = cfg.format_params.events_per_read;
+      stream_state.events_per_read = cfg.index_batch_size;
       stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         std::size_t adjusted_index { step_idx % stream_state.events_per_read };
@@ -499,7 +489,7 @@ namespace sbio {
                                               StepIdxType step_idx,
                                               StepIdxType count,
                                               DataAccessPtn ptn) {
-      stream_state.events_per_read = cfg.format_params.events_per_read;
+      stream_state.events_per_read = cfg.index_batch_size;
       stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         std::size_t start_index { step_idx % stream_state.events_per_read };
@@ -579,7 +569,7 @@ namespace sbio {
                                                      StepIdxType count,
                                                      StepIdxType stride,
                                                      DataAccessPtn ptn) {
-      stream_state.events_per_read = cfg.format_params.events_per_read;
+      stream_state.events_per_read = cfg.index_batch_size;
       stream_state.last_accessed_ptn = ptn;
       if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
         /// TODO: Implement... something for this.

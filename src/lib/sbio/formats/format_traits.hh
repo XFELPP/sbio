@@ -109,10 +109,6 @@ namespace sbio {
 
     // Provides an interface to populate a Storage request based on runtime config
     { T::get_allocation_request(cfg) } -> std::convertible_to<AllocationRequest<T>>;
-
-    // Provides a method to tell the BrokerGroup what the maximum number of steps
-    // will be when using batched read APIs
-    { T::max_batch_count(cfg) } -> std::convertible_to<std::size_t>;
   };
 
   template <typename T>
@@ -239,7 +235,6 @@ namespace sbio {
    *   // ------------------
    *   using BrokerBufferRequirements = RequirementsList<>;
    *   static AllocationRequest<T> get_allocation_request(GenericStreamConfig<ImplementsFormatTraits>& cfg);
-   *   static std::size_t max_batch_count(GenericStreamConfig<ImplementsFormatTraits>& cfg);
    *
    *   // HasDataRequest
    *   // --------------
