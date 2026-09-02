@@ -20,6 +20,7 @@
 #ifndef SBIO_CORE_LOCATOR_HH
 #define SBIO_CORE_LOCATOR_HH
 
+#include "sbio/core/roles.hh"
 #include "sbio/core/stream.hh"
 #include "sbio/export_macro.hh"
 
@@ -73,6 +74,14 @@ namespace sbio {
 
   template <typename Locator, typename FTraits>
   using LocatorParameters_t = typename LocatorParameters<Locator, FTraits>::Type;
+
+  template <typename T, typename Locator, typename FTraits>
+  concept IsLocatorTraits = requires {
+    typename T::template Parameters<Locator, FTraits>;
+
+    typename T::provides_variants;
+    requires IsStreamSet<typename T::provides_variants>;
+  };
 } // namespace sbio
 
 #endif // SBIO_CORE_LOCATOR_HH

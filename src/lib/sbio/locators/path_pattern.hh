@@ -98,7 +98,8 @@ namespace sbio {
       using FTraits = typename DS::DataFormat;
       constexpr auto patterns { PathPatternLocatorTraits<FTraits>::role_patterns };
 
-      constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
+      constexpr std::size_t VariantCount { LocatorTraits<FTraits>::provides_variants::size() };
+
       StreamMap<VariantCount> streams;
       for (std::size_t r = 0; r < VariantCount; ++r) {
         std::string base_pattern = format_parameter_string(patterns[r], params);

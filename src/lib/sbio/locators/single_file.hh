@@ -66,7 +66,9 @@ namespace sbio {
       using FTraits = typename DS::DataFormat;
       auto cfg { base_cfg };
 
-      for (std::size_t r = 0; r < cfg.VariantCount; ++r) {
+      constexpr std::size_t VariantCount { LocatorTraits<FTraits>::provides_variants::size() };
+
+      for (std::size_t r = 0; r < VariantCount; ++r) {
         cfg.resources[r] = StreamResource::from_path(filepath);
       }
 

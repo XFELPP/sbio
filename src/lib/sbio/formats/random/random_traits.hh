@@ -22,6 +22,7 @@
 
 #include "sbio/formats/random/randfmt.hh"
 
+#include "sbio/core/request.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
@@ -144,23 +145,8 @@ namespace sbio {
       hd_std::size_t curr_offset { 0 };     ///< Current offset along file
     };
 
-    struct SBIO_API DataRequest {
-      DataRequest() = default;
-
-      DataRequest(const DataRequest& other) = default;
-      DataRequest& operator=(const DataRequest& other) = default;
-      DataRequest(DataRequest&& other) noexcept = default;
-      DataRequest& operator=(DataRequest&& other) noexcept = default;
-
-      DataRequest(const char* name_, const char* type_) {
-        safe_strncpy(name, name_, MaxNameSize);
-        safe_strncpy(type, type_, MaxNameSize);
-      }
-
-      char name[MaxNameSize];
-      char type[MaxNameSize];
-      std::uint32_t segment_number { 0 };
-    };
+    using RequestSchema = sbio::RequestFieldSchema<>;
+    using DataRequest = sbio::DataRequest<RequestSchema>;
 
     struct SBIO_API MetadataInventory {
       struct Entry {
@@ -566,7 +552,7 @@ namespace sbio {
       const MetadataInventory::Entry* entry { nullptr };
       hd_std::uint8_t det_idx { 0 };
       for (hd_std::size_t i = 0; i < inv.count; ++i) {
-        if (hd_std::strcmp(inv.entries[i].name, req.name) == 0) {
+        if (hd_std::strcmp(inv.entries[i].name, req.group_name) == 0) {
           entry = &inv.entries[i];
           det_idx = static_cast<hd_std::uint8_t>(i);
           break;

@@ -66,6 +66,8 @@ namespace sbio {
   struct CustomLambdaLocatorTraits<RandomTraits> {
     using Parameters = LocatorParameters_t<CustomLambdaLocator, RandomTraits>;
 
+    using provides_variants = StreamSet<RandomTraits::DataStream>;
+
     static constexpr auto finder_lam =
       [] <typename DS> (DS& ds,
                         const Parameters& params,

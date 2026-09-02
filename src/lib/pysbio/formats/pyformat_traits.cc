@@ -209,32 +209,32 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .def(py::init<const char*, const char*>())
     .def_property("detector_type",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.detector_type;
+                    return self.group_type;
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.detector_type, val.c_str(), sbio::XTC2::MaxNameSize);
+                    sbio::safe_strncpy(self.group_type, val.c_str(), sbio::XTC2::MaxNameSize);
                   })
     .def_property("detector_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.detector_name;
+                    return self.group_name;
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.detector_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    sbio::safe_strncpy(self.group_name, val.c_str(), sbio::XTC2::MaxNameSize);
                   })
     .def_readwrite("segment_number", &sbio::XTC2Traits::DataRequest::segment_number)
     .def_property("alg_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.alg_name;
+                    return self.get<"alg">();
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.alg_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.set<"alg">(val.c_str());
                   })
     .def_property("field_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.field_name;
+                    return self.get<"field">();
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.field_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.set<"field">(val.c_str());
                   });
 
   py::classh<sbio::XTC2::DataResult>(ftraits_module, "XTC2DataResult")

@@ -62,6 +62,8 @@ namespace sbio {
   struct PathPatternLocatorTraits<XTC2Traits> {
     using Parameters = LocatorParameters_t<PathPatternLocator, XTC2Traits>;
 
+    using provides_variants = StreamSet<XTC2Traits::SMD, XTC2Traits::BD>;
+
     static constexpr std::size_t VariantCount { XTC2Traits::StreamTypes::size() };
 
     // Must update this to use SIT_PSDM_DATA
@@ -128,6 +130,8 @@ namespace sbio {
   template <>
   struct SingleFileLocatorTraits<XTC2Traits> {
     using Parameters = LocatorParameters_t<SingleFileLocator, XTC2Traits>;
+
+    using provides_variants = StreamSet<XTC2Traits::BD>;
 
     /**
      * For a single file, there is only a single stream by definition.

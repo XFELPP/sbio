@@ -20,6 +20,7 @@
 #ifndef SBIO_FORMATS_XTC2_XTC2_TRAITS_HH
 #define SBIO_FORMATS_XTC2_XTC2_TRAITS_HH
 
+#include "sbio/core/request.hh"
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
@@ -57,6 +58,16 @@ typedef SSIZE_T ssize_t;
 namespace fs = std::filesystem;
 
 namespace sbio {
+  namespace literals {
+    SBIO_HD constexpr auto operator ""_alg(const char* str, std::size_t) {
+      return NamedArg<"alg"> { str };
+    }
+
+    SBIO_HD constexpr auto operator ""_field(const char* str, std::size_t) {
+      return NamedArg<"field"> { str };
+    }
+  } // namespace literals
+
   struct SBIO_API XTC2Traits : public BaseTraits {
     using DefaultLocator = PathPatternLocator;
 
@@ -158,37 +169,8 @@ namespace sbio {
       DataAccessPtn last_accessed_ptn { DataAccessPtn::L1Accept }; ///< Indicate last buffer used
     };
 
-    struct SBIO_API DataRequest {
-      DataRequest() = default;
-
-      DataRequest(const DataRequest& other) = default;
-      DataRequest& operator=(const DataRequest& other) = default;
-      DataRequest(DataRequest&& other) noexcept = default;
-      DataRequest& operator=(DataRequest&& other) noexcept = default;
-
-      DataRequest(const char* name,
-                  const char* type,
-                  const char* alg,
-                  const char* field) {
-        safe_strncpy(detector_name, name, MaxNameSize);
-        safe_strncpy(detector_type, type, MaxNameSize);
-        safe_strncpy(alg_name, alg, MaxNameSize);
-        safe_strncpy(field_name, field, MaxNameSize);
-      }
-
-      DataRequest(const char* name, const char* type) {
-        safe_strncpy(detector_name, name, MaxNameSize);
-        safe_strncpy(detector_type, type, MaxNameSize);
-        safe_strncpy(alg_name, "raw", MaxNameSize);
-        safe_strncpy(field_name, "raw", MaxNameSize);
-      }
-
-      char detector_type[MaxNameSize];
-      char detector_name[MaxNameSize];
-      std::uint32_t segment_number { 0 };
-      char alg_name[MaxNameSize];
-      char field_name[MaxNameSize];
-    };
+    using RequestSchema = sbio::RequestFieldSchema<"alg", "field">;
+    using DataRequest = sbio::DataRequest<RequestSchema>;
 
     // Defined below (larger)
     /**
@@ -605,15 +587,11 @@ namespace sbio {
           const char* epics_det_name { "epics" };
           std::size_t i { 0 };
           for (; i < 5; ++i) {
-            corrected_req.detector_name[i] = epics_det_name[i];
+            corrected_req.group_name[i] = epics_det_name[i];
           }
-          corrected_req.detector_name[i] = '\0';
+          corrected_req.group_name[i] = '\0';
 
-          i = 0;
-          for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
-            corrected_req.field_name[i] = req.detector_name[i];
-          }
-          corrected_req.field_name[i] = '\0';
+          corrected_req.set<"field">(req.group_name);
         } else if (ptn == DataAccessPtn::BeginStep) {
           target_service = XTC2::TransitionId::BeginStep;
 
@@ -626,19 +604,15 @@ namespace sbio {
           // We also allow for people to pass `scan_var_namexxx` as the name directly
           // So in the case we have Scan type access, but the name is not "scan" we must
           // do a rewrite
-          if (std::strcmp(corrected_req.detector_name, "scan") != 0) {
+          if (std::strcmp(corrected_req.group_name, "scan") != 0) {
             const char* scan_det_name { "scan" };
             std::size_t i { 0 };
             for (; i < 4; ++i) {
-              corrected_req.detector_name[i] = scan_det_name[i];
+              corrected_req.group_name[i] = scan_det_name[i];
             }
-            corrected_req.detector_name[i] = '\0';
+            corrected_req.group_name[i] = '\0';
 
-            i = 0;
-            for (; i < XTC2Traits::MaxNameSize - 1 && req.detector_name[i] != '\0'; ++i) {
-              corrected_req.field_name[i] = req.detector_name[i];
-            }
-            corrected_req.field_name[i] = '\0';
+            corrected_req.set<"field">(req.group_name);
           }
         }
 
