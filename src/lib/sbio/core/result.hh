@@ -133,6 +133,7 @@ namespace sbio {
       for (ssize_t i = composite_rank - 1; i >= first_data; --i) {
         meta_shape[i] = segment_shape[i - 1];
         meta_strides[i] = cur;
+        meta_suboffsets[i] = -1;
         cur *= meta_shape[i];
       }
 
