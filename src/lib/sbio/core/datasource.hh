@@ -25,6 +25,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/locator.hh"
+#include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
@@ -132,7 +133,7 @@ namespace sbio {
     /**
      * The type of the general metadata object for the data format's Stream.
      */
-    using StreamMetadata = typename FTraits::MetadataInventory;
+    using StreamMetadata = MetadataInventory<FTraits>;
 
     /**
      * The type of the enumerator used to specify access patterns used for the format.

@@ -172,24 +172,22 @@ namespace sbio {
     using RequestSchema = sbio::RequestFieldSchema<"alg", "field">;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
-    // Defined below (larger)
-    /**
-     * The struct to hold maps for fast data lookup.
-     * This should be flat and allow for O(1) retrieval of offsets into a
-     * a datagram for a combination of (Detector, Algorithm, Field)
-     */
-    struct SBIO_API MetadataInventory;
+    struct FieldMetadata {
+      std::uint32_t names_id { 0 };
+      std::uint32_t field_idx { 0 };
+      XTC2::Name field_name;
+    };
 
     SBIO_HD static inline std::size_t get_payload_size(void* buf) {
       return reinterpret_cast<XTC2::Dgram*>(buf)->xtc.sizeofPayload();
     }
 
     SBIO_HD static void discover_metadata(DataUnit* buffer,
-                                          MetadataInventory& inv,
+                                          MetadataInventory<XTC2Traits>& inv,
                                           std::size_t offset);
 
     SBIO_HD static DataResult resolve_data(void* buffer,
-                                           const MetadataInventory& inv,
+                                           const MetadataInventory<XTC2Traits>& inv,
                                            const DataRequest& req);
 
     /**
@@ -229,7 +227,7 @@ namespace sbio {
     template <IOTraits IO, class StorageViewT>
     SBIO_HD static IOStatus discover_metadata(Stream<IO, XTC2Traits>* streams,
                                               StorageViewT& storage,
-                                              MetadataInventory& inv) {
+                                              MetadataInventory<XTC2Traits>& inv) {
       auto* smd_buf =
         storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
@@ -564,7 +562,7 @@ namespace sbio {
 
     template <class StorageViewT>
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
-                                                 const MetadataInventory& inv,
+                                                 const MetadataInventory<XTC2Traits>& inv,
                                                  const DataRequest& req,
                                                  DataAccessPtn ptn,
                                                  std::size_t batch_idx = 0) {
@@ -667,172 +665,6 @@ namespace sbio {
         return buf;
       }
     }
-  };
-
-  struct XTC2Traits::MetadataInventory {
-    // Resolve a (Detector, Segment, Algorithm) into a NamesId for lookup
-    struct DetAlgKey {
-      char dettype[MaxNameSize];
-      char detname[MaxNameSize];
-      std::uint32_t segment;
-      char algname[MaxNameSize];
-      char detId[MaxNameSize];
-
-      SBIO_HD inline bool operator<(const DetAlgKey& other) const {
-        int cmp = std::strcmp(dettype, other.dettype);
-        if (cmp != 0) {
-          return cmp < 0;
-        }
-
-        cmp = std::strcmp(detname, other.detname);
-
-        if (cmp != 0) {
-          return cmp < 0;
-        }
-
-        if (segment != other.segment) {
-          return segment < other.segment;
-        }
-
-        return std::strcmp(algname, other.algname) < 0;
-      }
-    };
-
-    struct NamesIdMap {
-      DetAlgKey key;
-      std::uint32_t names_id;
-
-      SBIO_HD inline bool operator<(const NamesIdMap& other) const {
-        return key < other.key;
-      }
-
-      SBIO_HD inline bool operator<(const DetAlgKey& other) const {
-        return key < other;
-      }
-    };
-
-    // Resolve a (NamesId, FieldName) into a field index
-    struct FieldKey {
-      std::uint32_t names_id;
-      char fieldname[XTC2Traits::MaxNameSize];
-
-      SBIO_HD inline bool operator<(const FieldKey& other) const {
-        if (names_id != other.names_id) {
-          return names_id < other.names_id;
-        }
-        return std::strcmp(fieldname, other.fieldname) < 0;
-      }
-    };
-
-    struct FieldMap {
-      FieldKey key;
-      std::uint32_t field_idx;
-
-      SBIO_HD inline bool operator<(const FieldMap& other) const {
-        return key < other.key;
-      }
-
-      SBIO_HD inline bool operator<(const FieldKey& other) const {
-        return key < other;
-      }
-    };
-
-    struct SdOffsetMap {
-      std::uint32_t names_id;
-      std::uint32_t offset;
-
-      SBIO_HD SdOffsetMap(std::uint32_t nid, std::uint32_t off)
-        : names_id(nid)
-        , offset(off)
-      {}
-
-      SdOffsetMap() = default;
-
-      SBIO_HD inline bool operator<(const SdOffsetMap& other) const {
-        return names_id < other.names_id;
-      }
-
-      SBIO_HD inline bool operator<(std::uint32_t other_nid) const {
-        return names_id < other_nid;
-      }
-    };
-
-    struct SchemaOffset {
-      std::uint32_t names_id;
-      std::uint32_t start_idx; // Index into the flattened m_schemas array
-
-      SBIO_HD inline bool operator<(const SchemaOffset& other) const {
-        return names_id < other.names_id;
-      }
-
-      SBIO_HD inline bool operator<(std::uint32_t other_nid) const {
-        return names_id < other_nid;
-      }
-    };
-
-    // Storage: Usually allocated as a single memory block
-    // during the Configure transition.
-    NamesIdMap* m_names_id_table { nullptr };
-    FieldMap* m_field_table { nullptr };
-    SdOffsetMap* m_sd_offsets { nullptr };
-    SchemaOffset* m_schema_offsets { nullptr };
-    XTC2::Name* m_schemas { nullptr };
-
-    std::size_t m_names_id_count { 0 };
-    std::size_t m_field_count { 0 };
-    std::size_t m_schema_offset_count { 0 };
-    std::size_t m_sd_offset_count { 0 };
-
-    // Lookup methods
-    SBIO_HD std::uint32_t get_sd_offset(std::uint32_t nid) const;
-
-    SBIO_HD const XTC2::Name* get_schema(std::uint32_t nid) const;
-
-    SBIO_HD std::uint32_t resolve_names_id(const DataRequest& req) const;
-
-    SBIO_HD std::uint32_t resolve_field_idx(std::uint32_t nid, const char* field) const;
-
-    SBIO_HD inline bool entry_matches(std::size_t entry_no,
-                                      const char* name_query,
-                                      DataAccessPtn ptn) const {
-      if (entry_no >= m_names_id_count) {
-        return false;
-      }
-
-      const auto& entry { m_names_id_table[entry_no] };
-
-      if (ptn == DataAccessPtn::L1Accept) {
-        return hd_std::strcmp(entry.key.detname, name_query) == 0;
-      } else if (ptn == DataAccessPtn::SlowUpdate) {
-        // All EPICS (ie EPICSArch) detectors are under the `epics` name
-        // So check if there is a field under that detector for a semantic lookup
-        if (hd_std::strcmp(entry.key.detname, "epics") == 0) {
-          return resolve_field_idx(entry.names_id, name_query) != 0xFFFFFFFF;
-        }
-      } else if (ptn == DataAccessPtn::BeginStep) {
-        // NOTE: The `scan` detector behaves much like the normal detectors, but
-        // has the data in BeginStep buffers, instead of L1Accept buffers.
-        // It can always be access via `scan` detector above. However, for a syntactic
-        // sugar, like with EPICS above, we'll allow detectors to be created based on
-        // the scan variable name directly.
-        // Normally, the scan will have a single algorithm, with these fields:
-        // - `step_value`     : INT64
-        // - `step_docstring` : CHARSTR, optional (but usually present)
-        // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
-        // So we'll match the scan_var_names as we did above with EPICS
-        if (hd_std::strcmp(entry.key.detname, "scan") == 0) {
-          return resolve_field_idx(entry.names_id, name_query) != 0xFFFFFFFF;
-        }
-      }
-    }
-
-    SBIO_HD inline auto metadata_for(std::size_t entry_no) const {
-      const auto& entry { m_names_id_table[entry_no] };
-
-      return std::make_pair(entry.key.dettype, entry.key.segment);
-    }
-
-    SBIO_HD std::size_t num_entries() const { return m_names_id_count; }
   };
 } // namespace sbio
 

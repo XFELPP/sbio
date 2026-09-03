@@ -21,6 +21,7 @@
 #define SBIO_FORMATS_FORMAT_TRAITS_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
@@ -121,8 +122,9 @@ namespace sbio {
   template <typename T, typename StorageViewT>
   concept HasStreamState = requires(StorageViewT& storage,
                                     const typename T::DiscoveryState& state) {
-    // Exposable metadata about what is in current Streams.
-    typename T::MetadataInventory;
+    // Additional fields that may be needed to traverse data using lookup tables
+    // Otherwise, lookup table is generic. This type/struct can be empty though.
+    typename T::FieldMetadata;
     // Tracking information for maintaining position in a Stream.
     typename T::DiscoveryState;
 
@@ -134,17 +136,11 @@ namespace sbio {
   template <typename T, typename IO, typename StorageViewT>
   concept CanDiscoverMetadata = requires(Stream<IO, T>* streams,
                                          StorageViewT& storage,
-                                         typename T::MetadataInventory& inv,
+                                         MetadataInventory<T> inv,
                                          std::size_t entry_no,
                                          const char* name,
                                          typename T::DataAccessPtn ptn) {
     { T::discover_metadata(streams, storage, inv) } -> std::convertible_to<IOStatus>;
-
-    // The inventory also exposes the following interface to allow Topology and Group
-    // formation
-    { inv.entry_matches(entry_no, name, ptn) } -> std::same_as<bool>;
-    { inv.metadata_for(entry_no) } -> std::convertible_to<std::pair<const char*, std::uint32_t>>;
-    { inv.num_entries() } -> std::same_as<std::size_t>;
   };
 
   template <typename T, typename IO, typename StorageViewT>
@@ -167,7 +163,7 @@ namespace sbio {
 
   template <typename T>
   concept CanResolveData = requires(void* buf,
-                                    const typename T::MetadataInventory& inv,
+                                    const MetadataInventory<T>& inv,
                                     const typename T::DataRequest& req) {
     // Can resolve data into a sbio DataResult
     { T::resolve_data(buf, inv, req) } -> std::same_as<DataResult>;
@@ -178,7 +174,7 @@ namespace sbio {
 
   template <typename T, typename IO, class StorageViewT>
   concept CanFillBuffer = requires(StorageViewT& storage,
-                                   const typename T::MetadataInventory& inv,
+                                   const MetadataInventory<T>& inv,
                                    const typename T::DataRequest& req,
                                    typename T::DataAccessPtn ptn,
                                    std::size_t batch_idx) {
@@ -242,7 +238,8 @@ namespace sbio {
    *
    *   // HasStreamState
    *   // --------------
-   *   struct MetadataInventory { };
+   *   struct FieldMetadata { };
+   *
    *   struct DiscoveryState { };
    *
    *   template <class StorageViewT>
@@ -256,7 +253,7 @@ namespace sbio {
    *   template <IOTraits IO, class StorageViewT>
    *   static IOStatus discover_metadata(Stream<IO, T>* streams,
    *                                     StorageViewT& storage,
-   *                                     MetadataInventory& inv);
+   *                                     MetadataInventory<ImplementsFormatTraits>& inv);
    *
    *    // After discovery of metadata, the inventory interface below allows
    *    // building topologies and groups.
@@ -287,13 +284,13 @@ namespace sbio {
    *   // CanResolveData && CanFillBuffer
    *   // -------------------------------
    *   static inline DataResult resolve_data(void* buf,
-   *                                         const MetadataInventory& inv,
+   *                                         const MetadataInventory<ImplementsFormatTraits>& inv,
    *                                         const DataRequest& req);
    *   static std::size_t get_payload_size(void* buf);
    *
    *   template <class StorageViewT>
    *   static DataResult get_data_in_buffer(StorageViewT& storage,
-   *                                        const MetadataInventory& inv,
+   *                                        const MetadataInventory<ImplementsFormatTraits>& inv,
    *                                        const DataRequest& req,
    *                                        DataAccessPtn ptn,
    *                                        std::size_t batch_idx);

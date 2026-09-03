@@ -22,6 +22,7 @@
 
 #include "sbio/formats/random/randfmt.hh"
 
+#include "sbio/core/metadata.hh"
 #include "sbio/core/request.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
@@ -148,42 +149,10 @@ namespace sbio {
     using RequestSchema = sbio::RequestFieldSchema<>;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
-    struct SBIO_API MetadataInventory {
-      struct Entry {
-        char name[MaxNameSize];
-        char type[MaxNameSize];
-        hd_std::uint16_t rank;
-        hd_std::uint32_t shape[MaxRank];
-        ncarray::DType dtype;
-        mutable hd_std::size_t offset_in_event { 0 }; ///< Byte offset in the flat event buffer
-        hd_std::size_t size { 0 };                    ///< Total bytes for this detector's data
-      };
-
-      Entry entries[16];
-      hd_std::size_t count { 0 };
-
-      SBIO_HD void add_detector(const char* name_,
-                                const char* type_,
-                                hd_std::uint16_t rank_,
-                                const hd_std::uint32_t* shape_,
-                                ncarray::DType dtype);
-
-      SBIO_HD inline bool entry_matches(hd_std::size_t entry_no,
-                                        const char* name_query,
-                                        DataAccessPtn ptn) const {
-        if (entry_no >= count) {
-          return false;
-        }
-
-        return (hd_std::strcmp(entries[entry_no].name, name_query) == 0);
-      }
-
-      SBIO_HD inline auto metadata_for(hd_std::size_t entry_no) const {
-        return hd_std::make_pair(entries[entry_no].type,
-                                 static_cast<hd_std::uint32_t>(entry_no));
-      }
-
-      SBIO_HD inline hd_std::size_t num_entries() const { return count; }
+    // Don't actually need this, but have it to test functionality until it can be
+    // removed in other formats
+    struct FieldMetadata {
+      hd_std::uint8_t det_idx { 0 };
     };
 
     SBIO_HD static AllocationRequest<RandomTraits>
@@ -206,7 +175,7 @@ namespace sbio {
     template <IOTraits IO, class StorageViewT>
     SBIO_HD static IOStatus discover_metadata(Stream<IO, RandomTraits>* streams,
                                               StorageViewT& storage,
-                                              MetadataInventory& inv) {
+                                              MetadataInventory<RandomTraits>& inv) {
       auto* buf =
         storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
@@ -229,7 +198,6 @@ namespace sbio {
       const auto* sb0 { reinterpret_cast<const randfmt::SuperBlock*>(blk0->data()) };
       const auto* sub_blk { blk0->closest_block() };
 
-      inv.count = 0;
       for (hd_std::uint8_t i = 0; i < sb0->num_blocks; ++i) {
         if (!sub_blk->valid_magic()) {
           break;
@@ -238,11 +206,16 @@ namespace sbio {
         if (sub_blk->block_type() == randfmt::BlockType::Metadata) {
           const auto* meta { reinterpret_cast<const randfmt::MetadataBlock*>(sub_blk->data()) };
 
-          inv.add_detector(meta->name,
-                           meta->type,
-                           meta->rank,
-                           meta->shape,
-                           static_cast<ncarray::DType>(meta->dtype));
+          auto g_id = inv.register_group(meta->name,
+                                         meta->type,
+                                         0,
+                                         RandomTraits::DataAccessPtn::Default);
+          inv.add_field(g_id,
+                        0,
+                        static_cast<ncarray::DType>(meta->dtype),
+                        meta->rank,
+                        meta->shape,
+                        FieldMetadata { static_cast<hd_std::uint8_t>(g_id) });
         }
 
         sub_blk = sub_blk->closest_block();
@@ -505,7 +478,7 @@ namespace sbio {
 
     template <class StorageViewT>
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
-                                                 const MetadataInventory& inv,
+                                                 const MetadataInventory<RandomTraits>& inv,
                                                  const DataRequest& req,
                                                  DataAccessPtn ptn,
                                                  std::size_t batch_idx = 0) {
@@ -540,7 +513,7 @@ namespace sbio {
     }
 
     SBIO_HD static DataResult resolve_data(void* buffer,
-                                           const MetadataInventory& inv,
+                                           const MetadataInventory<RandomTraits>& inv,
                                            const DataRequest& req) {
       DataResult res{};
       const auto* super_blk { reinterpret_cast<const randfmt::Block*>(buffer) };
@@ -549,30 +522,28 @@ namespace sbio {
       }
 
       const auto* sb_payload { reinterpret_cast<const randfmt::SuperBlock*>(super_blk->data()) };
-      const MetadataInventory::Entry* entry { nullptr };
-      hd_std::uint8_t det_idx { 0 };
-      for (hd_std::size_t i = 0; i < inv.count; ++i) {
-        if (hd_std::strcmp(inv.entries[i].name, req.group_name) == 0) {
-          entry = &inv.entries[i];
-          det_idx = static_cast<hd_std::uint8_t>(i);
-          break;
-        }
-      }
 
-      if (!entry) {
+      auto* entry { inv.lookup(req) };
+      if (entry == nullptr) {
         return res;
       }
+      const auto& descr { entry->descriptor };
 
-      if (entry->offset_in_event) {
+      hd_std::size_t size { 1 };
+      // hd_std::uint8_t det_idx { static_cast<hd_std::uint8_t>(entry->key.group_id) };
+      hd_std::uint8_t det_idx { descr.format_meta.det_idx };
+      auto off { descr.payload_offset };
+      if (off) {
         const auto* blk =
-          reinterpret_cast<const randfmt::Block*>(super_blk->data() + entry->offset_in_event);
+          reinterpret_cast<const randfmt::Block*>(super_blk->data() + off);
         res.data = blk->data();
-        res.size = entry->size;
-        res.rank = entry->rank;
-        for (hd_std::uint16_t r= 0; r < entry->rank; ++r) {
-          res.shape[r] = entry->shape[r];
+        res.rank = descr.rank;
+        for (hd_std::uint16_t r= 0; r < descr.rank; ++r) {
+          res.shape[r] = descr.shape[r];
+          size *= res.shape[r];
         }
-        res.dtype = entry->dtype;
+        res.dtype = descr.dtype;
+        res.size = size;
 
         return res;
       }
@@ -581,19 +552,20 @@ namespace sbio {
         const hd_std::uint32_t* sub_offsets { sb_payload->offsets() };
 
         hd_std::uint32_t blk_offset { sub_offsets[det_idx] };
-        entry->offset_in_event = static_cast<hd_std::size_t>(blk_offset);
+        descr.payload_offset = static_cast<hd_std::size_t>(blk_offset);
 
         const char* sb_payload_start { super_blk->data() };
         const auto* blk =
           reinterpret_cast<const randfmt::Block*>(sb_payload_start + blk_offset);
 
         res.data = blk->data();
-        res.size = entry->size;
-        res.rank = entry->rank;
-        for (hd_std::uint16_t r = 0; r < entry->rank; ++r) {
-          res.shape[r] = entry->shape[r];
+        res.rank = descr.rank;
+        for (hd_std::uint16_t r = 0; r < descr.rank; ++r) {
+          res.shape[r] = descr.shape[r];
+          size *= res.shape[r];
         }
-        res.dtype = entry->dtype;
+        res.dtype = descr.dtype;
+        res.size = size;
 
         return res;
       }
@@ -606,16 +578,17 @@ namespace sbio {
 
         if (sub_blk->block_type() == randfmt::BlockType::Data && sub_blk->block_id() == det_idx) {
           res.data = sub_blk->data();
-          res.size = entry->size;
-          res.rank = entry->rank;
-          for (hd_std::uint16_t r = 0; r < entry->rank; ++r) {
-            res.shape[r] = entry->shape[r];
+          res.rank = descr.rank;
+          for (hd_std::uint16_t r = 0; r < descr.rank; ++r) {
+            res.shape[r] = descr.shape[r];
+            size *= res.shape[r];
           }
-          res.dtype = entry->dtype;
+          res.dtype = descr.dtype;
+          res.size = size;
 
           hd_std::size_t blk_offset =
             static_cast<hd_std::size_t>(reinterpret_cast<const char*>(sub_blk) - super_blk->data());
-          entry->offset_in_event = blk_offset;
+          descr.payload_offset = blk_offset;
 
           return res;
         }
