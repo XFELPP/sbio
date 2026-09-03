@@ -80,7 +80,7 @@ namespace {
         ptn = XTC2Traits::DataAccessPtn::BeginStep;
       }
 
-      auto g_id { inv.register_group(det.name, det.type, det.segment, ptn) };
+      auto g_id { inv.register_group(det.name, det.type, det.segment, ptn, det.detId) };
 
       auto offset { sd_offsets_discovered.at(nid) };
       for (std::uint32_t f_idx = 0; f_idx < fields.at(nid).size(); ++f_idx) {
@@ -95,7 +95,7 @@ namespace {
         if (ptn == XTC2Traits::DataAccessPtn::SlowUpdate) {
           // All EPICS (ie EPICSArch) detectors are under the `epics` name
           // So check if there is a field under that detector for a semantic lookup
-          auto alias_g_id = inv.register_group_alias(f_descr.name, "epics", det.segment, ptn);
+          auto alias_g_id = inv.register_group_alias(f_descr.name, "epics", det.segment, ptn, det.detId);
           inv.add_field(alias_g_id, offset, dtype, f_descr.rank, nullptr, xtc2_meta, det.alg, "raw");
         } else if (ptn == XTC2Traits::DataAccessPtn::BeginStep) {
           // NOTE: The `scan` detector behaves much like the normal detectors, but
@@ -108,7 +108,7 @@ namespace {
           // - `step_docstring` : CHARSTR, optional (but usually present)
           // - `scan_var_xxx`   : ANY (the actual scanned variable - may have multiple)
           // So we'll match the scan_var_names as we did above with EPICS
-          auto alias_g_id = inv.register_group_alias(f_descr.name, "scan", det.segment, ptn);
+          auto alias_g_id = inv.register_group_alias(f_descr.name, "scan", det.segment, ptn, det.detId);
           inv.add_field(alias_g_id, offset, dtype, f_descr.rank, nullptr, xtc2_meta, det.alg, "raw");
         }
       }

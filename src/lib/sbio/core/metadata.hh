@@ -166,6 +166,7 @@ namespace sbio {
     struct GroupKey {
       char group_name[SBIO_MAX_NAME_SIZE] {}; ///< The name of the group
       char group_type[SBIO_MAX_NAME_SIZE] {}; ///< The type of the group
+      char group_sn[SBIO_MAX_NAME_SIZE] {};   ///< TODO: Some formats have THREE things to identify groups...
       hd_std::uint32_t segment { 0 };         ///< The group's segment number
 
       SBIO_HD inline bool operator<(const GroupKey& other) const {
@@ -244,14 +245,28 @@ namespace sbio {
     };
 
 #ifdef __CUDACC__
-    hd_std::inplace_vector<GroupEntry, MaxGroups> groups;
-    hd_std::inplace_vector<FieldEntry, MaxFields> fields;
+    hd_std::inplace_vector<GroupEntry, MaxGroups> m_groups;
+    hd_std::inplace_vector<FieldEntry, MaxFields> m_fields;
 #else
     // For host-only code, inplace_vector is unfortunately not available
     // until C++26 so use normal vectors
-    hd_std::vector<GroupEntry> groups;
-    hd_std::vector<FieldEntry> fields;
+    std::vector<GroupEntry> m_groups;
+    std::vector<FieldEntry> m_fields;
 #endif
+
+    /**
+     * @brief Access the registered groups directly.
+     *
+     * @returns All registered groups.
+     */
+    SBIO_HD const auto& groups() const { return m_groups; }
+
+    /**
+     * @brief Access the registered fields directly.
+     *
+     * @returns All registered fields.
+     */
+    SBIO_HD const auto& fields() const { return m_fields; }
 
     /**
      * @brief Add a new group segment into the inventory.
@@ -263,31 +278,36 @@ namespace sbio {
      * @param[in] type The group type.
      * @param[in] segment The segment number associated to the entry.
      * @param[in] ptn The DataAccessPtn for the lookup strategy for the group segment.
+     * @param[in] sn The group identifier/id (e.g. serial number).
      * @returns The entry of the group segment in the inventory. This can be used to
      *          further inventory associated fields as needed.
      */
     SBIO_HD hd_std::uint32_t register_group(const char* name,
                                             const char* type,
                                             hd_std::uint32_t segment,
-                                            DataAccessPtn ptn) {
-      for (hd_std::size_t i = 0; i < groups.size(); ++i) {
-        if (groups[i].key.segment == segment                    &&
-            hd_std::strcmp(groups[i].key.group_name, name) == 0 &&
-            hd_std::strcmp(groups[i].key.group_type, type) == 0) {
-          return groups[i].group_id;
+                                            DataAccessPtn ptn,
+                                            const char* sn = nullptr) {
+      for (hd_std::size_t i = 0; i < m_groups.size(); ++i) {
+        if (m_groups[i].key.segment == segment                    &&
+            hd_std::strcmp(m_groups[i].key.group_name, name) == 0 &&
+            hd_std::strcmp(m_groups[i].key.group_type, type) == 0) {
+          return m_groups[i].group_id;
         }
       }
 
-      hd_std::uint32_t id { static_cast<hd_std::uint32_t>(groups.size()) };
+      hd_std::uint32_t id { static_cast<hd_std::uint32_t>(m_groups.size()) };
 
       GroupEntry entry;
       safe_strncpy(entry.key.group_name, name, SBIO_MAX_NAME_SIZE);
       safe_strncpy(entry.key.group_type, type, SBIO_MAX_NAME_SIZE);
+      if (sn != nullptr) {
+        safe_strncpy(entry.key.group_sn, sn, SBIO_MAX_NAME_SIZE);
+      }
       entry.key.segment = segment;
       entry.group_id = id;
       entry.access_ptn = static_cast<hd_std::uint8_t>(ptn);
       entry.epoch = 0;
-      groups.push_back(entry);
+      m_groups.push_back(entry);
 
       return id;
     }
@@ -302,14 +322,16 @@ namespace sbio {
      * @param[in] type The group type.
      * @param[in] segment The segment number associated to the entry.
      * @param[in] ptn The DataAccessPtn for the lookup strategy for the group segment.
+     * @param[in] sn The group identifier/id (e.g. serial number).
      * @returns The entry of the group segment in the inventory. This can be used to
      *          further inventory associated fields as needed.
      */
     SBIO_HD hd_std::uint32_t register_group_alias(const char* alias_name,
                                                   const char* parent_type,
                                                   hd_std::uint32_t segment,
-                                                  DataAccessPtn ptn) {
-      return register_group(alias_name, parent_type, segment, ptn);
+                                                  DataAccessPtn ptn,
+                                                  const char* sn = nullptr) {
+      return register_group(alias_name, parent_type, segment, ptn, sn);
     }
 
     /**
@@ -352,7 +374,7 @@ namespace sbio {
         safe_strncpy(entry.key.keys[k], key_ptrs[k], SBIO_MAX_NAME_SIZE);
       }
 
-      fields.push_back(entry);
+      m_fields.push_back(entry);
     }
 
     /**
@@ -362,8 +384,8 @@ namespace sbio {
      * traversal and lookup.
      */
     SBIO_HD void finalize() {
-      impl::hd_sort(groups);
-      impl::hd_sort(fields);
+      impl::hd_sort(m_groups);
+      impl::hd_sort(m_fields);
     }
 
     /**
@@ -383,12 +405,12 @@ namespace sbio {
       safe_strncpy(gkey.group_type, req.group_type, SBIO_MAX_NAME_SIZE);
       gkey.segment = req.segment_number;
 
-      auto g_it { impl::hd_lower_bound(groups, gkey) };
-      if (g_it == groups.end() || (gkey < g_it->key)) {
+      auto g_it { impl::hd_lower_bound(m_groups, gkey) };
+      if (g_it == m_groups.end() || (gkey < g_it->key)) {
         gkey.segment = 0;
-        g_it = impl::hd_lower_bound(groups, gkey);
+        g_it = impl::hd_lower_bound(m_groups, gkey);
 
-        if (g_it == groups.end() || (gkey < g_it->key)) {
+        if (g_it == m_groups.end() || (gkey < g_it->key)) {
           return nullptr;
         }
       }
@@ -399,8 +421,8 @@ namespace sbio {
         safe_strncpy(fkey.keys[i], req.field_values[i], SBIO_MAX_NAME_SIZE);
       }
 
-      auto f_it { impl::hd_lower_bound(fields, fkey) };
-      if (f_it != fields.end() && !(fkey < f_it->key)) {
+      auto f_it { impl::hd_lower_bound(m_fields, fkey) };
+      if (f_it != m_fields.end() && !(fkey < f_it->key)) {
         auto& entry { *f_it };
 
         return &entry;
@@ -422,9 +444,9 @@ namespace sbio {
      * @returns The epoch counter.
      */
     SBIO_HD inline hd_std::uint64_t get_epoch(hd_std::uint32_t group_id) const {
-      for (hd_std::size_t i = 0; i < groups.size(); ++i) {
-        if (groups[i].group_id == group_id) {
-          return groups[i].epoch;
+      for (hd_std::size_t i = 0; i < m_groups.size(); ++i) {
+        if (m_groups[i].group_id == group_id) {
+          return m_groups[i].epoch;
         }
       }
 
@@ -436,7 +458,7 @@ namespace sbio {
      *
      * @returns The total number of groups inventoried.
      */
-    SBIO_HD hd_std::size_t num_entries() const { return groups.size(); }
+    SBIO_HD hd_std::size_t num_entries() const { return m_groups.size(); }
 
     /**
      * @brief Query whether a specific entry index matches a name/access pattern.
@@ -454,13 +476,13 @@ namespace sbio {
         // But... leave this escape hatch in case we cant cover all cases/oddities
         return FTraits::entry_matches(*this, entry_no, name_query, ptn);
       } else {
-        if (entry_no >= groups.size()) {
+        if (entry_no >= m_groups.size()) {
           return false;
         }
 
         return
           (hd_std::strcmp(name_query, "*") == 0) ||
-          (hd_std::strcmp(groups[entry_no].key.group_name, name_query) == 0);
+          (hd_std::strcmp(m_groups[entry_no].key.group_name, name_query) == 0);
       }
     }
 
@@ -472,12 +494,12 @@ namespace sbio {
      */
     SBIO_HD hd_std::pair<const char*, hd_std::uint32_t>
     metadata_for(hd_std::size_t entry_no) const {
-      if (entry_no >= groups.size()) {
+      if (entry_no >= m_groups.size()) {
         return hd_std::make_pair("", static_cast<hd_std::uint32_t>(0));
       }
 
-      return hd_std::make_pair(groups[entry_no].key.group_type,
-                               groups[entry_no].key.segment);
+      return hd_std::make_pair(m_groups[entry_no].key.group_type,
+                               m_groups[entry_no].key.segment);
     }
   };
 } // namespace sbio

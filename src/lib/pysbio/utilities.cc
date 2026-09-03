@@ -51,29 +51,33 @@ namespace pysbio {
           const_cast<const InvT&>(brokers[i]->metadata())
         };
 
-        for (std::size_t j = 0; j < inv.m_names_id_count; ++j) {
-          auto const& key { inv.m_names_id_table[j].key };
+        // TODO: Should be much smarter about this! Dont need to fake the metadata...
+        for (const auto& group : inv.groups()) {
+          const auto& grp_key { group.key };
 
-          // Filter by this detector's name (e.g., "jungfrau")
-          if (std::strcmp(key.detname, detector_name) == 0) {
-            std::uint32_t nid { inv.m_names_id_table[j].names_id };
+          if (std::strcmp(grp_key.group_name, detector_name) == 0) {
+            segment_serial_nos[grp_key.segment] = grp_key.group_sn;
 
-            // Setup serial numbers for calibdb usage
-            segment_serial_nos[key.segment] = key.detId;
             if (detector_type.empty()) {
-              detector_type = key.dettype;
+              detector_type = grp_key.group_type;
             }
 
-            // Find all fields associated with this NamesId
-            for (std::size_t k = 0; k < inv.m_field_count; ++k) {
-              if (inv.m_field_table[k].key.names_id == nid) {
+            // When iterating fields, compare the group_id to see if they belong
+            // to this group
+            std::uint32_t gid { group.group_id };
+            for (const auto& field : inv.fields()) {
+              if (field.key.group_id == gid) {
                 std::string working_alg_name;
-                if constexpr (requires { key.algname; }) {
-                  working_alg_name = key.algname;
+                std::string working_field_name;
+
+                if constexpr (inv.KeyCount == 2) {
+                  working_alg_name = field.key.keys[0];
+                  working_field_name = field.key.keys[1];
                 } else {
                   working_alg_name = "raw";
+                  working_field_name = field.key.keys[0];
                 }
-                unique_metadata[working_alg_name].insert(inv.m_field_table[k].key.fieldname);
+                unique_metadata[working_alg_name].insert(working_field_name);
               }
             }
           }
