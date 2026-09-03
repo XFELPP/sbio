@@ -116,7 +116,7 @@ namespace sbio {
      * `stream_config` objects are used to set up each individual Stream so that
      * it can connect and read from its individual data.
      */
-    using StreamConfig = typename FTraits::StreamParameters;
+    using StreamConfig = GenericStreamConfig<FTraits>;
     /**
      * The DataSource configuration object type.
      *
@@ -185,7 +185,7 @@ namespace sbio {
      * @returns Whether the incorporation of the StreamBroker, and subsequent
      *          configuration was successful.
      */
-    SBIO_HD inline bool add_data_stream(const StreamConfig& cfg) {
+    SBIO_HD inline bool add_data_stream(const GenericStreamConfig<DataFormat>& cfg) {
       if (m_num_data_streams >= MaxDataStreams) {
         return false;
       }
@@ -196,33 +196,22 @@ namespace sbio {
       return true;
     }
 
-    /**
-     * load_run: Scans the standard hutch directory and automatically registers
-     * all streams for a given experiment and run number.
-     */
     template <typename... Args>
-    bool load_run(StreamConfig base_cfg, Args&&... args) {
-      auto ds_params = typename FTraits::DataSourceParameters(std::forward<Args>(args)...);
-
-      return FTraits::make_stream_brokers(*this, ds_params, base_cfg);
-    }
-
-    template <typename... Args>
-    bool load_source(const StreamConfig& base_cfg, Args&&... args) {
+    bool load_source(const StreamConfig& cfg, Args&&... args) {
       using Locator = typename FTraits::DefaultLocator;
       auto locator_params {
         typename Locator::template LocatorParameters<DataFormat>(std::forward<Args>(args)...)
       };
 
-      return Locator::find_streams(*this, locator_params, base_cfg);
+      return Locator::find_streams(*this, locator_params, cfg);
     }
 
     template <IsLocator<DataSource> Locator, typename... Args>
-    bool load_source_with(const StreamConfig& base_cfg, Args&&... args) {
+    bool load_source_with(const StreamConfig& cfg, Args&&... args) {
       using LocatorParams = typename Locator::template LocatorParameters<DataFormat>;
       auto locator_params { LocatorParams(std::forward<Args>(args)...) };
 
-      return Locator::find_streams(*this, locator_params, base_cfg);
+      return Locator::find_streams(*this, locator_params, cfg);
     }
 
     /**

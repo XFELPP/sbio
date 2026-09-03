@@ -21,7 +21,10 @@
 #define SBIO_CORE_STREAM_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/util/string.hh"
 
+#include <array>
+#include <cstdint>
 #include <utility>
 
 #ifndef SBIO_HD
@@ -33,6 +36,88 @@
 #endif
 
 namespace sbio {
+  /**
+   * Identifiers for positioning within the topology of StreamBrokers.
+   */
+  struct StreamIdentity {
+    std::size_t stream_id { 0 }; ///< Identifier among parallel slots
+    std::size_t chain_id { 0 };  ///< Sequential index along a chain of slots (if applicable)
+  };
+
+
+  enum class StreamResourceType : std::uint8_t {
+    Path = 0,
+    FileDescriptor,
+    WindowsHandle,
+    MemoryRegion,
+    NetworkEndpoint
+  };
+
+  struct StreamResource {
+    StreamResourceType type { StreamResourceType::Path };
+    union Handle {
+      char path[1024];         ///< Null-terminated path or URI string
+
+      int fd;                  ///< POSIX file descriptor
+#ifdef _WIN32
+      void* win_handle;        ///< Windows HANDLE
+#endif
+
+      struct {
+        void* ptr;
+        std::size_t size;
+      } memory;                ///< In-memory region
+
+      Handle() : path{0} {}
+    } handle;
+
+    SBIO_HD static StreamResource from_path(const char* p) {
+      StreamResource res;
+      res.type = StreamResourceType::Path;
+      safe_strncpy(res.handle.path, p, 1024);
+      return res;
+    }
+
+    SBIO_HD static StreamResource from_fd(int fd) {
+      StreamResource res;
+      res.type = StreamResourceType::FileDescriptor;
+      res.handle.fd = fd;
+      return res;
+    }
+
+#ifdef _WIN32
+    SBIO_HD static StreamResource from_win_handle(void* h) {
+      StreamResource res;
+      res.type = StreamResourceType::WindowsHandle;
+      res.handle.win_handle = h;
+      return res;
+    }
+#endif
+
+    SBIO_HD static StreamResource from_memory(void* ptr, std::size_t size) {
+      StreamResource res;
+      res.type = StreamResourceType::MemoryRegion;
+      res.handle.memory.ptr = ptr;
+      res.handle.memory.size = size;
+      return res;
+    }
+  };
+
+  template <typename FTraits>
+  struct GenericStreamConfig {
+    StreamIdentity identity;
+
+    static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
+
+    std::array<StreamResource, VariantCount> resources;
+
+    std::size_t max_buffer_size { 0x4000000 };
+    std::size_t max_batch_size { 1 };
+    std::size_t index_batch_size { 43200 };
+
+    typename FTraits::StreamParameters format_params;
+  };
+
   /**
    * A light-weight wrapper over an IO engine.
    *

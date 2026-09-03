@@ -22,6 +22,7 @@
 
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -77,19 +78,19 @@ namespace sbio {
   template <typename T>
   concept CanFindAndConfigureStreams = requires(impl::PlaceholderDataSource& ds,
                                                 const typename T::DataSourceParameters& spec,
-                                                typename T::StreamParameters& cfg) {
+                                                GenericStreamConfig<T>& cfg) {
     // Master DataSource parameters for finding the streams
     typename T::DataSourceParameters;
-
-    // Fill in the StreamBrokers
-    { T::make_stream_brokers(ds, spec, cfg) } -> std::convertible_to<bool>;
 
     // Specifies the Stream partitioning strategy
     { T::PartitioningStrategy } -> std::convertible_to<StreamPartitioningStrategy>;
 
-    // Has enumerator of Stream roles and a count of the total roles
-    typename T::Roles;
-    { T::RoleCount } -> std::convertible_to<std::size_t>;
+    // Has a list of all possible Stream variants, with a size member on the list
+    typename T::StreamTypes;
+    requires IsStreamSet<typename T::StreamTypes>;
+    // StreamSet inherits this already from type_list, but just in case add it explicitly
+    // to prevent breaks unexpectedly if things are refactored
+    { T::StreamTypes::size() } -> std::convertible_to<std::size_t>;
 
     // Has definition of supported access patterns
     typename T::DataAccessPtn;
@@ -102,16 +103,12 @@ namespace sbio {
   };
 
   template <typename T>
-  concept CanAllocateStorage = requires(typename T::StreamParameters& cfg) {
+  concept CanAllocateStorage = requires(GenericStreamConfig<T>& cfg) {
     // Has a type list of buffer descriptors to provide StreamBroker with Storage reqs.
     typename T::BrokerBufferRequirements;
 
     // Provides an interface to populate a Storage request based on runtime config
     { T::get_allocation_request(cfg) } -> std::convertible_to<AllocationRequest<T>>;
-
-    // Provides a method to tell the BrokerGroup what the maximum number of steps
-    // will be when using batched read APIs
-    { T::max_batch_count(cfg) } -> std::convertible_to<std::size_t>;
   };
 
   template <typename T>
@@ -134,12 +131,6 @@ namespace sbio {
     { T::current_buffer(storage, state) } -> std::convertible_to<void*>;
   };
 
-  template <typename T, typename IO>
-  concept CanOpenStreams = requires(Stream<IO, T>* streams,
-                                    const typename T::StreamParameters& cfg) {
-    { T::open_streams(streams, cfg) } -> std::convertible_to<IOStatus>;
-  };
-
   template <typename T, typename IO, typename StorageViewT>
   concept CanDiscoverMetadata = requires(Stream<IO, T>* streams,
                                          StorageViewT& storage,
@@ -160,7 +151,7 @@ namespace sbio {
   concept CanIndexStreams = requires(Stream<IO, T>* streams,
                                      StorageViewT& storage,
                                      typename T::DiscoveryState& state,
-                                     const typename T::StreamParameters& cfg) {
+                                     const GenericStreamConfig<T>& cfg) {
     { T::index_stream(streams, storage, state, cfg) } -> std::convertible_to<IOStatus>;
   };
 
@@ -168,7 +159,7 @@ namespace sbio {
   concept CanFetchStreamData = requires(Stream<IO, T>* streams,
                                         StorageViewT& storage,
                                         typename T::DiscoveryState& state,
-                                        const typename T::StreamParameters& cfg,
+                                        const GenericStreamConfig<T>& cfg,
                                         typename T::StepIdxType step_idx,
                                         typename T::DataAccessPtn ptn) {
     { T::fetch_step(streams, storage, state, cfg, step_idx, ptn) } -> std::convertible_to<IOStatus>;
@@ -232,22 +223,18 @@ namespace sbio {
    *   static constexpr StreamPartitioningStrategy PartitioningStrategy {
    *     StreamPartitioningStrategy::SubDivide
    *   };
-   *   enum Roles { };
-   *   static constexpr std::size_t RoleCount { 0 };
+   *
+   *   struct DataStream : public StreamVariant<roles::Data> {};
+   *   using StreamTypes = StreamSet<DataStream>;
+   *
    *   enum class DataAccessPtn : std::uint8_t { };
    *   static constexpr std::size_t DataAccessPtnCount { 0 };
    *   struct StreamParameters {};
    *
-   *   template <typename DS>
-   *   static bool make_stream_brokers(DS& ds,
-   *                                   const DataSourceParameters& ds_params,
-   *                                   StreamParameters& cfg);
-   *
    *   // CanAllocateStorage
    *   // ------------------
-   *   using BrokerBufferRequirements = TypeList<>;
-   *   static AllocationRequest<T> get_allocation_request(StreamParameters& cfg);
-   *   static std::size_t max_batch_count(StreamParameters& cfg);
+   *   using BrokerBufferRequirements = RequirementsList<>;
+   *   static AllocationRequest<T> get_allocation_request(GenericStreamConfig<ImplementsFormatTraits>& cfg);
    *
    *   // HasDataRequest
    *   // --------------
@@ -263,11 +250,6 @@ namespace sbio {
    *
    *   template <class StorageViewT>
    *   static auto current_buffer(StorageViewT& storage, const DiscoveryState& state);
-   *
-   *   // CanOpenStreams
-   *   // --------------
-   *   template <IOTraits IO>
-   *   static IOStatus open_streams(Stream<IO, T>* streams, const StreamParameters& cfg);
    *
    *   // CanDiscoverMetadata
    *   // -------------------------------------------
@@ -330,7 +312,6 @@ namespace sbio {
     HasStreamState<
       T,
       StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
-    CanOpenStreams<T, IO>                                                           &&
     CanDiscoverMetadata<
       T,
       IO,
@@ -378,6 +359,13 @@ namespace sbio {
   template <typename T, typename IO, class StorageViewT>
   concept OffsetBasedFormatTraits =
     FormatTraits<T, IO, StorageViewT> && HasEventOffset<T> && HasTransitionOffset<T>;
+
+  template <typename StreamVariant, typename FTraits, typename IO>
+  SBIO_HD constexpr auto& get_stream(Stream<IO, FTraits>* streams) {
+    constexpr std::size_t idx { FTraits::StreamTypes::template index_of<StreamVariant> };
+
+    return streams[idx];
+  }
 } // namespace sbio
 
 #endif // SBIO_FORMATS_FORMAT_TRAITS_HH

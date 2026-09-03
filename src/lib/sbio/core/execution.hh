@@ -2,6 +2,7 @@
 #define SBIO_CORE_EXECUTION_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/formats/format_traits.hh"
 
@@ -170,7 +171,7 @@ namespace sbio {
       return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
     }
 
-    template <IsTypeList Requirements, class IO, class FTraits>
+    template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_storage(AllocationRequest<FTraits>& request) {
       return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
@@ -280,8 +281,8 @@ namespace sbio {
     requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_group_storage(hd_std::size_t num_segments,
                                                hd_std::size_t max_batch_count = 1) {
-      using PtrTableRequirements = TypeList<
-        BufferDescriptor<TableRole, 0, sizeof(void*)>
+      using PtrTableRequirements = RequirementsList<
+        BufferDescriptor<roles::Table, 0, sizeof(void*)>
       >;
 
       if constexpr (requires {

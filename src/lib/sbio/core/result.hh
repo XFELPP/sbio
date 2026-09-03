@@ -103,7 +103,7 @@ namespace sbio {
     ncarray::DType dtype { ncarray::DType::uint8 };
 
     SBIO_HD inline ncarray::SOViewFor<MemTag> to_array() const {
-      hd_std::uint16_t composite_rank { segment_rank + 1 };
+      hd_std::uint16_t composite_rank { static_cast<hd_std::uint16_t>(segment_rank + 1) };
 
       ncarray::Metadata meta_shape;
       ncarray::Metadata meta_strides;
@@ -133,6 +133,7 @@ namespace sbio {
       for (ssize_t i = composite_rank - 1; i >= first_data; --i) {
         meta_shape[i] = segment_shape[i - 1];
         meta_strides[i] = cur;
+        meta_suboffsets[i] = -1;
         cur *= meta_shape[i];
       }
 

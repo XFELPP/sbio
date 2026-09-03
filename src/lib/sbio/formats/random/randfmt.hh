@@ -275,6 +275,9 @@ namespace sbio::randfmt {
       case BlockType::Index: {
         return reinterpret_cast<const Block*>(this->data() + this->payload_size());
       }
+      default: {
+        return reinterpret_cast<const Block*>(this->data() + this->payload_size());
+      }
       }
     }
 

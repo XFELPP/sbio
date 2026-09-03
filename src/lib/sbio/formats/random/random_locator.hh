@@ -20,6 +20,8 @@
 #ifndef SBIO_FORMATS_RANDOM_RANDOM_LOCATOR_HH
 #define SBIO_FORMATS_RANDOM_RANDOM_LOCATOR_HH
 
+#include "sbio/core/locator.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/formats/random/randfmt.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/locators/custom_lambda.hh"
@@ -44,13 +46,13 @@ namespace sbio {
   // --- Specializations for locator traits --- //
 
   template <>
-  struct CustomLambdaLocatorTraits<RandomTraits> {
-    struct Parameters {
+  struct LocatorParameters<CustomLambdaLocator, RandomTraits> {
+    struct Type {
       randfmt::DetectorSpec detectors[10];
       hd_std::uint8_t num_detectors { 0 };
 
-      Parameters() = default;
-      Parameters(randfmt::DetectorSpec* dets, hd_std::uint8_t num)
+      Type() = default;
+      Type(randfmt::DetectorSpec* dets, hd_std::uint8_t num)
         : num_detectors(num)
       {
         for (hd_std::uint8_t i = 0; i < num; ++i) {
@@ -58,11 +60,18 @@ namespace sbio {
         }
       }
     };
+  };
+
+  template <>
+  struct CustomLambdaLocatorTraits<RandomTraits> {
+    using Parameters = LocatorParameters_t<CustomLambdaLocator, RandomTraits>;
+
+    using provides_variants = StreamSet<RandomTraits::DataStream>;
 
     static constexpr auto finder_lam =
       [] <typename DS> (DS& ds,
                         const Parameters& params,
-                        const typename DS::DataFormat::StreamParameters& base_cfg) {
+                        const GenericStreamConfig<typename DS::DataFormat>& base_cfg) {
       // For now, will create the file(s) when trying to look for them...
 #ifndef __CUDA_ARCH__
       hd_std::size_t nstream { 0 };
@@ -77,7 +86,7 @@ namespace sbio {
           int cnt = snprintf(name_buf, RandomTraits::MaxNameSize, "sbio_random_stream_%zu", nstream);
           (void)cnt;
 
-          RandomTraits::StreamParameters stream_cfg { base_cfg };
+          GenericStreamConfig<RandomTraits> stream_cfg { base_cfg };
 
 #ifdef _WIN32
           HANDLE h_file = CreateFileA(name_buf,
@@ -91,7 +100,7 @@ namespace sbio {
             return false;
           }
 
-          stream_cfg.h_file = h_file;
+          stream_cfg.format_params.h_file = h_file;
           randfmt::FileHandle f_handle { h_file };
 #else
           int fd = memfd_create(name_buf, 0);
@@ -99,19 +108,19 @@ namespace sbio {
             return false;
           }
 
-          stream_cfg.fd = fd;
+          stream_cfg.format_params.fd = fd;
           randfmt::FileHandle f_handle { fd };
 #endif
           // Write the SuperBlock offsets only if the NoIndex mode was NOT requested
           bool enable_superblock_offsets { true };
-          if (stream_cfg.indexing_mode == RandomTraits::IndexingMode::NoIndex) {
+          if (stream_cfg.format_params.indexing_mode == RandomTraits::IndexingMode::NoIndex) {
             enable_superblock_offsets = false;
           }
 
           hd_std::uint64_t curr_offset { 0 };
 
           hd_std::uint8_t flags { 0 };
-          if (stream_cfg.enable_subblock_offsets) {
+          if (stream_cfg.format_params.enable_subblock_offsets) {
             flags |= (1 << static_cast<hd_std::uint8_t>(randfmt::FormatFlags::SubBlockOffsetTable));
           }
           if (enable_superblock_offsets) {
@@ -126,10 +135,18 @@ namespace sbio {
                                       num_detectors_per_stream,
                                       stream_detectors,
                                       det_block_ids,
-                                      stream_cfg.seed,
-                                      stream_cfg.pattern_type,
-                                      stream_cfg.num_events,
+                                      stream_cfg.format_params.seed,
+                                      stream_cfg.format_params.pattern_type,
+                                      stream_cfg.format_params.num_events,
                                       flags);
+
+          for (hd_std::size_t r = 0; r < stream_cfg.VariantCount; ++r) {
+#ifdef _WIN32
+            stream_cfg.resources[r] = StreamResource::from_win_handle(f_handle);
+#else
+            stream_cfg.resources[r] = StreamResource::from_fd(f_handle);
+#endif
+          }
 
           ds.add_data_stream(stream_cfg);
           nstream++;

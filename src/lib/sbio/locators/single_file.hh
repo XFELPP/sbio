@@ -21,22 +21,20 @@
 #define SBIO_LOCATORS_SINGLE_FILE_HH
 
 #include "sbio/core/locator.hh"
+#include "sbio/core/stream.hh"
 
 #include <array>
 #include <cstddef>
 #include <tuple>
 
 namespace sbio {
+  struct SingleFileLocator;
 
   template <typename FTraits>
   struct SingleFileLocatorTraits {
-    struct Parameters {
-      char path[1024];
+    using Parameters = LocatorParameters_t<SingleFileLocator, FTraits>;
 
-      static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("path", &Parameters::path));
-      }
-    };
+    static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
 
     /**
      * For a single file, there is only a single stream by definition.
@@ -52,10 +50,6 @@ namespace sbio {
      *          Zero by definition in this case.
      */
     static std::size_t id_chain_order() { return 0; }
-
-    static void update_stream_parameters(typename FTraits::StreamParameters& cfg,
-                                         std::array<const char*, FTraits::RoleCount>& paths) {
-    }
   };
 
   struct SingleFileLocator {
@@ -66,12 +60,17 @@ namespace sbio {
     using LocatorParameters = typename LocatorTraits<FTraits>::Parameters;
 
     template <typename DS>
-    static bool find_streams(DS& ds, const typename DS::DataFormat::StreamParameters& base_cfg,
+    static bool find_streams(DS& ds,
+                             const GenericStreamConfig<typename DS::DataFormat>& base_cfg,
                              const char* filepath) {
       using FTraits = typename DS::DataFormat;
-      typename FTraits::StreamParameters cfg { base_cfg };
+      auto cfg { base_cfg };
 
-      LocatorTraits<FTraits>::update_stream_parameters(cfg, filepath);
+      constexpr std::size_t VariantCount { LocatorTraits<FTraits>::provides_variants::size() };
+
+      for (std::size_t r = 0; r < VariantCount; ++r) {
+        cfg.resources[r] = StreamResource::from_path(filepath);
+      }
 
       ds.add_data_stream(cfg);
       return true;

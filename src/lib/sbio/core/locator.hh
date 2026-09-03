@@ -20,6 +20,8 @@
 #ifndef SBIO_CORE_LOCATOR_HH
 #define SBIO_CORE_LOCATOR_HH
 
+#include "sbio/core/roles.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/export_macro.hh"
 
 #ifdef __CUDACC__
@@ -48,9 +50,9 @@ namespace sbio {
   template <typename T, typename DS>
   concept IsLocator = requires(DS& ds,
                                const typename T::template LocatorParameters<typename DS::DataFormat>& params,
-                               const typename DS::DataFormat::StreamParameters& base_cfg) {
+                               const GenericStreamConfig<typename DS::DataFormat>& cfg) {
     typename T::template LocatorParameters<typename DS::DataFormat>;
-    { T::template find_streams<DS>(ds, params, base_cfg) } -> hd_std::same_as<bool>;
+    { T::template find_streams<DS>(ds, params, cfg) } -> hd_std::same_as<bool>;
   };
 
   template <typename Class, typename T>
@@ -64,6 +66,22 @@ namespace sbio {
   make_named(const char* name, T Class::* ptr) {
     return { name, ptr };
   }
+
+  template <typename Locator, typename FTraits>
+  struct LocatorParameters {
+    struct Type {};
+  };
+
+  template <typename Locator, typename FTraits>
+  using LocatorParameters_t = typename LocatorParameters<Locator, FTraits>::Type;
+
+  template <typename T, typename Locator, typename FTraits>
+  concept IsLocatorTraits = requires {
+    typename T::template Parameters<Locator, FTraits>;
+
+    typename T::provides_variants;
+    requires IsStreamSet<typename T::provides_variants>;
+  };
 } // namespace sbio
 
 #endif // SBIO_CORE_LOCATOR_HH

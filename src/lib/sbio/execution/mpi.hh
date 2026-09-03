@@ -22,6 +22,7 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/sync.hh"
 #include "sbio/storage/host_buffer.hh"
@@ -45,7 +46,7 @@ namespace sbio {
    *
    * This policy implements some basic functionality for MPI-based workflows.
    * The main features are:
-   * - Allocations for types of the `IndexRole` are made over shared MPI windows.
+   * - Allocations for types of the `roles::Index` are made over shared MPI windows.
    * - Shared values are accordingly synchronized via the sync group mechanism on
    *   pre/post update hooks.
    * - As `IndexRole` buffers are shared, redundant INDEXING is avoided by only
@@ -64,8 +65,7 @@ namespace sbio {
      */
     template <typename Descriptor>
     using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, IndexRole> ||
-      std::is_same_v<typename Descriptor::role, GroupRole> ||
+      std::is_same_v<typename Descriptor::role, roles::Index> ||
       std::is_same_v<typename Descriptor::hint, Shareable>,
       MPISharedBuffer,
       HostBuffer
@@ -174,7 +174,7 @@ namespace sbio {
       m_event_idx = 0;
     }
 
-    template <IsTypeList Requirements, class IO, class FTraits>
+    template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
@@ -189,10 +189,10 @@ namespace sbio {
     }
 
     template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
+    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
       static int new_win_tag { 100 }; // Tag each MPI window to distinguish them
-      Storage<TypeList<Descriptors...>, MPIExecution> s;
+      Storage<RequirementsList<Descriptors...>, MPIExecution> s;
       std::size_t i { 0 };
 
       if (m_active_comm == MPI_COMM_NULL) {
@@ -212,8 +212,7 @@ namespace sbio {
 
         using BufRole = typename Descriptor::role;
         using BufHint = typename Descriptor::hint;
-        if constexpr (std::is_same_v<BufRole, IndexRole> ||
-                      std::is_same_v<BufRole, GroupRole> ||
+        if constexpr (std::is_same_v<BufRole, roles::Index> ||
                       std::is_same_v<BufHint, Shareable>) {
           int tag { new_win_tag++ };
           buf.allocate(m_shmem_comm, sz);
@@ -252,8 +251,7 @@ namespace sbio {
       // NOTE: This policy only implements synchronization on Index/Shareable.
       //       DataRole updates (per-step hot path) do NOT synchronize.
       // Check if Windows need synchronization
-      if constexpr (std::is_same_v<Role, IndexRole> ||
-                    std::is_same_v<Role, GroupRole> ||
+      if constexpr (std::is_same_v<Role, roles::Index> ||
                     std::is_same_v<Hint, Shareable>) {
         auto fence_win = [](auto& buf) {
           // Check if the buffer type is of one supporting a Window.
@@ -295,8 +293,7 @@ namespace sbio {
       // Check if Windows need synchronization
       int tag { 0 };
       int seq { 0 };
-      if constexpr (std::is_same_v<Role, IndexRole> ||
-                    std::is_same_v<Role, GroupRole> ||
+      if constexpr (std::is_same_v<Role, roles::Index> ||
                     std::is_same_v<Hint, Shareable>) {
         auto& buf = storage.template get<Role>();
         tag = buf.tag();

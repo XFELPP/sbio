@@ -20,12 +20,14 @@
 #ifndef SBIO_FORMATS_XTC2_XTC2_LOCATOR_HH
 #define SBIO_FORMATS_XTC2_XTC2_LOCATOR_HH
 
+#include "sbio/core/locator.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #include "sbio/locators/path_pattern.hh"
 #include "sbio/locators/single_file.hh"
 #include "sbio/util/string.hh"
 
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <map>
 #include <string>
@@ -38,18 +40,35 @@ namespace sbio {
   // --- Specializations for locator traits --- //
 
   template <>
-  struct PathPatternLocatorTraits<XTC2Traits> {
-    struct Parameters {
+  struct LocatorParameters<PathPatternLocator, XTC2Traits> {
+    struct Type {
       char experiment[XTC2Traits::MaxNameSize];
       unsigned run;
 
+      Type(std::string_view exp, unsigned run_)
+        : run(run_)
+      {
+        safe_strncpy(experiment, exp.data(), XTC2Traits::MaxNameSize);
+      }
+
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("exp", &Parameters::experiment),
-                               make_named("run", &Parameters::run));
+        return std::make_tuple(make_named("exp", &Type::experiment),
+                               make_named("run", &Type::run));
       }
     };
+  };
 
-    static constexpr std::array<const char*, XTC2Traits::RoleCount> role_patterns {{
+  template <>
+  struct PathPatternLocatorTraits<XTC2Traits> {
+    using Parameters = LocatorParameters_t<PathPatternLocator, XTC2Traits>;
+
+    using provides_variants = StreamSet<XTC2Traits::SMD, XTC2Traits::BD>;
+
+    static constexpr std::size_t VariantCount { XTC2Traits::StreamTypes::size() };
+
+    // Must update this to use SIT_PSDM_DATA
+    // Need Locator to understand env var syntax then?
+    static constexpr std::array<const char*, VariantCount> role_patterns {{
       "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}",
       "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}"
     }};
@@ -60,12 +79,6 @@ namespace sbio {
 
     static std::size_t id_chain_order(std::string_view filename) {
       return parse_stream_chunk_tokens(filename, "-c");
-    }
-
-    static void update_stream_parameters(typename XTC2Traits::StreamParameters& cfg,
-                                         std::array<const char*, XTC2Traits::RoleCount>& paths) {
-      safe_strncpy(cfg.smd_path, paths[0].c_str(), XTC2Traits::MaxNameSize);
-      safe_strncpy(cfg.xtc_path, paths[1].c_str(), XTC2Traits::MaxNameSize);
     }
 
   private:
@@ -83,7 +96,7 @@ namespace sbio {
       std::size_t id { 0 };
 
       auto s_pos { filename.find(token_pattern) };
-      if (s_pos != std::string_view::npos && s_pos + 5 <= filname.size()) {
+      if (s_pos != std::string_view::npos && s_pos + 5 <= filename.size()) {
         std::size_t tmp { 0 };
         std::size_t start_pos { s_pos + 2 };
         std::size_t end_pos { s_pos + 5 };
@@ -100,14 +113,25 @@ namespace sbio {
   };
 
   template <>
-  struct SingleFileLocatorTraits<XTC2Traits> {
-    struct Parameters {
+  struct LocatorParameters<SingleFileLocator, XTC2Traits> {
+    struct Type {
       char path[1024];
 
+      Type(std::string_view path_) {
+        safe_strncpy(path, path_.data(), 1024);
+      }
+
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("path", &Parameters::path));
+        return std::make_tuple(make_named("path", &Type::path));
       }
     };
+  };
+
+  template <>
+  struct SingleFileLocatorTraits<XTC2Traits> {
+    using Parameters = LocatorParameters_t<SingleFileLocator, XTC2Traits>;
+
+    using provides_variants = StreamSet<XTC2Traits::BD>;
 
     /**
      * For a single file, there is only a single stream by definition.
@@ -123,12 +147,6 @@ namespace sbio {
      *          Zero by definition in this case.
      */
     static std::size_t id_chain_order() { return 0; }
-
-    static void update_stream_parameters(typename XTC2Traits::StreamParameters& cfg,
-                                         Parameters& params) {
-      safe_strncpy(cfg.smd_path, params.path, XTC2Traits::MaxNameSize);
-      safe_strncpy(cfg.xtc_path, params.path, XTC2Traits::MaxNameSize);
-    }
   };
 } // namespace sbio
 

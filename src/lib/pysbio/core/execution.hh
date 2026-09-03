@@ -22,6 +22,7 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 
 #include "sbio/execution/serial.hh"
@@ -42,8 +43,7 @@ namespace pysbio {
     Metadata = 1,
     Data     = 2,
     Index    = 3,
-    Group    = 4,
-    Table    = 5
+    Table    = 4
   };
 
   enum class StorageHint : std::uint16_t {
@@ -83,7 +83,7 @@ namespace pysbio {
     static void set_active_instance(PyExecution<BasePolicy>* inst) { s_active_instance = inst; }
     static PyExecution<BasePolicy>* get_active_instance() { return s_active_instance; }
 
-    template <sbio::IsTypeList Requirements, class IO, class FTraits>
+    template <sbio::IsRequirementsList Requirements, class IO, class FTraits>
     requires sbio::FormatTraits<FTraits, IO, PyExecution<BasePolicy>>
     static auto allocate_storage_impl(sbio::AllocationRequest<FTraits>& request) {
       if constexpr (requires {
@@ -288,15 +288,13 @@ namespace pysbio {
   private:
     template <typename Role>
     static StorageRole get_storage_role() {
-      if constexpr (std::is_same_v<Role, sbio::MetadataRole>) {
+      if constexpr (std::is_same_v<Role, sbio::roles::Metadata>) {
         return StorageRole::Metadata;
-      } else if constexpr (std::is_same_v<Role, sbio::DataRole>) {
+      } else if constexpr (std::is_same_v<Role, sbio::roles::Data>) {
         return StorageRole::Data;
-      } else if constexpr (std::is_same_v<Role, sbio::IndexRole>) {
+      } else if constexpr (std::is_same_v<Role, sbio::roles::Index>) {
         return StorageRole::Index;
-      } else if constexpr (std::is_same_v<Role, sbio::GroupRole>) {
-        return StorageRole::Group;
-      } else if constexpr (std::is_same_v<Role, sbio::TableRole>) {
+      } else if constexpr (std::is_same_v<Role, sbio::roles::Table>) {
         return StorageRole::Table;
       } else {
         return StorageRole::UNKNOWN;
@@ -317,9 +315,9 @@ namespace pysbio {
     }
 
     template <typename... Descriptors, typename BaseStorageT>
-    static auto convert_storage(sbio::TypeList<Descriptors...>,
+    static auto convert_storage(sbio::RequirementsList<Descriptors...>,
                                 BaseStorageT&& base_storage) {
-      sbio::Storage<sbio::TypeList<Descriptors...>, PyExecution<BasePolicy>> target_storage;
+      sbio::Storage<sbio::RequirementsList<Descriptors...>, PyExecution<BasePolicy>> target_storage;
 
       // We offload the allocation of Storage to BasePolicy, but this results in a
       // template mismatch (Storage was created with <BasePolicy> but we need to return

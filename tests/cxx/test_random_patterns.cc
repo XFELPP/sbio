@@ -18,6 +18,7 @@
  */
 
 #include "sbio/core/datasource.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/formats/random/randfmt.hh"
 #include "sbio/formats/random/random_locator.hh"
@@ -68,7 +69,10 @@ protected:
     base_cfg.enable_subblock_offsets = true;
     base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
 
-    ASSERT_TRUE(ds.load_source_with<sbio::CustomLambdaLocator>(base_cfg, detectors, num_detectors));
+    sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
+    cfg.format_params = base_cfg;
+
+    ASSERT_TRUE(ds.load_source_with<sbio::CustomLambdaLocator>(cfg, detectors, num_detectors));
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
   }
 };
@@ -105,7 +109,7 @@ TEST_F(RandomPatternTest, FixedPatternFill) {
                                    ncarray::DType::uint8,
                                    0,
                                    false);
-    std::size_t total_bytes { bytes_arr.nbytes() };
+    std::size_t total_bytes { static_cast<std::size_t>(bytes_arr.nbytes()) };
 
     for (std::size_t i = 0; i < total_bytes; ++i) {
       std::uint8_t& val { bytes_arr[{0, i}] };
@@ -146,7 +150,7 @@ TEST_F(RandomPatternTest, SequentialPatternFill) {
                                    ncarray::DType::uint8,
                                    0,
                                    false);
-    std::size_t total_bytes { bytes_arr.nbytes() };
+    std::size_t total_bytes { static_cast<std::size_t>(bytes_arr.nbytes()) };
 
     for (std::size_t i = 0; i < total_bytes; ++i) {
       std::uint8_t expected { static_cast<std::uint8_t>((step + i) & 0xFF) };
@@ -190,7 +194,7 @@ TEST_F(RandomPatternTest, PRNGPatternFillDeterminism) {
                                    ncarray::DType::uint8,
                                    0,
                                    false);
-    std::size_t total_bytes { bytes_arr.nbytes() };
+    std::size_t total_bytes { static_cast<std::size_t>(bytes_arr.nbytes()) };
 
     // Verify LCG output formula: state = state * 1664525 + 1013904223
     std::uint32_t state { seed ^ static_cast<std::uint32_t>(step * 0x9E3779B9u + 1) };

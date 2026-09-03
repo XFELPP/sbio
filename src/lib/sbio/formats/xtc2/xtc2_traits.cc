@@ -156,7 +156,7 @@ namespace sbio {
       return {};
     }
 
-    std::uint32_t f_idx = inv.resolve_field_idx(nid, req.field_name);
+    std::uint32_t f_idx = inv.resolve_field_idx(nid, req.get<"field">());
     if (f_idx == 0xFFFFFFFF) {
       // Field not found
       return {};
@@ -319,10 +319,10 @@ namespace sbio {
   SBIO_HD std::uint32_t
   XTC2Traits::MetadataInventory::resolve_names_id(const DataRequest& req) const {
     DetAlgKey search_key;
-    safe_strncpy(search_key.dettype, req.detector_type, XTC2::MaxNameSize);
-    safe_strncpy(search_key.detname, req.detector_name, XTC2::MaxNameSize);
+    safe_strncpy(search_key.dettype, req.group_type, XTC2::MaxNameSize);
+    safe_strncpy(search_key.detname, req.group_name, XTC2::MaxNameSize);
     search_key.segment = req.segment_number;
-    safe_strncpy(search_key.algname, req.alg_name, XTC2::MaxNameSize);
+    safe_strncpy(search_key.algname, req.get<"alg">(), XTC2::MaxNameSize);
 
     auto* it = std::lower_bound(m_names_id_table, m_names_id_table + m_names_id_count, search_key);
 

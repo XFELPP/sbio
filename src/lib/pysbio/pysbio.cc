@@ -71,7 +71,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::module_::import("sbio.formats.pyxtc2");
 #endif
 
-  py::module_::import("sbio.io");
+  //py::module_::import("sbio.io");
   py::module_::import("sbio.execution");
   py::module_::import("sbio.brokers");
   py::module_::import("sbio.broker_groups");

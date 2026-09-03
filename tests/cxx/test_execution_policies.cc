@@ -18,6 +18,7 @@
  */
 
 #include "sbio/core/datasource.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
 #ifdef SBIO_HAS_MPI
@@ -88,7 +89,10 @@ TYPED_TEST(ExecutionPolicyTest, StreamBrokerPipeline) {
   base_cfg.num_events = 25;
   base_cfg.pattern_type = 1; // Sequential
 
-  ASSERT_TRUE(ds.load_source(base_cfg, detectors, num_detectors)); // Test loading with default Locator
+  sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
+  cfg.format_params = base_cfg;
+
+  ASSERT_TRUE(ds.load_source(cfg, detectors, num_detectors)); // Test loading with default Locator
   ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
 
   auto grp0 = ds.get_stream_group("det0");
