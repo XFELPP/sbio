@@ -31,6 +31,7 @@
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/formats/xtc2/xtc2.hh"
 #include "sbio/locators/path_pattern.hh"
+#include "sbio/util/parameters.hh"
 #include "sbio/util/string.hh"
 
 #ifndef SBIO_HD
@@ -169,10 +170,10 @@ namespace sbio {
       DataAccessPtn last_accessed_ptn { DataAccessPtn::L1Accept }; ///< Indicate last buffer used
     };
 
-    using RequestSchema = sbio::RequestFieldSchema<"alg", "field">;
+    using RequestSchema = sbio::NamedKeys<"alg", "field">;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
-    using GroupKeys = sbio::GroupMetadataKeys<"serial_number">;
+    using GroupKeys = sbio::NamedKeys<"serial_number">;
 
     struct FieldMetadata {
       std::uint32_t names_id { 0 };
@@ -585,13 +586,9 @@ namespace sbio {
 
           // Semantic Mapping: Requested name is actually a PV field in "epics"
           const char* epics_det_name { "epics" };
-          std::size_t i { 0 };
-          for (; i < 5; ++i) {
-            corrected_req.group_name[i] = epics_det_name[i];
-          }
-          corrected_req.group_name[i] = '\0';
+          corrected_req.group_name = epics_det_name;
 
-          corrected_req.set<"field">(req.group_name);
+          corrected_req.set<"field">(req.group_name.c_str());
         } else if (ptn == DataAccessPtn::BeginStep) {
           target_service = XTC2::TransitionId::BeginStep;
 
@@ -604,15 +601,9 @@ namespace sbio {
           // We also allow for people to pass `scan_var_namexxx` as the name directly
           // So in the case we have Scan type access, but the name is not "scan" we must
           // do a rewrite
-          if (std::strcmp(corrected_req.group_name, "scan") != 0) {
-            const char* scan_det_name { "scan" };
-            std::size_t i { 0 };
-            for (; i < 4; ++i) {
-              corrected_req.group_name[i] = scan_det_name[i];
-            }
-            corrected_req.group_name[i] = '\0';
-
-            corrected_req.set<"field">(req.group_name);
+          if (corrected_req.group_name != "scan") {
+            corrected_req.group_name = "scan";
+            corrected_req.set<"field">(req.group_name.c_str());
           }
         }
 

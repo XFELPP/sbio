@@ -32,6 +32,7 @@
 #include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/locators/custom_lambda.hh"
+#include "sbio/util/parameters.hh"
 #include "sbio/util/string.hh"
 
 #include <ncarray/ncarrays.hh>
@@ -146,10 +147,10 @@ namespace sbio {
       hd_std::size_t curr_offset { 0 };     ///< Current offset along file
     };
 
-    using RequestSchema = sbio::RequestFieldSchema<>;
+    using RequestSchema = sbio::NamedKeys<>;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
-    using GroupKeys = sbio::GroupMetadataKeys<>;
+    using GroupKeys = sbio::NamedKeys<>;
 
     // Don't actually need this, but have it to test functionality until it can be
     // removed in other formats

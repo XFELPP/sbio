@@ -21,6 +21,7 @@
 #define SBIO_CORE_METADATA_HH
 
 #include "sbio/core/request.hh"
+#include "sbio/util/parameters.hh"
 
 #include <ncarray/dtype.hh>
 
@@ -61,75 +62,6 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
-  template <FixedString... MKeys>
-  struct GroupMetadataKeys {
-    static constexpr std::size_t count { sizeof...(MKeys) };
-
-    static constexpr std::array<const char*, count> keys = { MKeys.buf... };
-
-    template <FixedString Key>
-    SBIO_HD static constexpr bool contains() {
-      return ( (MKeys == Key) || ... );
-    }
-
-    template <FixedString Key>
-    SBIO_HD static constexpr std::size_t index_of() {
-      return impl::get_key_index<Key, MKeys...>();
-    }
-  };
-
-  template <hd_std::size_t N = SBIO_MAX_NAME_SIZE>
-  struct FixedName {
-    hd_std::array<char, N> storage {};
-
-    SBIO_HD constexpr FixedName() = default;
-
-    SBIO_HD constexpr FixedName(const char* str) {
-      if (str) {
-        for (hd_std::size_t i = 0; i < N - 1 && str[i] != '\0'; ++i) {
-          storage[i] = str[i];
-        }
-      }
-    }
-
-#ifndef __CUDA_ARCH__
-    constexpr FixedName(hd_std::string_view sv) {
-      hd_std::size_t len = hd_std::min(sv.size(), N - 1);
-      hd_std::copy_n(sv.data(), len, storage.begin());
-    }
-
-    constexpr operator hd_std::string_view() const {
-      return { storage.data() };
-    }
-#endif
-
-    SBIO_HD constexpr const char* c_str() const { return storage.data(); }
-
-    SBIO_HD constexpr auto operator<=>(const FixedName& other) const = default;
-    SBIO_HD constexpr bool operator==(const FixedName& other) const = default;
-    SBIO_HD constexpr bool operator!=(const FixedName& other) const = default;
-    SBIO_HD constexpr bool operator<(const FixedName& other) const = default;
-    SBIO_HD constexpr bool operator>(const FixedName& other) const = default;
-
-    SBIO_HD inline FixedName& operator=(const char* str) {
-      if (str) {
-        // Check bounds?
-        for (hd_std::size_t i = 0; i < N - 1 && str[i] != '\0'; ++i) {
-          storage[i] = str[i];
-        }
-      }
-
-      return *this;
-    }
-
-    SBIO_HD inline auto operator==(const char* str) {
-      if (str) {
-        return hd_std::strcmp(storage.data(), str) == 0 ? true : false;
-      }
-      return false;
-    }
-  };
-
   namespace impl {
     /**
      * @brief A simplified lower_bound for use with the flat sbio inventory vectors.
@@ -243,7 +175,7 @@ namespace sbio {
 
       hd_std::array<FixedName<>, GroupKeys::count> extra_metadata {};
 
-      template <FixedString Key>
+      template <FixedName Key>
       SBIO_HD inline const FixedName<>& get() const {
         constexpr hd_std::size_t idx { GroupKeys::template index_of<Key>() };
         static_assert(idx < GroupKeys::count, "Key not found!");
@@ -251,7 +183,7 @@ namespace sbio {
         return extra_metadata[idx];
       }
 
-      template <FixedString Key>
+      template <FixedName Key>
       SBIO_HD inline void set(const char* val) {
         constexpr hd_std::size_t idx { GroupKeys::template index_of<Key>() };
         static_assert(idx < GroupKeys::count, "Key not found!");
