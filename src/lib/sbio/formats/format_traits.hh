@@ -258,14 +258,6 @@ namespace sbio {
    *                                     StorageViewT& storage,
    *                                     MetadataInventory<ImplementsFormatTraits>& inv);
    *
-   *    // After discovery of metadata, the inventory interface below allows
-   *    // building topologies and groups.
-   *    bool entry_matches(std::size_t entry_no,
-   *                       const char* name_query,
-   *                       DataAccessPtn ptn) const;
-   *    std::pair<const char*, std::uint32_t> metadata_for(std::size_t entry_no) const;
-   *    std::size_t MetadataInventory::num_entries() const;
-   *
    *   // CanIndexStreams  [[ OPTIONAL ]]
    *   // ---------------
    *   template <IOTraits IO, class StorageViewT>

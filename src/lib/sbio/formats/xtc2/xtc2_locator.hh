@@ -24,6 +24,7 @@
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #include "sbio/locators/path_pattern.hh"
 #include "sbio/locators/single_file.hh"
+#include "sbio/util/parameters.hh"
 #include "sbio/util/string.hh"
 
 #include <array>
@@ -42,18 +43,17 @@ namespace sbio {
   template <>
   struct LocatorParameters<PathPatternLocator, XTC2Traits> {
     struct Type {
-      char experiment[XTC2Traits::MaxNameSize];
+      FixedName<XTC2Traits::MaxNameSize> experiment;
       unsigned run;
 
       Type(std::string_view exp, unsigned run_)
-        : run(run_)
-      {
-        safe_strncpy(experiment, exp.data(), XTC2Traits::MaxNameSize);
-      }
+        : experiment(exp)
+        , run(run_)
+      {}
 
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("exp", &Type::experiment),
-                               make_named("run", &Type::run));
+        return std::make_tuple(make_named_member("exp", &Type::experiment),
+                               make_named_member("run", &Type::run));
       }
     };
   };
@@ -115,14 +115,14 @@ namespace sbio {
   template <>
   struct LocatorParameters<SingleFileLocator, XTC2Traits> {
     struct Type {
-      char path[1024];
+      FixedName<1024> path;
 
-      Type(std::string_view path_) {
-        safe_strncpy(path, path_.data(), 1024);
-      }
+      Type(std::string_view path_)
+        : path(path_)
+      {}
 
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named("path", &Type::path));
+        return std::make_tuple(make_named_member("path", &Type::path));
       }
     };
   };

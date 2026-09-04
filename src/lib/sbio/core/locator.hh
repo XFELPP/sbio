@@ -55,18 +55,6 @@ namespace sbio {
     { T::template find_streams<DS>(ds, params, cfg) } -> hd_std::same_as<bool>;
   };
 
-  template <typename Class, typename T>
-  struct NamedParameter {
-    const char* name; ///< Provided parameter name
-    T Class::* ptr;   ///< Pointer to member where the parameter value is stored
-  };
-
-  template <typename Class, typename T>
-  SBIO_HD SBIO_API constexpr NamedParameter<Class, T>
-  make_named(const char* name, T Class::* ptr) {
-    return { name, ptr };
-  }
-
   template <typename Locator, typename FTraits>
   struct LocatorParameters {
     struct Type {};

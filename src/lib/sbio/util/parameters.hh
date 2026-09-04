@@ -128,24 +128,7 @@ namespace sbio {
       std::copy_n(sv.data(), len, storage.begin());
     }
 
-    constexpr FixedName(const std::string_view& sv) {
-      std::size_t len { std::min(sv.size(), N - 1) };
-      std::copy_n(sv.data(), len, storage.begin());
-    }
-
-    constexpr FixedName(std::string_view&& sv) noexcept {
-      std::size_t len { std::min(sv.size(), N - 1) };
-      std::copy_n(sv.data(), len, storage.begin());
-    }
-
-    constexpr FixedName& operator=(const std::string_view& sv) {
-      std::size_t len { std::min(sv.size(), N - 1) };
-      std::copy_n(sv.data(), len, storage.begin());
-
-      return *this;
-    }
-
-    constexpr FixedName& operator=(std::string_view&& sv) noexcept {
+    constexpr FixedName& operator=(std::string_view sv) {
       std::size_t len { std::min(sv.size(), N - 1) };
       std::copy_n(sv.data(), len, storage.begin());
 
@@ -156,31 +139,7 @@ namespace sbio {
       return { storage.data() };
     }
 
-    // --- Construct/cast to string --- //
-
-    constexpr FixedName(const std::string& str) {
-      std::size_t len { std::min(str.size(), N - 1) };
-      std::copy_n(str.data(), len, storage.begin());
-    }
-
-    constexpr FixedName(std::string&& str) noexcept {
-      std::size_t len { std::min(str.size(), N - 1) };
-      std::copy_n(str.data(), len, storage.begin());
-    }
-
-    constexpr FixedName& operator=(const std::string& str) {
-      std::size_t len { std::min(str.size(), N - 1) };
-      std::copy_n(str.data(), len, storage.begin());
-
-      return *this;
-    }
-
-    constexpr FixedName& operator=(std::string&& str) noexcept {
-      std::size_t len { std::min(str.size(), N - 1) };
-      std::copy_n(str.data(), len, storage.begin());
-
-      return *this;
-    }
+    // --- Cast to string --- //
 
     constexpr operator std::string() const {
       return { storage.data() };
@@ -281,7 +240,8 @@ namespace sbio {
 
   // --- Concept helpers for argument/key conversion --- //
   template <typename T>
-  concept IsStringLike = hd_std::is_convertible_v<T, const char*>;
+  concept IsStringLike =
+    requires(T str) { str.c_str(); } || hd_std::is_convertible_v<T, const char*>;
 
   template <typename T>
   concept IsNamedArg = requires {
@@ -300,12 +260,29 @@ namespace sbio {
 
 
   // --- Named pointer to members --- //
+  /**
+   * @brief A small wrapper to attach a name to a member attribute.
+   *
+   * While the system of NamedKeys and NamedArgs works will for certain keyword
+   * arguments, the types of values that they can support are limited. The
+   * NamedMember adds a mechanism to attach a keyword to any member of a class
+   * or struct. A container of these NamedMembers can then be used to iterate
+   * over the member fields with some sort of semantic checks.
+   *
+   * @tparam Class The type of the overall class/struct.
+   * @tparam T The type of the member attribute being named.
+   */
   template <typename Class, typename T>
   struct NamedMember {
     const char* name;  ///< Provided parameter name
     T Class::* ptr;    ///< Pointer to member where the parameter value is stored
   };
 
+  /**
+   * @brief Construct a NamedMember.
+   *
+   * @returns A NamedMember.
+   */
   template <typename Class, typename T>
   SBIO_HD SBIO_API constexpr NamedMember<Class, T>
   make_named_member(const char* name, T Class::* ptr) {

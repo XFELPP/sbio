@@ -164,7 +164,14 @@ namespace sbio {
                                    fmt::dynamic_format_arg_store<fmt::format_context>& store,
                                    std::index_sequence<Is...>) {
       auto add_to_store = [&](const char* kwarg_name, auto member_ptr) {
-        store.push_back(fmt::arg(kwarg_name, obj.*member_ptr));
+        auto val { obj.*member_ptr };
+        using ParamType = std::decay_t<decltype(val)>;
+        // Ensure it is a string if "stringy" -- may be using FixedNames etc.
+        if constexpr (IsStringLike<ParamType>) {
+          store.push_back(fmt::arg(kwarg_name, std::string(val)));
+        } else {
+          store.push_back(fmt::arg(kwarg_name, val));
+        }
       };
 
       ( add_to_store(std::get<Is>(tup).name, std::get<Is>(tup).ptr), ... );
