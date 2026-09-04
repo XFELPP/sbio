@@ -95,6 +95,11 @@ namespace sbio {
         return true;
       }
     }
+
+    template <hd_std::size_t M>
+    SBIO_HD constexpr bool operator!=(const FixedString<M>& other) const {
+      return !(*this == other);
+    }
   };
 
   /**
@@ -126,6 +131,29 @@ namespace sbio {
     }
   } // namespace impl
 
+  /**
+   * @brief A mechanism to attach a name/keyword to an argument.
+   *
+   * Classes and structs with constructors accepting NamedArg instances, and in
+   * general multiple using variadic templates, can have various associated utilities
+   * to make it more ergonomic to use them. This provides a semblance of keyword
+   * arguments in standard C++.
+   *
+   * Currently, the main recommendation is to provide an associated literal to the
+   * class argument, allow it to be used in any position in the constructor and with
+   * the attached literal functioning as a keyword. E.g.:
+   &
+   * @code{.cpp}
+   * namespace literals {
+   *   constexpr auto operator ""_alg(const char* str, hd_std::size_t) {
+   *     return NamedArg<"alg"> { str }
+   *   }
+   * } // namespace literals
+   *
+   * // Now, constructors accepting these NamedArg (like DataRequest) have kwargs
+   * DataRequest("value_of_alg"_alg);
+   * @endcode
+   */
   template <FixedString Key>
   struct NamedArg {
     static constexpr auto key_name { Key };

@@ -149,6 +149,8 @@ namespace sbio {
     using RequestSchema = sbio::RequestFieldSchema<>;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
+    using GroupKeys = sbio::GroupMetadataKeys<>;
+
     // Don't actually need this, but have it to test functionality until it can be
     // removed in other formats
     struct FieldMetadata {

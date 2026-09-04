@@ -172,6 +172,8 @@ namespace sbio {
     using RequestSchema = sbio::RequestFieldSchema<"alg", "field">;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
+    using GroupKeys = sbio::GroupMetadataKeys<"serial_number">;
+
     struct FieldMetadata {
       std::uint32_t names_id { 0 };
       std::uint32_t field_idx { 0 };

@@ -122,6 +122,9 @@ namespace sbio {
   template <typename T, typename StorageViewT>
   concept HasStreamState = requires(StorageViewT& storage,
                                     const typename T::DiscoveryState& state) {
+    // Additional fields that may be associated to a detector segment
+    // e.g., like a serial number. Not used for lookup and may be an empty schema.
+    typename T::GroupKeys;
     // Additional fields that may be needed to traverse data using lookup tables
     // Otherwise, lookup table is generic. This type/struct can be empty though.
     typename T::FieldMetadata;

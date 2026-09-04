@@ -26,6 +26,7 @@
 
 #ifdef __CUDACC__
 
+#include <cuda/std/array>
 #include <cuda/std/cstddef>
 #include <cuda/std/cstdint>
 #include <cuda/std/cstring>
@@ -40,6 +41,7 @@ namespace hd_std = cuda::std;
 
 #else
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -59,6 +61,75 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
+  template <FixedString... MKeys>
+  struct GroupMetadataKeys {
+    static constexpr std::size_t count { sizeof...(MKeys) };
+
+    static constexpr std::array<const char*, count> keys = { MKeys.buf... };
+
+    template <FixedString Key>
+    SBIO_HD static constexpr bool contains() {
+      return ( (MKeys == Key) || ... );
+    }
+
+    template <FixedString Key>
+    SBIO_HD static constexpr std::size_t index_of() {
+      return impl::get_key_index<Key, MKeys...>();
+    }
+  };
+
+  template <hd_std::size_t N = SBIO_MAX_NAME_SIZE>
+  struct FixedName {
+    hd_std::array<char, N> storage {};
+
+    SBIO_HD constexpr FixedName() = default;
+
+    SBIO_HD constexpr FixedName(const char* str) {
+      if (str) {
+        for (hd_std::size_t i = 0; i < N - 1 && str[i] != '\0'; ++i) {
+          storage[i] = str[i];
+        }
+      }
+    }
+
+#ifndef __CUDA_ARCH__
+    constexpr FixedName(hd_std::string_view sv) {
+      hd_std::size_t len = hd_std::min(sv.size(), N - 1);
+      hd_std::copy_n(sv.data(), len, storage.begin());
+    }
+
+    constexpr operator hd_std::string_view() const {
+      return { storage.data() };
+    }
+#endif
+
+    SBIO_HD constexpr const char* c_str() const { return storage.data(); }
+
+    SBIO_HD constexpr auto operator<=>(const FixedName& other) const = default;
+    SBIO_HD constexpr bool operator==(const FixedName& other) const = default;
+    SBIO_HD constexpr bool operator!=(const FixedName& other) const = default;
+    SBIO_HD constexpr bool operator<(const FixedName& other) const = default;
+    SBIO_HD constexpr bool operator>(const FixedName& other) const = default;
+
+    SBIO_HD inline FixedName& operator=(const char* str) {
+      if (str) {
+        // Check bounds?
+        for (hd_std::size_t i = 0; i < N - 1 && str[i] != '\0'; ++i) {
+          storage[i] = str[i];
+        }
+      }
+
+      return *this;
+    }
+
+    SBIO_HD inline auto operator==(const char* str) {
+      if (str) {
+        return hd_std::strcmp(storage.data(), str) == 0 ? true : false;
+      }
+      return false;
+    }
+  };
+
   namespace impl {
     /**
      * @brief A simplified lower_bound for use with the flat sbio inventory vectors.
@@ -155,6 +226,8 @@ namespace sbio {
 
     using DataAccessPtn = typename FTraits::DataAccessPtn;
 
+    using GroupKeys = typename FTraits::GroupKeys;
+
     // Since we cannot anticipate how the data-format needs to perform traversal
     // in addition to the general/generic lookup table, formats are allowed to
     // define some additional pieces of data to attach to the inventory
@@ -164,20 +237,54 @@ namespace sbio {
      * @brief A sortable group segment descriptor key.
      */
     struct GroupKey {
-      char group_name[SBIO_MAX_NAME_SIZE] {}; ///< The name of the group
-      char group_type[SBIO_MAX_NAME_SIZE] {}; ///< The type of the group
-      char group_sn[SBIO_MAX_NAME_SIZE] {};   ///< TODO: Some formats have THREE things to identify groups...
-      hd_std::uint32_t segment { 0 };         ///< The group's segment number
+      FixedName<> group_name;
+      FixedName<> group_type;
+      hd_std::uint32_t segment { 0 };
+
+      hd_std::array<FixedName<>, GroupKeys::count> extra_metadata {};
+
+      template <FixedString Key>
+      SBIO_HD inline const FixedName<>& get() const {
+        constexpr hd_std::size_t idx { GroupKeys::template index_of<Key>() };
+        static_assert(idx < GroupKeys::count, "Key not found!");
+
+        return extra_metadata[idx];
+      }
+
+      template <FixedString Key>
+      SBIO_HD inline void set(const char* val) {
+        constexpr hd_std::size_t idx { GroupKeys::template index_of<Key>() };
+        static_assert(idx < GroupKeys::count, "Key not found!");
+        extra_metadata[idx] = val;
+      }
+
+      SBIO_HD inline FixedName<>& operator[](const char* key_name) {
+        for (hd_std::size_t i = 0; i < GroupKeys::count; ++i) {
+          if (GroupKeys::keys[i] == key_name) {
+            return extra_metadata[i];
+          }
+        }
+        static FixedName<> fallback{};
+        return fallback; // Fallback option?
+      }
+
+      SBIO_HD inline const FixedName<>& operator[](const char* key_name) const {
+        for (hd_std::size_t i = 0; i < GroupKeys::count; ++i) {
+          if (GroupKeys::keys[i] == key_name) {
+            return extra_metadata[i];
+          }
+        }
+        static FixedName<> fallback{};
+        return fallback; // Fallback option?
+      }
 
       SBIO_HD inline bool operator<(const GroupKey& other) const {
-        int cmp { hd_std::strcmp(group_type, other.group_type) };
-        if (cmp != 0) {
-          return cmp < 0;
+        if (group_type != other.group_type) {
+          return group_type < other.group_type;
         }
 
-        cmp = hd_std::strcmp(group_name, other.group_name);
-        if (cmp != 0) {
-          return cmp < 0;
+        if (group_name != other.group_name) {
+          return group_name < other.group_name;
         }
 
         return segment < other.segment;
@@ -200,7 +307,7 @@ namespace sbio {
 
     struct FieldKey {
       hd_std::uint32_t group_id { 0 };
-      char keys[KeyCount > 0 ? KeyCount : 1][SBIO_MAX_NAME_SIZE] {};
+      hd_std::array<FixedName<>, KeyCount> keys {};
 
       SBIO_HD inline bool operator<(const FieldKey& other) const {
         if (group_id != other.group_id) {
@@ -208,9 +315,8 @@ namespace sbio {
         }
 
         for (hd_std::size_t i = 0; i < KeyCount; ++i) {
-          int cmp { hd_std::strcmp(keys[i], other.keys[i]) };
-          if (cmp != 0) {
-            return cmp < 0;
+          if (keys[i] != other.keys[i]) {
+            return keys[i] < other.keys[i];
           }
         }
 
@@ -274,23 +380,26 @@ namespace sbio {
      * This function only adds the group segment's entry. It does not associate any
      * fields to that segment. If that is needed, see `add_field` below as well.
      *
+     * @tparam GroupKeyStringArgs The grouping of metadata key names.
      * @param[in] name The name of the group.
      * @param[in] type The group type.
      * @param[in] segment The segment number associated to the entry.
      * @param[in] ptn The DataAccessPtn for the lookup strategy for the group segment.
-     * @param[in] sn The group identifier/id (e.g. serial number).
+     * @param[in] grp_meta The values for any additional metadata keys defined by the format.
      * @returns The entry of the group segment in the inventory. This can be used to
      *          further inventory associated fields as needed.
      */
+    template <typename... GroupKeyStringArgs>
+    requires (sizeof...(GroupKeyStringArgs) == GroupKeys::count)
     SBIO_HD hd_std::uint32_t register_group(const char* name,
                                             const char* type,
                                             hd_std::uint32_t segment,
                                             DataAccessPtn ptn,
-                                            const char* sn = nullptr) {
+                                            GroupKeyStringArgs... grp_meta) {
       for (hd_std::size_t i = 0; i < m_groups.size(); ++i) {
-        if (m_groups[i].key.segment == segment                    &&
-            hd_std::strcmp(m_groups[i].key.group_name, name) == 0 &&
-            hd_std::strcmp(m_groups[i].key.group_type, type) == 0) {
+        if (m_groups[i].key.segment == segment &&
+            m_groups[i].key.group_name == name &&
+            m_groups[i].key.group_type == type) {
           return m_groups[i].group_id;
         }
       }
@@ -298,11 +407,13 @@ namespace sbio {
       hd_std::uint32_t id { static_cast<hd_std::uint32_t>(m_groups.size()) };
 
       GroupEntry entry;
-      safe_strncpy(entry.key.group_name, name, SBIO_MAX_NAME_SIZE);
-      safe_strncpy(entry.key.group_type, type, SBIO_MAX_NAME_SIZE);
-      if (sn != nullptr) {
-        safe_strncpy(entry.key.group_sn, sn, SBIO_MAX_NAME_SIZE);
+      entry.key.group_name = name;
+      entry.key.group_type = type;
+      const char* grp_ptrs[] = { static_cast<const char*>(grp_meta)... };
+      for (hd_std::size_t k = 0; k < GroupKeys::count; ++k) {
+        entry.key.extra_metadata[k] = grp_ptrs[k];
       }
+
       entry.key.segment = segment;
       entry.group_id = id;
       entry.access_ptn = static_cast<hd_std::uint8_t>(ptn);
@@ -318,20 +429,27 @@ namespace sbio {
      * This function only adds the group segment's entry. It does not associate any
      * fields to that segment. If that is needed, see `add_field` below as well.
      *
+     * @tparam GroupKeyStringArgs The grouping of metadata key names.
      * @param[in] name The name of the group.
      * @param[in] type The group type.
      * @param[in] segment The segment number associated to the entry.
      * @param[in] ptn The DataAccessPtn for the lookup strategy for the group segment.
-     * @param[in] sn The group identifier/id (e.g. serial number).
+     * @param[in] grp_meta The values for any additional metadata keys defined by the format.
      * @returns The entry of the group segment in the inventory. This can be used to
      *          further inventory associated fields as needed.
      */
+    template <typename... GroupKeyStringArgs>
+    requires (sizeof...(GroupKeyStringArgs) == GroupKeys::count)
     SBIO_HD hd_std::uint32_t register_group_alias(const char* alias_name,
                                                   const char* parent_type,
                                                   hd_std::uint32_t segment,
                                                   DataAccessPtn ptn,
-                                                  const char* sn = nullptr) {
-      return register_group(alias_name, parent_type, segment, ptn, sn);
+                                                  GroupKeyStringArgs... grp_meta) {
+      return register_group(alias_name,
+                            parent_type,
+                            segment,
+                            ptn,
+                            hd_std::forward<GroupKeyStringArgs>(grp_meta)...);
     }
 
     /**
@@ -371,7 +489,7 @@ namespace sbio {
 
       const char* key_ptrs[] = { static_cast<const char*>(key_values)... };
       for (hd_std::size_t k = 0; k < KeyCount; ++k) {
-        safe_strncpy(entry.key.keys[k], key_ptrs[k], SBIO_MAX_NAME_SIZE);
+        entry.key.keys[k] = key_ptrs[k];
       }
 
       m_fields.push_back(entry);
@@ -401,8 +519,8 @@ namespace sbio {
      */
     SBIO_HD inline const FieldEntry* lookup(const DataRequest& req) const {
       GroupKey gkey;
-      safe_strncpy(gkey.group_name, req.group_name, SBIO_MAX_NAME_SIZE);
-      safe_strncpy(gkey.group_type, req.group_type, SBIO_MAX_NAME_SIZE);
+      gkey.group_name = req.group_name;
+      gkey.group_type = req.group_type;
       gkey.segment = req.segment_number;
 
       auto g_it { impl::hd_lower_bound(m_groups, gkey) };
@@ -418,7 +536,7 @@ namespace sbio {
       FieldKey fkey;
       fkey.group_id = g_it->group_id;
       for (hd_std::size_t i = 0; i < KeyCount; ++i) {
-        safe_strncpy(fkey.keys[i], req.field_values[i], SBIO_MAX_NAME_SIZE);
+        fkey.keys[i] = req.field_values[i];
       }
 
       auto f_it { impl::hd_lower_bound(m_fields, fkey) };
@@ -482,7 +600,7 @@ namespace sbio {
 
         return
           (hd_std::strcmp(name_query, "*") == 0) ||
-          (hd_std::strcmp(m_groups[entry_no].key.group_name, name_query) == 0);
+          m_groups[entry_no].key.group_name == name_query;
       }
     }
 
@@ -492,10 +610,9 @@ namespace sbio {
      * @param[in] entry_no The entry index.
      * @returns The group name, segment number pair for the provided index.
      */
-    SBIO_HD hd_std::pair<const char*, hd_std::uint32_t>
-    metadata_for(hd_std::size_t entry_no) const {
+    SBIO_HD auto metadata_for(hd_std::size_t entry_no) const {
       if (entry_no >= m_groups.size()) {
-        return hd_std::make_pair("", static_cast<hd_std::uint32_t>(0));
+        return hd_std::make_pair(FixedName<>{}, static_cast<hd_std::uint32_t>(0));
       }
 
       return hd_std::make_pair(m_groups[entry_no].key.group_type,

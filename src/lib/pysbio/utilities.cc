@@ -55,11 +55,11 @@ namespace pysbio {
         for (const auto& group : inv.groups()) {
           const auto& grp_key { group.key };
 
-          if (std::strcmp(grp_key.group_name, detector_name) == 0) {
-            segment_serial_nos[grp_key.segment] = grp_key.group_sn;
+          if (grp_key.group_name == detector_name) {
+            segment_serial_nos[grp_key.segment] = grp_key["serial_number"];
 
             if (detector_type.empty()) {
-              detector_type = grp_key.group_type;
+              detector_type = grp_key.group_type.c_str();
             }
 
             // When iterating fields, compare the group_id to see if they belong
