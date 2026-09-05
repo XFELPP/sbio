@@ -1,6 +1,7 @@
 installed_util_headers = [
     'mem_pool.hh',
     'mpi.hh',
+    'parameters.hh',
     'rc.hh',
     'string.hh',
 ]

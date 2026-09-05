@@ -18,9 +18,10 @@ if build_core_opt
         core_sources += ['formats/xtc2/xtc2_traits.cc']
     endif
 
-    if sbio_build_sbiofmt
-        core_sources += ['formats/random/random_traits.cc']
-    endif
+    # sbio_build_sbiofmt -- Currently, no longer have an TUs for RandomTraits
+    # if sbio_build_sbiofmt
+    #     core_sources += ['formats/random/random_traits.cc']
+    # endif
 
     # There seems to be no possible way to have a soversion included in the
     # import lib .lib in Windows. This causes problems with delvewheel when trying

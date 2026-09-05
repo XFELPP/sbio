@@ -212,26 +212,26 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
                     return self.group_type;
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.group_type, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.group_type = val;
                   })
     .def_property("detector_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
                     return self.group_name;
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.group_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.group_name = val;
                   })
     .def_readwrite("segment_number", &sbio::XTC2Traits::DataRequest::segment_number)
     .def_property("alg_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.get<"alg">();
+                    return self["alg"];
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
                     self.set<"alg">(val.c_str());
                   })
     .def_property("field_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.get<"field">();
+                    return self["field"];
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
                     self.set<"field">(val.c_str());

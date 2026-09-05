@@ -22,6 +22,7 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
@@ -155,13 +156,6 @@ namespace sbio {
      * it can connect and read from its individual data.
      */
     using StreamConfig = typename FTraits::StreamParameters;
-    /**
-     * The DataSource configuration object type.
-     *
-     * `ds_config` objects are used for initial discovery and connection of the
-     * full set of Streams.
-     */
-    using DSConfig = typename FTraits::DataSourceParameters;
 
     /**
      * The type of state tracking object for the data format's Stream.
@@ -170,7 +164,7 @@ namespace sbio {
     /**
      * The type of the general metadata object for the data format's Stream.
      */
-    using StreamMetadata = typename FTraits::MetadataInventory;
+    using StreamMetadata = MetadataInventory<FTraits>;
 
     /**
      * The type of the enumerator used to specify access patterns used for the format.

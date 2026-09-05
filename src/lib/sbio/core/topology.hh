@@ -220,7 +220,7 @@ namespace sbio {
                 tmp_segments[n_segments_found++] = { broker, seg_no, ptn };
 
                 if (hd_std::strcmp(final_type, "unknown") == 0) {
-                  safe_strncpy(final_type, type, 256);
+                  safe_strncpy(final_type, type.c_str(), 256);
                 }
               }
             }

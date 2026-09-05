@@ -21,6 +21,7 @@
 #define SBIO_CORE_REQUEST_HH
 
 #include "sbio/export_macro.hh"
+#include "sbio/util/parameters.hh"
 #include "sbio/util/string.hh"
 
 #include <ncarray/dtype.hh>
@@ -61,99 +62,6 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
-
-  /**
-   * @brief A simple string wrapper for use as non-type template param in named args.
-   *
-   * FixedString's are used as NTTP to allow ergonomic, and type safe, named arguments
-   * for DataRequest objects.
-   *
-   * @tparam N The length of the string.
-   */
-  template <hd_std::size_t N>
-  struct FixedString {
-    char buf[N] {};
-
-    SBIO_HD constexpr FixedString(const char (&s)[N]) {
-      for (hd_std::size_t i = 0; i < N; ++i) {
-        buf[i] = s[i];
-      }
-    }
-
-    template <hd_std::size_t M>
-    SBIO_HD constexpr bool operator==(const FixedString<M>& other) const {
-      // Strings of different lengths compare not equal...
-      if constexpr (N != M) {
-        return false;
-      } else {
-        for (hd_std::size_t i = 0; i < N; ++i) {
-          if (buf[i] != other.buf[i]) {
-            return false;
-          }
-        }
-
-        return true;
-      }
-    }
-  };
-
-  /**
-   * @brief The set of additional format-specific named arguments to use for DataRequest.
-   */
-  template <FixedString... Keys>
-  struct RequestFieldSchema {
-    static constexpr hd_std::size_t count { sizeof...(Keys) };
-
-    template <FixedString Key>
-    SBIO_HD static constexpr bool contains() { return ( (Keys == Key) || ... ); }
-  };
-
-  namespace impl {
-    template <FixedString Key, FixedString First, FixedString... Rest>
-    SBIO_HD constexpr hd_std::size_t get_key_index_impl(hd_std::size_t idx = 0) {
-      if constexpr (Key == First) {
-        return idx;
-      } else {
-        static_assert(sizeof...(Rest) > 0, "Key not found in format RequestFieldSchema!");
-
-        return get_key_index_impl<Key, Rest...>(idx + 1);
-      }
-    }
-
-    template <FixedString Key, FixedString... Keys>
-    SBIO_HD constexpr hd_std::size_t get_key_index() {
-      return get_key_index_impl<Key, Keys...>();
-    }
-  } // namespace impl
-
-  template <FixedString Key>
-  struct NamedArg {
-    static constexpr auto key_name { Key };
-
-    const char* value { nullptr };
-  };
-
-  // --- Concept helpers for argument/key conversion --- //
-  template <typename T>
-  concept IsStringLike = hd_std::is_convertible_v<T, const char*>;
-
-  template <typename T>
-  concept IsNamedArg = requires {
-    hd_std::remove_cvref_t<T>::key_name;
-  };
-
-  template <hd_std::size_t ExpectedCount, typename... Args>
-  concept ValidPositionalArgs = (ExpectedCount > 0) &&
-    (sizeof...(Args) == ExpectedCount) &&
-    ( IsStringLike<Args> && ... );
-
-  template <hd_std::size_t ExpectedCount, typename... Args>
-  concept ValidNamedArgs = (ExpectedCount > 0) &&
-    (sizeof...(Args) == ExpectedCount) &&
-    ( IsNamedArg<Args> && ... );
-
-  // --- Generic DataRequest --- //
-
   template <typename ReqSchemaType>
   struct DataRequest;
 
@@ -167,13 +75,24 @@ namespace sbio {
    * a single additional parameter (like a `field` name). Some other format may require
    * two (e.g. XTC2 uses an `alg` and a `field`).
    *
-   * The additional format-specific fields are set using a sysem of `NamedArg` params.
+   * The additional format-specific fields are stored using FixedName structs, which are
+   * simple device-safe, and constexpr, string like objects. The set of `NamedKeys`
+   * can be accessed with compile-time template mechanisms, or fully at runtime using
+   * familiar bracket access, as with a map.
    *
-   * The additional request fields can be filled using the `set<NAME>` routine.
-   * The group_name and group_type can be filled using standard C-string operations.
+   * The additional request fields can be filled at compile using the `set<NAME>`
+   * routine.
+   * The group_name and group_type are also FixedName objects and can be set using
+   * simple assignment. (req.group_name = "MyGroupNameOfInterest").
    *
-   * The additional fields can be retrieved using the `get<NAME>` syntax, additionally,
-   * a data format may implement overloads for specific literals which can be used.
+   * The additional fields can be retrieved using the `get<NAME>` syntax.
+   *
+   * Additionally, a final affordance allows a request to be constructed using
+   * arguments converted into a `NamedArg`. The recommendation is that a format
+   * provide a literal operator overload that allows attaching a keyword to a string
+   * literal, which then allows them to be passed to a constructor positionally
+   * in any order. This emulates the behaviour of keyword arguments.
+   *
    * For example, the XTC2 format uses `_alg` and `_field` literals. These can be
    * passed in any order to the DataRequest constructor. By proxy, this means the
    * variadic getters for the BrokerGroup also work this way.
@@ -191,61 +110,145 @@ namespace sbio {
    *
    * @tparam Keys... The set of named schema fields. E.g. <"alg", "field">
    */
-  template <FixedString... Keys>
-  struct SBIO_API DataRequest<RequestFieldSchema<Keys...>> {
-    char group_name[SBIO_MAX_NAME_SIZE] {};
-    char group_type[SBIO_MAX_NAME_SIZE] {};
-
+  template <FixedName... Keys>
+  struct SBIO_API DataRequest<NamedKeys<Keys...>> {
+    FixedName<> group_name;
+    FixedName<> group_type;
     hd_std::size_t segment_number { 0 };
 
-    char field_values[sizeof...(Keys) > 0 ? sizeof...(Keys) : 1][SBIO_MAX_NAME_SIZE] {};
+    using FieldKeys = NamedKeys<Keys...>;                     ///< Keyword names
+    hd_std::array<FixedName<>, sizeof...(Keys)> field_values; ///< Values for each keyword FieldKey
 
     SBIO_HD DataRequest() = default;
 
     SBIO_HD DataRequest(const char* name, const char* type) {
-      safe_strncpy(group_name, name, SBIO_MAX_NAME_SIZE);
-      safe_strncpy(group_type, type, SBIO_MAX_NAME_SIZE);
+      group_name = name;
+      group_type = type;
     }
 
+    /**
+     * @brief Construct a request with name, type and *positional* FixedNames.
+     *
+     * The FixedName arguments must be passed in the appropriate order to match
+     * the way the fields were defined by the format. E.g., a format that provided
+     * <"alg", "field"> will then expect that the `alg` value come before the `field`
+     * value in construction of the request.
+     *
+     * For use of a "keyword" argument like syntax, see the NamedArgs constructor.
+     *
+     * @tparam The types of the FixedName arguments
+     * @param[in] name The BrokerGroup name.
+     * @param[in] type The BrokerGroup type.
+     * @param[in] args... The series of FixedName arguments in the order of the fields.
+     */
     template <typename... Args>
     requires ValidPositionalArgs<sizeof...(Keys), Args...>
     SBIO_HD DataRequest(const char* name, const char* type, Args... args) {
-      safe_strncpy(group_name, name, SBIO_MAX_NAME_SIZE);
-      safe_strncpy(group_type, type, SBIO_MAX_NAME_SIZE);
+      group_name = name;
+      group_type = type;
 
-#ifndef __CUDA_ARCH__
-      std::string_view arg_views[] = { std::string_view(args)... };
+      const char* field_ptrs[] = { static_cast<const char*>(args)... };
       for (hd_std::size_t i = 0; i < sizeof...(Keys); ++i) {
-        if (arg_views[i].data()) {
-          safe_strncpy(field_values[i], arg_views[i].data(), SBIO_MAX_NAME_SIZE);
+        if (field_ptrs[i]) {
+          field_values[i] = field_ptrs[i];
         }
       }
-#else
-      const char* arg_ptrs[] = { static_cast<const char*>(args)... };
-      for (hd_std::size_t i = 0; i < sizeof...(Keys); ++i) {
-        if (arg_ptrs[i]) {
-          safe_strncpy(field_values[i], arg_ptrs[i], SBIO_MAX_NAME_SIZE);
-        }
-      }
-#endif // __CUDA_ARCH__
     }
 
+    /**
+     * @brief Construct a request with name, type and NamedArg instances.
+     *
+     * By convention, NamedArgs can be created from literals where a literal operator
+     * overload has been provided.
+     *
+     * @tparam The types of NamedArgs.
+     * @param[in] name The BrokerGroup name.
+     * @param[in] type The BrokerGroup type.
+     * @param[in] args... The series of NamedArgs.
+     */
     template <typename... NamedArgs>
     requires ValidNamedArgs<sizeof...(Keys), NamedArgs...>
     SBIO_HD DataRequest(const char* name, const char* type, NamedArgs... args) {
-      safe_strncpy(group_name, name, SBIO_MAX_NAME_SIZE);
-      safe_strncpy(group_type, type, SBIO_MAX_NAME_SIZE);
+      group_name = name;
+      group_type = type;
 
       auto bind_arg = [this](auto named_arg) {
         using ArgType = decltype(named_arg);
 
         constexpr hd_std::size_t idx { impl::get_key_index<ArgType::key_name, Keys...>() };
         if (named_arg.value) {
-          safe_strncpy(field_values[idx], named_arg.value, SBIO_MAX_NAME_SIZE);
+          field_values[idx] = named_arg.value;
         }
       };
 
       ( bind_arg(args), ... );
+    }
+
+    /**
+     * Retrieve the value of a named argument - segment number cannot be accessed.
+     *
+     * The value of `key_name` may be "group_name", "group_type" or any of the
+     * format-specific values that are provided. The segment number cannot be
+     * retrieved from this function.
+     *
+     * @code{.cpp}
+     * req["field"];
+     * @endcode
+     *
+     * @note Unlike .get<""> this is NOT checked at compile.
+     *
+     * @tparam The FixedName type.
+     * @param[in] key_name The name of the key to retrieve.
+     * @returns The name of the field to retrieve.
+     */
+    template <typename FKey>
+    SBIO_HD inline FixedName<>& operator[](const FKey& key_name) {
+      if (key_name == "group_name") {
+        return group_name;
+      } else if (key_name == "group_type") {
+        return group_type;
+      } else {
+        for (hd_std::size_t i = 0; i < sizeof...(Keys); ++i) {
+          if (FieldKeys::keys[i] == key_name) {
+            return field_values[i];
+          }
+        }
+
+        static FixedName<> fallback{};
+        return fallback; // Fallback option?
+      }
+    }
+
+    /**
+     * Retrieve the value of a named argument - segment number cannot be accessed.
+     *
+     * The value of `key_name` may be "group_name", "group_type" or any of the
+     * format-specific values that are provided. The segment number cannot be
+     * retrieved from this function.
+     *
+     * @code{.cpp}
+     * req["field"];
+     * @endcode
+     *
+     * @note Unlike .get<""> this is NOT checked at compile.
+     *
+     * @tparam The FixedName type.
+     * @param[in] key_name The name of the key to retrieve.
+     * @returns The name of the field to retrieve.
+     */
+    template <typename FKey>
+    SBIO_HD inline const FixedName<>& operator[](const FKey& key_name) const {
+      if (key_name == "group_name") {
+        return group_name;
+      } else if (key_name == "group_type") {
+        return group_type;
+      } else {
+        for (hd_std::size_t i = 0; i < sizeof...(Keys); ++i) {
+          if (FieldKeys::keys[i] == key_name) {
+            return field_values[i];
+          }
+        }
+      }
     }
 
     /**
@@ -255,16 +258,24 @@ namespace sbio {
      * req.get<"field">();
      * @endcode
      *
+     * @note This is checked at compile.
+     *
      * @tparam The argument to retrieve.
      * @returns The value of the named argument.
      */
-    template <FixedString Key>
-    SBIO_HD inline const char* get() const {
-      constexpr hd_std::size_t idx { impl::get_key_index<Key, Keys...>() };
+    template <FixedName Key>
+    SBIO_HD inline const FixedName<>& get() const {
+      if constexpr (Key == "group_name") {
+        return group_name;
+      } else if constexpr (Key == "group_type") {
+        return group_type;
+      } else {
+        constexpr hd_std::size_t idx { impl::get_key_index<Key, Keys...>() };
 
-      static_assert(idx < sizeof...(Keys), "Invalid key for data format!");
+        static_assert(idx < sizeof...(Keys), "Invalid key for data format!");
 
-      return field_values[idx];
+        return field_values[idx];
+      }
     }
 
     /**
@@ -274,15 +285,17 @@ namespace sbio {
      * req.set<"field">("raw");
      * @endcode
      *
+     * @note This is checked at compile.
+     *
      * @tparam The argument to set.
      */
-    template <FixedString Key>
+    template <FixedName Key>
     SBIO_HD inline void set(const char* val) {
       constexpr hd_std::size_t idx { impl::get_key_index<Key, Keys...>() };
       if (val) {
-        safe_strncpy(field_values[idx], val, SBIO_MAX_NAME_SIZE);
+        field_values[idx] = val;
       } else {
-        field_values[idx][0] = '\0';
+        field_values[idx] = "\0";
       }
     }
   };
