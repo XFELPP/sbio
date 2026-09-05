@@ -69,8 +69,8 @@ namespace sbio {
     // Must update this to use SIT_PSDM_DATA
     // Need Locator to understand env var syntax then?
     static constexpr std::array<const char*, VariantCount> role_patterns {{
-      "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}",
-      "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}"
+      "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}",
+      "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}"
     }};
 
     static std::size_t id_stream(std::string_view filename) {

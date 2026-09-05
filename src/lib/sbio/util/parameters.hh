@@ -155,8 +155,24 @@ namespace sbio {
     SBIO_HD constexpr bool operator<(const FixedName& other) const = default;
     SBIO_HD constexpr bool operator>(const FixedName& other) const = default;
 
+#ifndef __CUDA_ARCH__
+    // --- Stringy Comparisons --- //
+    constexpr bool operator==(std::string_view sv) const {
+      return (sv == storage.data());
+    }
+    constexpr bool operator!=(std::string_view sv) const {
+      return !(*this == sv);
+    }
+    constexpr bool operator<(std::string_view sv) const {
+      return (sv < storage.data());
+    }
+    constexpr bool operator>(std::string_view sv) const {
+      return (sv > storage.data());
+    }
+#endif
+
     // --- C-string comparison --- //
-    SBIO_HD inline auto operator==(const char* str) {
+    SBIO_HD inline auto operator==(const char* str) const {
       if (str) {
         return hd_std::strcmp(storage.data(), str) == 0 ? true : false;
       }

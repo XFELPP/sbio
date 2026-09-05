@@ -415,8 +415,10 @@ namespace sbio {
       entry.descriptor.rank = rank;
       entry.descriptor.format_meta = fmt_meta;
 
-      for (hd_std::uint16_t r = 0; r < rank; ++r) {
-        entry.descriptor.shape[r] = shape[r];
+      if (shape != nullptr) {
+        for (hd_std::uint16_t r = 0; r < rank; ++r) {
+          entry.descriptor.shape[r] = shape[r];
+        }
       }
 
       const char* key_ptrs[] = { static_cast<const char*>(key_values)... };

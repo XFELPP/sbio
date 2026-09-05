@@ -109,19 +109,6 @@ namespace sbio {
 
     struct StreamParameters {};
 
-    struct SBIO_API DataSourceParameters {
-#ifndef __CUDA_ARCH__
-      DataSourceParameters(const std::string& exp, unsigned run_) {
-        safe_strncpy(experiment, exp.c_str(), exp.size() + 1);
-        run = run_;
-      }
-#endif
-      DataSourceParameters() = default;
-
-      char experiment[MaxNameSize];
-      unsigned run;
-    };
-
     struct EventOffset {
       std::uint64_t offset;
       std::uint64_t size;

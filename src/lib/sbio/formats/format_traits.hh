@@ -68,21 +68,8 @@ namespace sbio {
     { T::ExhaustedSentinel } -> std::convertible_to<typename T::StepIdxType>;
   };
 
-  namespace impl {
-    // Placeholders for DataSource, StreamBroker and BrokerGroup, etc. to satisfy concepts
-    struct PlaceholderBroker {};
-    struct PlaceholderBrokerGroup {};
-    struct PlaceholderSegmentRef {};
-    struct PlaceholderDataSource {};
-  }; // namespace impl
-
   template <typename T>
-  concept CanFindAndConfigureStreams = requires(impl::PlaceholderDataSource& ds,
-                                                const typename T::DataSourceParameters& spec,
-                                                GenericStreamConfig<T>& cfg) {
-    // Master DataSource parameters for finding the streams
-    typename T::DataSourceParameters;
-
+  concept CanFindAndConfigureStreams = requires(GenericStreamConfig<T>& cfg) {
     // Specifies the Stream partitioning strategy
     { T::PartitioningStrategy } -> std::convertible_to<StreamPartitioningStrategy>;
 
@@ -218,7 +205,6 @@ namespace sbio {
    *
    *   // CanFindAndConfigureStreams
    *   // --------------------------
-   *   struct DataSourceParameters {};
    *   static constexpr StreamPartitioningStrategy PartitioningStrategy {
    *     StreamPartitioningStrategy::SubDivide
    *   };

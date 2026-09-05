@@ -119,13 +119,6 @@ namespace sbio {
 #endif
     };
 
-    struct SBIO_API DataSourceParameters {
-      randfmt::DetectorSpec detectors[10];
-      hd_std::uint8_t num_detectors { 0 };
-
-      DataSourceParameters() = default;
-    };
-
     struct EventOffset {
       hd_std::uint64_t offset;
       hd_std::uint64_t size;

@@ -156,13 +156,6 @@ namespace sbio {
      * it can connect and read from its individual data.
      */
     using StreamConfig = typename FTraits::StreamParameters;
-    /**
-     * The DataSource configuration object type.
-     *
-     * `ds_config` objects are used for initial discovery and connection of the
-     * full set of Streams.
-     */
-    using DSConfig = typename FTraits::DataSourceParameters;
 
     /**
      * The type of state tracking object for the data format's Stream.

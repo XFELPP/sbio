@@ -59,7 +59,7 @@ namespace pysbio {
             segment_serial_nos[grp_key.segment] = grp_key["serial_number"];
 
             if (detector_type.empty()) {
-              detector_type = grp_key.group_type.c_str();
+              detector_type = grp_key.group_type;
             }
 
             // When iterating fields, compare the group_id to see if they belong
