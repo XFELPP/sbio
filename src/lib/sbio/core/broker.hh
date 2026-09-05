@@ -25,6 +25,7 @@
 #include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -157,10 +158,6 @@ namespace sbio {
      */
     using StreamConfig = typename FTraits::StreamParameters;
 
-    /**
-     * The type of state tracking object for the data format's Stream.
-     */
-    using StreamState = typename FTraits::DiscoveryState;
     /**
      * The type of the general metadata object for the data format's Stream.
      */
@@ -376,11 +373,7 @@ namespace sbio {
         } else {
           // Must ensure that the signatures match to avoid silent failures
           const auto& cfg { m_config };
-          if constexpr (requires {
-            FTraits::index_stream(m_streams, sv, m_stream_state, cfg);
-          }) {
-            status = FTraits::index_stream(m_streams, sv, m_stream_state, cfg);
-          }
+          status = FTraits::index_stream(m_streams, sv, m_catalog, m_indexing_cursor, cfg);
         }
       }
 
@@ -419,8 +412,10 @@ namespace sbio {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->fetch_step_impl(step_idx, ptn);
         } else {
+
+          auto& cursor = ExecutionPolicy::template get_fetch_cursor<FTraits>(*this);
           status =
-            FTraits::fetch_step(m_streams, sv, m_stream_state, m_config, step_idx, ptn);
+              FTraits::fetch_step(m_streams, sv, m_catalog, cursor, m_config, step_idx, ptn);
         }
       }
 
@@ -459,9 +454,11 @@ namespace sbio {
             }) {
             status = static_cast<Derived*>(this)->fetch_steps_impl(steps, ptn);
           } else {
+            auto& cursor = ExecutionPolicy::template get_fetch_cursor<FTraits>(*this);
             status = FTraits::fetch_multi_steps(m_streams,
                                                 sv,
-                                                m_stream_state,
+                                                m_catalog,
+                                                cursor,
                                                 m_config,
                                                 first,
                                                 count,
@@ -516,21 +513,6 @@ namespace sbio {
      * @returns The current broker state along the state machine.
      */
     SBIO_HD inline BrokerState state() const { return m_broker_state; }
-    /**
-     * Return the underlying StreamState of the brokered stream(s).
-     *
-     * The StreamState tracks data format-specific information about the streamed
-     * data. This may include information such as counters, whether certain transitions
-     * have been encountered, or whether the stream has been exhausted/will be soon.
-     * Refer to the specific FormatTraits for the format of interest for more
-     * information.
-     *
-     * In cases where the broker manages multiple Streams, there is still one
-     * shared StreamState which encompasses all of them.
-     *
-     * @returns The current Stream(s) StreamState.
-     */
-    SBIO_HD inline StreamState stream_state() const { return m_stream_state; }
 
     /**
      * Return the current capacity for data formats that support indexing.
@@ -546,8 +528,8 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<const Derived*>(this)->capacity();
       } else {
-        const StorageView<const SBStorageType, EPolicy> sv(m_storage);
-        return FTraits::capacity(sv, m_stream_state);
+
+        return m_catalog.max_capacity();
       }
     }
 
@@ -568,8 +550,10 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->current_buffer();
       } else {
-        StorageView<SBStorageType, EPolicy> sv(m_storage);
-        return FTraits::current_buffer(sv, m_stream_state);
+        //StorageView<SBStorageType, EPolicy> sv(m_storage);
+        //return FTraits::current_buffer(sv, m_stream_state);
+        // TODO: Need new implementation for this now!
+        return nullptr;
       }
     }
 
@@ -659,10 +643,10 @@ namespace sbio {
     SBIO_HD inline auto sync_vars() {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->sync_vars();
-      } else if constexpr (requires { FTraits::sync_vars(m_stream_state); }) {
-        return FTraits::sync_vars(m_stream_state);
       } else {
-        return make_sync_group();
+        return make_sync_group(m_catalog.index_epoch,
+                               m_catalog.num_steps,
+                               m_catalog.cummulative_steps);
       }
     }
 
@@ -671,13 +655,31 @@ namespace sbio {
     // TODO: Needs to implement some sortable index (mostly for Chronological mode)
     SBIO_HD std::uint32_t stream_idx() const { return 0; }
 
+    SBIO_HD inline FetchCursor<FTraits>& fetch_cursor() noexcept {
+      return m_fetch_cursor;
+    }
+    SBIO_HD inline const FetchCursor<FTraits>& fetch_cursor() const noexcept {
+      return m_fetch_cursor;
+    }
+
+    SBIO_HD inline StreamCatalog<FTraits>& catalog() noexcept {
+      return m_catalog;
+    }
+    SBIO_HD inline const StreamCatalog<FTraits>& catalog() const noexcept {
+      return m_catalog;
+    }
+
   protected:
     StreamType m_streams[StreamCount];
     GenericStreamConfig<DataFormat> m_config;
     BrokerState m_broker_state;
-    StreamState m_stream_state;
+
     StreamMetadata m_metadata_inv;
     SBStorageType m_storage;
+
+    StreamCatalog<FTraits> m_catalog {};
+    FetchCursor<FTraits> m_fetch_cursor {};
+    IndexingCursor<FTraits> m_indexing_cursor {};
   };
 } // namespace sbio
 

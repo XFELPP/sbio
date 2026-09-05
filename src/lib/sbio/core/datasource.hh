@@ -120,10 +120,6 @@ namespace sbio {
     using StreamConfig = GenericStreamConfig<FTraits>;
 
     /**
-     * The type of state tracking object for the data format's Stream.
-     */
-    using StreamState = typename FTraits::DiscoveryState;
-    /**
      * The type of the general metadata object for the data format's Stream.
      */
     using StreamMetadata = MetadataInventory<FTraits>;

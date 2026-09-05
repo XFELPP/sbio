@@ -63,7 +63,13 @@ namespace sbio {
      */
     template <class CBType>
     SBIO_HD void for_each(CBType&& callback) {
-      callback(val);                          // Apply to current reference
+      if constexpr (requires { val.begin(); val.end(); }) {
+        for (auto& item : val) {
+          callback(item);                     // Apply to each item of iterable
+        }
+      } else {
+        callback(val);                        // Apply to current reference
+      }
       SyncGroup<Rest...>::for_each(callback); // ... and recurse
     }
   };

@@ -24,6 +24,7 @@
 #include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -107,20 +108,13 @@ namespace sbio {
   };
 
   template <typename T, typename StorageViewT>
-  concept HasStreamState = requires(StorageViewT& storage,
-                                    const typename T::DiscoveryState& state) {
+  concept HasStreamState = requires(StorageViewT& storage) {
     // Additional fields that may be associated to a detector segment
     // e.g., like a serial number. Not used for lookup and may be an empty schema.
     typename T::GroupKeys;
     // Additional fields that may be needed to traverse data using lookup tables
     // Otherwise, lookup table is generic. This type/struct can be empty though.
     typename T::FieldMetadata;
-    // Tracking information for maintaining position in a Stream.
-    typename T::DiscoveryState;
-
-    // Can query indexing capacity and retrieve the currently filled buffer
-    { T::capacity(storage, state) } -> std::convertible_to<std::size_t>;
-    { T::current_buffer(storage, state) } -> std::convertible_to<void*>;
   };
 
   template <typename T, typename IO, typename StorageViewT>
@@ -136,19 +130,21 @@ namespace sbio {
   template <typename T, typename IO, typename StorageViewT>
   concept CanIndexStreams = requires(Stream<IO, T>* streams,
                                      StorageViewT& storage,
-                                     typename T::DiscoveryState& state,
+                                     StreamCatalog<T>& catalog,
+                                     IndexingCursor<T>& cursor,
                                      const GenericStreamConfig<T>& cfg) {
-    { T::index_stream(streams, storage, state, cfg) } -> std::convertible_to<IOStatus>;
+    { T::index_stream(streams, storage, catalog, cursor, cfg) } -> std::convertible_to<IOStatus>;
   };
 
   template <typename T, typename IO, typename StorageViewT>
   concept CanFetchStreamData = requires(Stream<IO, T>* streams,
                                         StorageViewT& storage,
-                                        typename T::DiscoveryState& state,
+                                        const StreamCatalog<T>& catalog,
+                                        FetchCursor<T>& cursor,
                                         const GenericStreamConfig<T>& cfg,
                                         typename T::StepIdxType step_idx,
                                         typename T::DataAccessPtn ptn) {
-    { T::fetch_step(streams, storage, state, cfg, step_idx, ptn) } -> std::convertible_to<IOStatus>;
+    { T::fetch_step(streams, storage, catalog, cursor, cfg, step_idx, ptn) } -> std::convertible_to<IOStatus>;
   };
 
   template <typename T>
@@ -169,11 +165,6 @@ namespace sbio {
                                    typename T::DataAccessPtn ptn,
                                    std::size_t batch_idx) {
     { T::get_data_in_buffer(storage, inv, req, ptn, batch_idx) } -> std::convertible_to<DataResult>;
-  };
-
-  template <typename T>
-  concept HasStateSynch = requires(typename T::DiscoveryState& state) {
-    { T::sync_vars(state) };
   };
 
   /**
@@ -229,14 +220,6 @@ namespace sbio {
    *   // --------------
    *   struct FieldMetadata { };
    *
-   *   struct DiscoveryState { };
-   *
-   *   template <class StorageViewT>
-   *   static auto capacity(const StorageViewT& storage, const DiscoveryState& state);
-   *
-   *   template <class StorageViewT>
-   *   static auto current_buffer(StorageViewT& storage, const DiscoveryState& state);
-   *
    *   // CanDiscoverMetadata
    *   // -------------------------------------------
    *   template <IOTraits IO, class StorageViewT>
@@ -249,7 +232,8 @@ namespace sbio {
    *   template <IOTraits IO, class StorageViewT>
    *   static IOStatus index_stream(Stream<IO, T>* streams,
    *                                StorageViewT& storage,
-   *                                DiscoveryState& stream_state,
+   *                                StreamCatalog<ImplementsFormatTraits>& catalog,
+   *                                IndexingCursor<ImplementsFormatTraits>& cursor,
    *                                const StreamParameters& cfg);
    *
    *   // CanFetchStreamData
@@ -257,8 +241,9 @@ namespace sbio {
    *   template <IOTraits IO, class StorageViewT>
    *   static IOStatus fetch_step(Stream<IO, T>* streams,
    *                              StorageViewT& storage,
-   *                              DiscoveryState& stream_state,
-   *                              const StreamParameters& cfg,
+   *                              const StreamCatalog<ImplementsFormatTraits>& catalog,
+   *                              FetchCursor<ImplementsFormatTraits>& cursor,
+   *                              const GenericStreamConfig<ImplementsFormatTraits>& cfg,
    *                              StepIdxType step_idx,
    *                              DataAccessPtn ptn);
    *
@@ -323,9 +308,6 @@ namespace sbio {
   template <typename T, typename IO, class StorageViewT>
   concept IndexableFormatTraits =
     FormatTraits<T, IO, StorageViewT> && CanIndexStreams<T, IO, StorageViewT>;
-
-  template <typename T, typename IO, class StorageViewT>
-  concept SynchableFormatTraits = FormatTraits<T, IO, StorageViewT> && HasStateSynch<T>;
 
   template <typename T, typename IO, class StorageViewT>
   concept EventOffsetFormatTraits = FormatTraits<T, IO, StorageViewT> && HasEventOffset<T>;

@@ -26,6 +26,7 @@
 #include "sbio/core/request.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/sync.hh"
@@ -130,16 +131,6 @@ namespace sbio {
       BufferDescriptor<roles::Index, 0, sizeof(EventOffset)>         /* EventOffsets buffer */
     >;
 
-    /**
-     * A convenience struct to keep track of indices into offset buffers
-     * and the total number of events and transitions seen.
-     */
-    struct DiscoveryState {
-      hd_std::size_t events_per_read { 0 }; ///< Number of offsets to read per indexing
-      hd_std::size_t num_events { 0 };      ///< Number of event (offset)s read
-      hd_std::size_t curr_offset { 0 };     ///< Current offset along file
-    };
-
     using RequestSchema = sbio::NamedKeys<>;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 
@@ -224,151 +215,120 @@ namespace sbio {
     template <IOTraits IO, class StorageViewT>
     SBIO_HD static IOStatus index_stream(Stream<IO, RandomTraits>* streams,
                                          StorageViewT& storage,
-                                         DiscoveryState& stream_state,
+                                         StreamCatalog<RandomTraits>& catalog,
+                                         IndexingCursor<RandomTraits>& cursor,
                                          const GenericStreamConfig<RandomTraits>& cfg) {
       auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
       auto* event_offsets { reinterpret_cast<EventOffset*>(idx_buf) };
 
       hd_std::size_t stream_size { get_stream<DataStream>(streams).file_size() };
-      hd_std::size_t event_count { 0 };
 
-      // TODO: Double check... I think maybe right path. Need scratch buffer I think...
       if (cfg.format_params.indexing_mode == IndexingMode::IndexAll ||
           cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
         if (stream_size >= sizeof(randfmt::FileTrailer)) {
           randfmt::FileTrailer trailer {};
           hd_std::size_t trailer_offset { stream_size - sizeof(randfmt::FileTrailer) };
 
-
           IOStatus status = get_stream<DataStream>(streams).read_at(&trailer, trailer_offset, sizeof(trailer));
-          if (status == IOStatus::Success) {
-            if (hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
-              auto* meta_buf =
-                storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-              hd_std::size_t meta_buf_size { storage.template size<roles::Metadata>() };
-              hd_std::size_t read_size { meta_buf_size };
-              if (stream_size - trailer.idx_blk_offset < read_size) {
-                read_size = stream_size - trailer.idx_blk_offset;
-              }
+          if (status == IOStatus::Success && hd_std::memcmp(trailer.magic_tail, randfmt::MagicTail, 8) == 0) {
+            auto* meta_buf =
+              storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+            hd_std::size_t meta_buf_size { storage.template size<roles::Metadata>() };
+            hd_std::size_t read_size = hd_std::min(meta_buf_size, stream_size - trailer.idx_blk_offset);
 
-              status = get_stream<DataStream>(streams).read_at(meta_buf, trailer.idx_blk_offset, read_size);
+            status = get_stream<DataStream>(streams).read_at(meta_buf, trailer.idx_blk_offset, read_size);
 
-              const auto* super_blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
-              if (status == IOStatus::Success &&
-                  super_blk->block_type() == randfmt::BlockType::Super) {
-                const auto* sub_blk { super_blk->closest_block() };
-                if (sub_blk->block_type() == randfmt::BlockType::Index) {
-                  const auto* idx_blk { reinterpret_cast<const randfmt::IndexBlock*>(sub_blk->data()) };
-                  const auto* entries { reinterpret_cast<const randfmt::IndexEntry*>(idx_blk + 1) };
+            const auto* super_blk { reinterpret_cast<const randfmt::Block*>(meta_buf) };
+            if (status == IOStatus::Success && super_blk->block_type() == randfmt::BlockType::Super) {
+              const auto* sub_blk { super_blk->closest_block() };
+              if (sub_blk->block_type() == randfmt::BlockType::Index) {
+                const auto* idx_blk { reinterpret_cast<const randfmt::IndexBlock*>(sub_blk->data()) };
+                const auto* entries { reinterpret_cast<const randfmt::IndexEntry*>(idx_blk + 1) };
 
-                  hd_std::size_t total_events { 0 };
-                  if (idx_blk->num_super_blocks > 2) {
-                    // Subtract off the config/meta and index super blocks at start and end
-                    total_events = idx_blk->num_super_blocks - 2;
-                  }
+                hd_std::size_t total_events = (idx_blk->num_super_blocks > 2)
+                  ? (idx_blk->num_super_blocks - 2)
+                  : 0;
 
-                  hd_std::size_t start_evt { 0 };
-                  hd_std::size_t end_evt { total_events };
-                  if (cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
-                    // If reading in batches only index the chunk requested.
-                    // NOTE: This is very wasteful ATM since everything is reread each time..
-                    //       But... this is not supposed to be a high-performance format. Just testing...
-                    start_evt = stream_state.num_events;
-                    end_evt = start_evt + cfg.format_params.indexing_batch_size;
-                    if (end_evt > total_events) {
-                      end_evt = total_events;
-                    }
-                  }
+                hd_std::size_t start_evt { 0 };
+                hd_std::size_t end_evt { total_events };
 
-                  for (hd_std::size_t i = start_evt; i < end_evt; ++i) {
-                    event_offsets[i].offset = entries[i + 1].offset;
-                    event_offsets[i].size = entries[i + 1].sb_size;
-                  }
-
-                  event_count = end_evt;
-                  if (cfg.format_params.indexing_mode == IndexingMode::IndexAll) {
-                    stream_state.num_events = event_count;
-                  } else {
-                    stream_state.num_events = end_evt - start_evt;
-                  }
-
-                  storage.template release<roles::Metadata, 0>(meta_buf);
-                  storage.template release<roles::Index, 0>(idx_buf);
-
-                  return IOStatus::Success;
+                if (cfg.format_params.indexing_mode == IndexingMode::IndexBatch) {
+                  start_evt = catalog.num_steps[0];
+                  end_evt = hd_std::min(start_evt + cfg.format_params.indexing_batch_size, total_events);
                 }
 
+                for (hd_std::size_t i = start_evt; i < end_evt; ++i) {
+                  event_offsets[i].offset = entries[i + 1].offset;
+                  event_offsets[i].size = entries[i + 1].sb_size;
+                }
+
+                catalog.num_steps[0] = (cfg.format_params.indexing_mode == IndexingMode::IndexAll)
+                  ? end_evt
+                  : (end_evt - start_evt);
+
+                catalog.cummulative_steps[0] += catalog.num_steps[0];
                 storage.template release<roles::Metadata, 0>(meta_buf);
+                storage.template release<roles::Index, 0>(idx_buf);
+                return IOStatus::Success;
               }
+              storage.template release<roles::Metadata, 0>(meta_buf);
             }
           }
         }
       }
 
-      // IndexMode::NoIndex --> Always return the next step
-      if (stream_state.curr_offset >= stream_size) {
-        stream_state.num_events = 0;
+      // IndexMode::NoIndex --> Sequential step scan using cursor.curr_offset
+      if (cursor.stream_offset[0] >= stream_size) {
+        catalog.num_steps[0] = 0;
         storage.template release<roles::Index, 0>(idx_buf);
-
         return IOStatus::AllRequestedRead;
       }
 
-      // TODO: This is bad....
       randfmt::Block blk{};
-
-      IOStatus status = get_stream<DataStream>(streams).read_at(&blk, stream_state.curr_offset, sizeof(blk));
+      IOStatus status = get_stream<DataStream>(streams).read_at(&blk, cursor.stream_offset[0], sizeof(blk));
       if (status != IOStatus::Success || !blk.valid_magic()) {
-        stream_state.num_events = 0;
+        catalog.num_steps[0] = 0;
         storage.template release<roles::Index, 0>(idx_buf);
-
         return IOStatus::HeaderReadError;
       }
 
       if (blk.block_type() == randfmt::BlockType::Super) {
         randfmt::SuperBlock sb{};
-
-        status = get_stream<DataStream>(streams).read_at(&sb,
-                                                         stream_state.curr_offset + sizeof(randfmt::Header),
-                                                         sizeof(sb));
+        status = get_stream<DataStream>(streams).read_at(&sb, cursor.stream_offset[0] + sizeof(randfmt::Header), sizeof(sb));
         if (status != IOStatus::Success) {
-          stream_state.num_events = 0;
+          catalog.num_steps[0] = 0;
           storage.template release<roles::Index, 0>(idx_buf);
-
           return IOStatus::GeneralIOError;
         }
 
         if (sb.sequence_num == 0) {
-          stream_state.curr_offset += sizeof(randfmt::Header) + blk.hdr.payload_size;
-
-          if (stream_state.curr_offset >= stream_size) {
-            stream_state.num_events = 0;
+          cursor.stream_offset[0] += sizeof(randfmt::Header) + blk.hdr.payload_size;
+          if (cursor.stream_offset[0] >= stream_size) {
+            catalog.num_steps[0] = 0;
             storage.template release<roles::Index, 0>(idx_buf);
             return IOStatus::AllRequestedRead;
           }
-
-          status = get_stream<DataStream>(streams).read_at(&blk, stream_state.curr_offset, sizeof(blk));
+          status = get_stream<DataStream>(streams).read_at(&blk, cursor.stream_offset[0], sizeof(blk));
         }
       }
 
       hd_std::size_t event_sb_size { sizeof(randfmt::Block) + blk.payload_size() };
-      event_offsets[0].offset = stream_state.curr_offset;
+      event_offsets[0].offset = cursor.stream_offset[0];
       event_offsets[0].size = event_sb_size;
 
-      stream_state.curr_offset += event_sb_size;
-      stream_state.num_events = 1;
+      cursor.stream_offset[0] += event_sb_size;
+      catalog.num_steps[0] = 1;
+      catalog.cummulative_steps[0]++;
       storage.template release<roles::Index, 0>(idx_buf);
 
       return IOStatus::Success;
     }
 
-    SBIO_HD static auto sync_vars(DiscoveryState& state) {
-      return make_sync_group(state.num_events);
-    }
-
     template <IOTraits IO, class StorageViewT>
     SBIO_HD static IOStatus fetch_step(Stream<IO, RandomTraits>* streams,
                                        StorageViewT& storage,
-                                       DiscoveryState& stream_state,
+                                       const StreamCatalog<RandomTraits>& catalog,
+                                       FetchCursor<RandomTraits>& cursor,
                                        const GenericStreamConfig<RandomTraits>& cfg,
                                        StepIdxType step_idx,
                                        DataAccessPtn ptn) {
@@ -378,17 +338,17 @@ namespace sbio {
       } else if (cfg.format_params.indexing_mode == IndexingMode::NoIndex) {
         adjusted_idx = 0;
       }
-      if (adjusted_idx >= stream_state.num_events) {
+
+      if (adjusted_idx >= catalog.num_steps[0]) {
         return IOStatus::AllRequestedRead;
       }
 
       auto* idx_buf { storage.template acquire<roles::Index, 0, ncarray::HostTag>() };
       const auto* event_offsets { reinterpret_cast<const EventOffset*>(idx_buf) };
-
       const auto& evt_off { event_offsets[adjusted_idx] };
-      std::size_t file_offset { evt_off.offset };
-      std::size_t read_size { evt_off.size };
 
+      hd_std::size_t file_offset { evt_off.offset };
+      hd_std::size_t read_size { evt_off.size };
       auto* data_buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
       IOStatus status = get_stream<DataStream>(streams).read_at(data_buf, file_offset, read_size);
 
@@ -401,7 +361,8 @@ namespace sbio {
     template <IOTraits IO, class StorageViewT>
     SBIO_HD static IOStatus fetch_multi_steps(Stream<IO, RandomTraits>* streams,
                                               StorageViewT& storage,
-                                              DiscoveryState& stream_state,
+                                              const StreamCatalog<RandomTraits>& catalog,
+                                              FetchCursor<RandomTraits>& cursor,
                                               const GenericStreamConfig<RandomTraits>& cfg,
                                               StepIdxType step_idx,
                                               StepIdxType count,
@@ -415,7 +376,7 @@ namespace sbio {
 
         hd_std::size_t end_idx { start_idx + count - 1 };
 
-        if (end_idx > stream_state.num_events) {
+        if (end_idx > catalog.num_steps[0]) {
           return IOStatus::AllRequestedRead;
         }
 
@@ -447,13 +408,16 @@ namespace sbio {
           hd_std::size_t file_offset { off.offset };
           hd_std::size_t read_size { off.size };
 
-          IOStatus status = get_stream<DataStream>(streams).read_at(reinterpret_cast<char*>(data_buf) + cummulative_offset,
-                                                                    file_offset,
-                                                                    read_size);
+          IOStatus status =
+            get_stream<DataStream>(streams).read_at(reinterpret_cast<char*>(data_buf) + cummulative_offset,
+                                                    file_offset,
+                                                    read_size);
+
           storage.template release<roles::Index, 0>(idx_buf);
           if (c < count - 1) {
             cummulative_offset += read_size;
-            index_stream(streams, storage, stream_state, cfg);
+            // index_stream(streams, storage, catalog, cursor, cfg);
+            // TODO: Need to redo this implementaiton now!
           }
         }
       }
@@ -462,7 +426,8 @@ namespace sbio {
     template <IOTraits IO, class StorageViewT>
     SBIO_HD static IOStatus fetch_multi_steps_stride(Stream<IO, RandomTraits>* streams,
                                                      StorageViewT& storage,
-                                                     DiscoveryState& stream_state,
+                                                     const StreamCatalog<RandomTraits>& catalog,
+                                                     FetchCursor<RandomTraits>& cursor,
                                                      const GenericStreamConfig<RandomTraits>& cfg,
                                                      StepIdxType step_idx,
                                                      StepIdxType count,
@@ -491,21 +456,6 @@ namespace sbio {
       res.data = storage.template release<roles::Data, 0>(data_buf, res.data);
 
       return res;
-    }
-
-    template <class StorageViewT>
-    SBIO_HD static auto capacity(const StorageViewT& storage,
-                                 const DiscoveryState& state) {
-      return state.num_events;
-    }
-
-    template <class StorageViewT>
-    SBIO_HD static auto current_buffer(StorageViewT& storage,
-                                       const DiscoveryState& state) {
-      auto* buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
-      storage.template release<roles::Data, 0>(buf);
-
-      return buf;
     }
 
     SBIO_HD static DataResult resolve_data(void* buffer,

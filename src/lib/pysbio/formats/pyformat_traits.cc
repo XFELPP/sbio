@@ -68,40 +68,6 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
 
   pysbio::impl::bind_stream_config<sbio::XTC1Traits>(ftraits_module, "XTC1StreamConfig");
 
-  py::classh<sbio::XTC1Traits::DiscoveryState>(ftraits_module, "XTC1StreamState")
-    .def(py::init<
-      ssize_t,
-      std::uint64_t,
-      bool,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      sbio::XTC1Traits::DataAccessPtn
-    >())
-    .def_readwrite("last_l1_idx_seen",
-                   &sbio::XTC1Traits::DiscoveryState::last_l1_idx_seen)
-    .def_readwrite("next_bd_offset",
-                   &sbio::XTC1Traits::DiscoveryState::next_bd_offset)
-    .def_readwrite("seen_end_run",
-                   &sbio::XTC1Traits::DiscoveryState::seen_end_run)
-    .def_readwrite("l1_offset_idx",
-                   &sbio::XTC1Traits::DiscoveryState::l1_offset_idx)
-    .def_readwrite("trans_offset_idx",
-                   &sbio::XTC1Traits::DiscoveryState::trans_offset_idx)
-    .def_readwrite("events_per_read",
-                   &sbio::XTC1Traits::DiscoveryState::events_per_read)
-    .def_readwrite("num_transitions",
-                   &sbio::XTC1Traits::DiscoveryState::num_transitions)
-    .def_readwrite("num_events",
-                   &sbio::XTC1Traits::DiscoveryState::num_events)
-    .def_readwrite("curr_smd_offset",
-                   &sbio::XTC1Traits::DiscoveryState::curr_smd_offset)
-    .def_readwrite("last_accessed_ptn",
-                   &sbio::XTC1Traits::DiscoveryState::last_accessed_ptn);
-
   py::classh<sbio::XTC1Traits::DataRequest>(ftraits_module, "XTC1DataRequest")
     .def(py::init<const char*, const char*, const char*, const char*>())
     .def(py::init<const char*, const char*>())
@@ -169,40 +135,6 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .finalize();
 
   pysbio::impl::bind_stream_config<sbio::XTC2Traits>(ftraits_module, "XTC2StreamConfig");
-
-  py::classh<sbio::XTC2Traits::DiscoveryState>(ftraits_module, "XTC2StreamState")
-    .def(py::init<
-      ssize_t,
-      std::uint64_t,
-      bool,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      sbio::XTC2Traits::DataAccessPtn
-    >())
-    .def_readwrite("last_l1_idx_seen",
-                   &sbio::XTC2Traits::DiscoveryState::last_l1_idx_seen)
-    .def_readwrite("next_bd_offset",
-                   &sbio::XTC2Traits::DiscoveryState::next_bd_offset)
-    .def_readwrite("seen_end_run",
-                   &sbio::XTC2Traits::DiscoveryState::seen_end_run)
-    .def_readwrite("l1_offset_idx",
-                   &sbio::XTC2Traits::DiscoveryState::l1_offset_idx)
-    .def_readwrite("trans_offset_idx",
-                   &sbio::XTC2Traits::DiscoveryState::trans_offset_idx)
-    .def_readwrite("events_per_read",
-                   &sbio::XTC2Traits::DiscoveryState::events_per_read)
-    .def_readwrite("num_transitions",
-                   &sbio::XTC2Traits::DiscoveryState::num_transitions)
-    .def_readwrite("num_events",
-                   &sbio::XTC2Traits::DiscoveryState::num_events)
-    .def_readwrite("curr_smd_offset",
-                   &sbio::XTC2Traits::DiscoveryState::curr_smd_offset)
-    .def_readwrite("last_accessed_ptn",
-                   &sbio::XTC2Traits::DiscoveryState::last_accessed_ptn);
 
   py::classh<sbio::XTC2Traits::DataRequest>(ftraits_module, "XTC2DataRequest")
     .def(py::init<const char*, const char*, const char*, const char*>())

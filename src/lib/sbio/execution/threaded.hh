@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/thread_local_buffer.hh"
@@ -131,6 +132,12 @@ namespace sbio {
       ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
 
       return s;
+    }
+
+    template <typename FTraits, typename BrokerT>
+    static FetchCursor<FTraits>& get_fetch_cursor(BrokerT& /* broker */) {
+      thread_local FetchCursor<FTraits> tls_cursor{};
+      return tls_cursor;
     }
 
     /**

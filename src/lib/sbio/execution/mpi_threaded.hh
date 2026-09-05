@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/host_buffer.hh"
@@ -392,6 +393,12 @@ namespace sbio {
       }
     }
 
+    template <typename FTraits, typename BrokerT>
+    static FetchCursor<FTraits>& get_fetch_cursor(BrokerT& /* broker */) {
+      thread_local FetchCursor<FTraits> tls_cursor{};
+      return tls_cursor;
+    }
+
     /**
      * The MPIThreadedExecution policy splits BrokerGroup data fetch and resolution.
      *
@@ -431,7 +438,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -475,7 +481,6 @@ namespace sbio {
       }
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -667,11 +672,6 @@ namespace sbio {
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 };     ///< This processes rank in the MPI world.
     static inline int m_size { -1 };     ///< The size of the MPI world.
-    /**
-     * Set of mutexes to allow different brokers of a group from different threads
-     * to fetch in parallel.
-     */
-    static inline std::mutex m_broker_mutexes[2048];
     /**
      * Mutex for thread synchronization on reindexing
      */

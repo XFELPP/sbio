@@ -185,9 +185,10 @@ namespace sbio {
     return res;
   }
 
-
   SBIO_HD std::size_t XTC2Traits::populate_offsets(XTC2Traits::DataUnit* dg, // Dgram*
-                                                   XTC2Traits::DiscoveryState& state,
+                                                   IndexingCursor<XTC2Traits>& cursor,
+                                                   StreamCatalog<XTC2Traits>& catalog,
+                                                   std::size_t events_per_read,
                                                    std::size_t beginning_offset,
                                                    XTC2Traits::EventOffset* l1_offsets_buf,
                                                    XTC2Traits::TransitionOffset* transition_offsets_buf,
@@ -203,18 +204,17 @@ namespace sbio {
       // Size is 1, 8 byte int later
       std::uint64_t size = *(offset_ptr + 1);
 
-      auto buf_off = state.events_per_read
-        ? state.l1_offset_idx % state.events_per_read
-        : state.l1_offset_idx;
+      auto buf_off { cursor.offset_index[0] };
 
       new (l1_offsets_buf + buf_off) XTC2Traits::EventOffset(offset, size);
-      state.last_l1_idx_seen++;
-      state.l1_offset_idx++;
+      cursor.offset_index[0]++;
+      catalog.cummulative_steps[0]++;
     } else {
       std::uint64_t size = sizeof(*dg) + payload_size;
 
       std::uint64_t offset;
-      if (state.last_l1_idx_seen < 0) {
+
+      if (catalog.cummulative_steps[0] == 0) {
         // Have seen nothing but transitions... Then the smd file_offset can be used
         // This is because entire transitions are also stored in .smd.xtc2 files
         // If we have yet to see an L1Accept, then the offset in .smd.xtc2 is equal
@@ -228,40 +228,40 @@ namespace sbio {
 
 
         offset = beginning_offset + access_offset;
-      } else if (state.l1_offset_idx != 0) {
+      } else if (cursor.offset_index[0] != 0) {
         // Have seen L1 (and not wrapped)... Can use previous L1 offset+size
         // But... Have to see if any other previous transitions as well
-        XTC2Traits::EventOffset prev_l1 = l1_offsets_buf[state.l1_offset_idx - 1];
+        XTC2Traits::EventOffset prev_l1 = l1_offsets_buf[cursor.offset_index[0] - 1];
         offset = prev_l1.offset + prev_l1.size;
 
-        std::size_t prev_transition_idx = state.trans_offset_idx - 1;
+        std::size_t prev_transition_idx { cursor.offset_index[1] - 1 };
 
         auto prev_transition = transition_offsets_buf[prev_transition_idx];
 
-        while (prev_transition.previous_l1_index == state.last_l1_idx_seen) {
+        while (prev_transition.previous_l1_index == catalog.cummulative_steps[0]) {
           offset += prev_transition.size;
           prev_transition_idx--;
           prev_transition = transition_offsets_buf[prev_transition_idx];
         }
       } else {
-        XTC2Traits::EventOffset prev_l1 = l1_offsets_buf[state.l1_offset_idx - 1];
+        XTC2Traits::EventOffset prev_l1 = l1_offsets_buf[cursor.offset_index[0] - 1];
         offset = prev_l1.offset + prev_l1.size;
       }
 
-      auto buf_off = state.events_per_read
-        ? state.trans_offset_idx % state.events_per_read
-        : state.trans_offset_idx;
+      auto buf_off { cursor.offset_index[1] };
 
       new (transition_offsets_buf + buf_off)
         XTC2Traits::TransitionOffset(offset,
                                      size,
-                                     state.last_l1_idx_seen,
+                                     catalog.cummulative_steps[0],
                                      dg->service());
 
-      state.trans_offset_idx++;
-      if (dg->service() == XTC2::TransitionId::EndRun) {
-        state.seen_end_run = true;
-      }
+      cursor.offset_index[1]++;
+      catalog.cummulative_steps[1]++;
+      // TODO: Need new mechanism to stash this!
+      //if (dg->service() == XTC2::TransitionId::EndRun) {
+      //  cursor.seen_end_run = true;
+      //}
     }
 
     return sizeof(*dg) + payload_size;

@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 
 #include "sbio/execution/serial.hh"
@@ -100,6 +101,11 @@ namespace pysbio {
     template <class ConfigT>
     static void configure_impl(const ConfigT& config) {
       BasePolicy::configure(config);
+    }
+
+    template <typename FTraits, typename BrokerT>
+    static sbio::FetchCursor<FTraits>& get_fetch_cursor(BrokerT& broker) {
+      return BasePolicy::template get_fetch_cursor<FTraits>(broker);
     }
 
     static bool should_index_impl() {
