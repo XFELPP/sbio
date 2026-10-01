@@ -28,6 +28,12 @@ endif
 
 cpp = meson.get_compiler('cpp')
 
+add_project_arguments(
+    '-DOMPI_SKIP_MPICXX',
+    '-DMPICH_SKIP_MPICXX',
+    language : ['c', 'cpp', 'cuda']
+)
+
 # Check compiler versions (for C++23 suppport especially)
 if cpp.get_id() == 'gcc'
     gcc_version = cpp.version()
