@@ -121,8 +121,11 @@ namespace sbio {
         meta_strides[0] = num_segments * sizeof(void*);
         meta_strides[1] = 1;
 
+        // The BrokerGroup actually constructs these as a single flat pointer table
+        // So, there is only a single pointer axis (suboffsets[1] == -1), same as with
+        // batch count == 1
         meta_suboffsets[0] = 0;
-        meta_suboffsets[1] = 0;
+        meta_suboffsets[1] = -1;
       } else {
         meta_shape[0] = num_segments;
         meta_strides[0] = sizeof(void*);
