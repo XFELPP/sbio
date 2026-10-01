@@ -147,7 +147,7 @@ namespace sbio {
   private:
     template <typename Role, hd_std::size_t Index, typename Head, typename... Tail>
     struct role_index_impl {
-      static constexpr hd_std::ptrdiff_t value = Head::template accepts<Role>()
+      static constexpr hd_std::ptrdiff_t value = Head::template accepts<Role>
         ? Index
         : role_index_impl<Role, Index + 1, Tail...>::value;
     };
@@ -155,7 +155,7 @@ namespace sbio {
     template <typename Role, hd_std::size_t Index, typename Head>
     struct role_index_impl<Role, Index, Head> {
       static constexpr hd_std::ptrdiff_t value =
-        Head::template accepts<Role>() ? static_cast<hd_std::ptrdiff_t>(Index) : -1;
+        Head::template accepts<Role> ? static_cast<hd_std::ptrdiff_t>(Index) : -1;
     };
 
   public:

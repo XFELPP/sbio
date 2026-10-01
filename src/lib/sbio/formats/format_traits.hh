@@ -32,6 +32,8 @@
 
 #include <concepts>
 #include <cstdint>
+#include <optional>
+#include <utility>
 
 #ifndef SBIO_HD
 #ifdef __CUDACC__
@@ -136,11 +138,36 @@ namespace sbio {
     { T::index_stream(streams, storage, catalog, cursor, cfg) } -> std::convertible_to<IOStatus>;
   };
 
+  template <typename T>
+  concept HasGenericIndex = requires(const typename T::DataUnit* unit,
+                                     typename T::StepKind kind,
+                                     typename T::DataAccessPtn ptn,
+                                     hd_std::uint32_t stream,
+                                     hd_std::uint64_t offset) {
+    typename T::StepKind;
+    { T::kind_for_ptn(ptn) } -> std::same_as<typename T::StepKind>;
+    { T::kind_for_step(unit) } -> std::convertible_to<hd_std::optional<typename T::StepKind>>;
+    { T::locate_bytes(unit) } -> std::convertible_to<std::size_t>;
+    { T::locate_step(unit, kind, stream, offset) } -> std::same_as<ByteRegion>;
+  };
+
+  /**
+   * Call `fn(std::integral_constant<std::size_t, P>{})` for the runtime access pattern `ptn`,
+   * so per-pattern buffers (roles::Data, id == pattern) can be selected at compile time.
+   */
+  template <typename FTraits, class Fn>
+  SBIO_HD inline void visit_ptn(typename FTraits::DataAccessPtn ptn, Fn&& fn) {
+    const auto p { static_cast<std::size_t>(ptn) };
+    [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+      ((p == Ps ? (fn(std::integral_constant<std::size_t, Ps> {}), true) : false) || ...);
+    }(std::make_index_sequence<FTraits::DataAccessPtnCount> {});
+  }
+
   template <typename T, typename IO, typename StorageViewT>
   concept CanFetchStreamData = requires(Stream<IO, T>* streams,
                                         StorageViewT& storage,
                                         const StreamCatalog<T>& catalog,
-                                        FetchCursor<T>& cursor,
+                                        SegmentCursor<T>& cursor,
                                         const GenericStreamConfig<T>& cfg,
                                         typename T::StepIdxType step_idx,
                                         typename T::DataAccessPtn ptn) {
@@ -266,25 +293,26 @@ namespace sbio {
   template <typename T, typename IO, typename EPolicy>
   concept FormatTraits =
     // Indicates size of headers, etc.
-    HasBoundedDataDimensions<T>                                                     &&
+    HasBoundedDataDimensions<T>                                                      &&
     // Definition of "streamable" - Countable units, and indicates exhaustion:
-    HasCountableDataUnits<T>                                                        &&
-    CanFindAndConfigureStreams<T>                                                   &&
-    CanAllocateStorage<T>                                                           &&
-    HasDataRequest<T>                                                               &&
+    HasCountableDataUnits<T>                                                         &&
+    CanFindAndConfigureStreams<T>                                                    &&
+    CanAllocateStorage<T>                                                            &&
+    HasDataRequest<T>                                                                &&
     HasStreamState<
       T,
-      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>  &&
     CanDiscoverMetadata<
       T,
       IO,
-      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
-    CanFetchStreamData<
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>  &&
+    (HasGenericIndex<T>                                                              ||
+     CanFetchStreamData<
       T,
       IO,
-      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>) &&
     // Simple data fetching API
-    CanResolveData<T>                                                               &&
+    CanResolveData<T>                                                                &&
     // Advanced data fetching API
     CanFillBuffer<
       T,
@@ -321,7 +349,7 @@ namespace sbio {
     FormatTraits<T, IO, StorageViewT> && HasEventOffset<T> && HasTransitionOffset<T>;
 
   template <typename StreamVariant, typename FTraits, typename IO>
-  SBIO_HD constexpr auto& get_stream(Stream<IO, FTraits>* streams) {
+  SBIO_HD constexpr auto& get_stream(const Stream<IO, FTraits>* streams) {
     constexpr std::size_t idx { FTraits::StreamTypes::template index_of<StreamVariant> };
 
     return streams[idx];

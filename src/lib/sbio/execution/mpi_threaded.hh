@@ -190,6 +190,27 @@ namespace sbio {
       m_exhausted.store(false, std::memory_order_release);
     }
 
+    template <class T>
+    struct SegmentState {
+      SegmentState()
+        : id(next_id.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      T& get() const {
+        thread_local std::vector<std::pair<std::uint64_t, T>> registry;
+        for (auto& [key, v] : registry) {
+          if (key == id) {
+            return v;
+          }
+        }
+
+        return registry.emplace_back(id, T{}).second;
+      }
+
+      std::uint64_t id;
+      static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
     template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIThreadedExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
@@ -391,12 +412,6 @@ namespace sbio {
 
         sync_vars.for_each(broadcast_all_ranks);
       }
-    }
-
-    template <typename FTraits, typename BrokerT>
-    static FetchCursor<FTraits>& get_fetch_cursor(BrokerT& /* broker */) {
-      thread_local FetchCursor<FTraits> tls_cursor{};
-      return tls_cursor;
     }
 
     /**

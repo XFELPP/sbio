@@ -64,6 +64,11 @@ namespace sbio {
     using DataFormat = typename BrokerType::DataFormat;
 
     /**
+     * Current execution policy.
+     */
+    using EPolicy = typename BrokerType::ExecutionPolicy;
+
+    /**
      * The type of the enumerator used to specify access patterns used for the format.
      */
     using DataAccessPtn = typename DataFormat::DataAccessPtn;
@@ -73,6 +78,10 @@ namespace sbio {
      */
     BrokerType* broker { nullptr };
     /**
+     * Tracking state handle for segment position within the StreamBroker's streams.
+     */
+    typename EPolicy::template SegmentState<SegmentCursor<DataFormat>> cursor {};
+    /**
      * The identifier provided by the actual data format specification.
      *
      * The format identifier does not necessarily equal the logical_slot. In some cases,
@@ -80,16 +89,16 @@ namespace sbio {
      */
     hd_std::uint32_t format_segment_id { 0 };
     /**
+     * The logical order of the segment within a BrokerGroup.
+     */
+    hd_std::uint32_t logical_slot { 0 };
+    /**
      * The format-specific access strategy used to access this logical segment.
      *
      * Some formats expose multiple mechanisms to traverse data. The access pattern
      * controls which mechanism to use.
      */
     DataAccessPtn access_ptn;
-    /**
-     * The logical order of the segment within a BrokerGroup.
-     */
-    hd_std::uint32_t logical_slot { 0 };
   };
 
   /**
@@ -217,7 +226,7 @@ namespace sbio {
               if (!duplicate) {
                 // Logical slot will be done next, to deal with sorting.
                 stream_indices[n_segments_found] = broker->stream_idx();
-                tmp_segments[n_segments_found++] = { broker, seg_no, ptn };
+                tmp_segments[n_segments_found++] = { broker, {}, seg_no, 0, ptn };
 
                 if (hd_std::strcmp(final_type, "unknown") == 0) {
                   safe_strncpy(final_type, type.c_str(), 256);
@@ -298,6 +307,44 @@ namespace sbio {
 
 
     // --- Strategy and traits aware getters --- //
+    /**
+     * Retrieve the correct, active, StreamBroker for a specified step.
+     *
+     * Depending on the data format and various traits and strategies, not all
+     * StreamBrokers may be active/available for every step. This function translates
+     * a request for a specific broker, for a specific step, into the correct active
+     * StreamBroker.
+     *
+     * @param[in] step_idx The step for which the active broker is needed.
+     * @param[in] broker_no The uncorrected index for the StreamBroker.
+     * @returns The active StreamBroker - this may more may not correspond to the
+     *          StreamBroker indicated by `broker_no`.
+     */
+    SBIO_HD const SegmentRef<BrokerType>& active_segment(hd_std::size_t step_idx,
+                                                         hd_std::size_t broker_no) const {
+      if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
+        auto active_broker_idx { step_idx % num_segments };
+
+        auto* broker { stream_brokers[active_broker_idx] };
+        for (const auto& seg : segments) {
+          if (seg.broker == broker) {
+            return seg;
+          }
+        }
+        return segments[0];
+      } else {
+        auto active_broker_idx { broker_no };
+
+        auto* broker { stream_brokers[active_broker_idx] };
+        for (const auto& seg : segments) {
+          if (seg.broker == broker) {
+            return seg;
+          }
+        }
+        return segments[0];
+      }
+    }
+
     /**
      * Retrieve the correct, active, StreamBroker for a specified step.
      *

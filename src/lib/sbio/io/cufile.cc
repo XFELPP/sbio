@@ -129,32 +129,15 @@ namespace sbio {
     return IOStatus::Success;
   }
 
-  IOStatus cuFileIO::read(std::uint64_t offset, std::size_t size, void* dest) {
+  ReadResult cuFileIO::read_impl(std::uint64_t offset, std::size_t size, void* dest) const {
     if (checkCuFile(cuFileBufRegister(dest, size, 0))) {
       std::cerr << "Unable to register GPU buffer with cuFile." << std::endl;
-      return IOStatus::GeneralIOError;
+      return classify_read(-1, 0);
     }
 
     ssize_t read_count { cuFileRead(m_handle, dest, size, offset, 0) };
     cuFileBufDeregister(dest);
 
-    if (read_count < 0) {
-      this->m_read_count = 0;
-
-      return IOStatus::GeneralIOError;
-    } else if (read_count == 0) {
-      this->m_read_count = 0;
-
-      return IOStatus::ZeroBytesRead;
-    }
-
-    this->m_read_count = read_count;
-    this->m_total_bytes_read += read_count;
-
-    if (read_count != static_cast<ssize_t>(size)) {
-      return IOStatus::TruncatedRead;
-    }
-
-    return IOStatus::Success;
+    return classify_read(read_count, size);
   }
 } // namespace sbio

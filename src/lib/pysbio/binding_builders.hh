@@ -63,11 +63,13 @@ namespace pysbio::impl {
       .def("fetch_step",
            &BrokerT::fetch_step,
            py::arg("step_idx"),
-           py::arg("access_ptn"))
+           py::arg("access_ptn"),
+           py::arg("cursor"))
       .def("fetch_steps",
            &BrokerT::fetch_steps,
            py::arg("steps"),
-           py::arg("access_ptn"))
+           py::arg("access_ptn"),
+           py::arg("cursor"))
       .def("get_data_in_buffer",
            &BrokerT::get_data_in_buffer,
            py::arg("data_req"),

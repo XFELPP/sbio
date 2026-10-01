@@ -175,6 +175,12 @@ namespace sbio {
       m_event_idx = 0;
     }
 
+    template <class T>
+    struct SegmentState {
+      mutable T value {};
+      T& get() const { return value; }
+    };
+
     template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
@@ -369,11 +375,6 @@ namespace sbio {
 
         sync_vars.for_each(broadcast_all_ranks);
       }
-    }
-
-    template <typename FTraits, typename BrokerT>
-    static FetchCursor<FTraits>& get_fetch_cursor(BrokerT& broker) {
-      return broker.fetch_cursor();
     }
 
     /**

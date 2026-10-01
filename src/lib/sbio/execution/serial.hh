@@ -65,6 +65,12 @@ namespace sbio {
       m_event_idx = 0;
     }
 
+    template <class T>
+    struct SegmentState {
+      mutable T value {};
+      T& get() const { return value; }
+    };
+
     /**
      * Allocate HostBuffer storage for requested roles.
      *
@@ -108,11 +114,6 @@ namespace sbio {
       ( (make_host_buffers(std::type_identity<Descriptors>{})), ... );
 
       return s;
-    }
-
-    template <typename FTraits, typename BrokerT>
-    static FetchCursor<FTraits>& get_fetch_cursor(BrokerT& broker) {
-      return broker.fetch_cursor();
     }
 
     /**

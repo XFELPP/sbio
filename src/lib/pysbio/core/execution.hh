@@ -68,7 +68,11 @@ namespace pysbio {
   class PyExecution : public sbio::Execution<PyExecution<BasePolicy>> {
   public:
     using Config = typename BasePolicy::Config;
+
     static constexpr auto ParallelSupport = BasePolicy::ParallelSupport;
+
+    template <class T>
+    using SegmentState = typename BasePolicy::template SegmentState<T>;
 
     template <typename Descriptor>
     using BufferTypeFor = typename BasePolicy::template BufferTypeFor<Descriptor>;
@@ -101,11 +105,6 @@ namespace pysbio {
     template <class ConfigT>
     static void configure_impl(const ConfigT& config) {
       BasePolicy::configure(config);
-    }
-
-    template <typename FTraits, typename BrokerT>
-    static sbio::FetchCursor<FTraits>& get_fetch_cursor(BrokerT& broker) {
-      return BasePolicy::template get_fetch_cursor<FTraits>(broker);
     }
 
     static bool should_index_impl() {

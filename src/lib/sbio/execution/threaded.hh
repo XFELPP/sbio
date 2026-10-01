@@ -82,6 +82,27 @@ namespace sbio {
       m_exhausted.store(false, std::memory_order_release);
     }
 
+    template <class T>
+    struct SegmentState {
+      SegmentState()
+        : id(next_id.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      T& get() const {
+        thread_local std::vector<std::pair<std::uint64_t, T>> registry;
+        for (auto& [key, v] : registry) {
+          if (key == id) {
+            return v;
+          }
+        }
+
+        return registry.emplace_back(id, T {}).second;
+      }
+
+      std::uint64_t id;
+      static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
     /**
      * Allocate ThreadLocalBuffer storage for Index/DataRole and HostBuffer otherwise.
      *
@@ -132,12 +153,6 @@ namespace sbio {
       ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
 
       return s;
-    }
-
-    template <typename FTraits, typename BrokerT>
-    static FetchCursor<FTraits>& get_fetch_cursor(BrokerT& /* broker */) {
-      thread_local FetchCursor<FTraits> tls_cursor{};
-      return tls_cursor;
     }
 
     /**

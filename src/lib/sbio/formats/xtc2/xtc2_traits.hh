@@ -52,6 +52,7 @@ typedef SSIZE_T ssize_t;
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -104,23 +105,29 @@ namespace sbio {
     };
     static constexpr std::size_t DataAccessPtnCount { 3 };
 
+    enum class StepKind : std::uint8_t {
+      ClearReadout =  0,
+      Reset        =  1,
+      Configure    =  2,
+      Unconfigure  =  3,
+      BeginRun     =  4,
+      EndRun       =  5,
+      BeginStep    =  6,
+      EndStep      =  7,
+      Enable       =  8,
+      Disable      =  9,
+      SlowUpdate   = 10,
+      Unused       = 11,
+      L1Accept     = 12
+    };
+
+    static constexpr std::size_t NumStepKinds { static_cast<std::size_t>(StepKind::L1Accept) + 1 };
+
     using DataUnit = XTC2::Dgram;
     using StepIdxType = std::size_t; // Unit type for indexing and selecting data units ("events")
     static constexpr StepIdxType ExhaustedSentinel { static_cast<StepIdxType>(-1) }; // Indicator all units read
 
     struct StreamParameters {};
-
-    struct EventOffset {
-      std::uint64_t offset;
-      std::uint64_t size;
-    };
-
-    struct TransitionOffset {
-      std::uint64_t offset;
-      std::uint64_t size;
-      std::int64_t previous_l1_index;
-      XTC2::TransitionId transition_id;
-    };
 
     /**
      * Specify all the buffers that are required to implement a reader of XTC2.
@@ -135,10 +142,11 @@ namespace sbio {
      */
     using BrokerBufferRequirements = RequirementsList<
       BufferDescriptor<roles::Metadata, 0, sizeof(XTC2::Dgram)>,  /* Buffer for transition */
-      BufferDescriptor<roles::Metadata, 1, sizeof(XTC2::Dgram)>,  /* Scratch buffer for SMD */
       BufferDescriptor<roles::Data, 0, sizeof(XTC2::Dgram)>,      /* Buffer for events */
-      BufferDescriptor<roles::Index, 0, sizeof(EventOffset)>,     /* EventOffsets buffer */
-      BufferDescriptor<roles::Index, 1, sizeof(TransitionOffset)> /* TransitionOffsets buffer */
+      BufferDescriptor<roles::Data, 1, sizeof(XTC2::Dgram)>,      /* Buffer for SlowUpdate */
+      BufferDescriptor<roles::Data, 2, sizeof(XTC2::Dgram)>,      /* Buffer for scan */
+      BufferDescriptor<roles::Index, index_ids::Steps>,
+      BufferDescriptor<roles::Metadata, index_ids::Scratch>
     >;
 
     using RequestSchema = sbio::NamedKeys<"alg", "field">;
@@ -164,38 +172,15 @@ namespace sbio {
                                            const MetadataInventory<XTC2Traits>& inv,
                                            const DataRequest& req);
 
-    /**
-     * Traverse a datagram to populate transition and event offsets.
-     * The datagram should come from a .smd.xtc2 file. This should be called in a loop
-     * if you want to load many offsets.
-     * @param[in] dg The datagram to traverse
-     * @param[in] state A reference to a state tracking variable to maintain a history
-     *            of offsets and indices seen.
-     * @param[in] beggining_offset A starting point.
-     * @param[in] l1_offsets_buf The L1Accept offsets buffer - the state will tell us
-     *            where to index into this buffer to record the new offset from dg
-     * @param[in] transition_offsets_buf The transition offsets buffer - the state will
-     *            tell us where to index into this buffer to record the new offset from dg
-     * @param[in] access_ofsfet The access offset to be incremented.
-     */
-    SBIO_HD static std::size_t populate_offsets(DataUnit* dg,
-                                                IndexingCursor<XTC2Traits>& cursor,
-                                                StreamCatalog<XTC2Traits>& catalog,
-                                                std::size_t events_per_read,
-                                                std::size_t beginning_offset,
-                                                EventOffset* l1_offsets_buf,
-                                                TransitionOffset* transition_offsets_buf,
-                                                std::size_t access_offset = 0);
-
     SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(GenericStreamConfig<XTC2Traits>& cfg) {
       AllocationRequest<XTC2Traits> request;
-      request.size_requests[0] = cfg.max_buffer_size * cfg.max_batch_size; // Transition buf
-      request.size_requests[1] = // Scratch buffer for reading ahead in smd file
-        cfg.index_batch_size * (sizeof(XTC2::Dgram) + 80);
-      request.size_requests[2] = cfg.max_buffer_size * cfg.max_batch_size; // Event buf
-      request.size_requests[3] = cfg.index_batch_size * sizeof(XTC2Traits::EventOffset);
+      request.size_requests[0] = cfg.max_buffer_size;
+      request.size_requests[1] = cfg.max_buffer_size * cfg.max_batch_size;
+      request.size_requests[2] = cfg.max_buffer_size;
+      request.size_requests[3] = cfg.max_buffer_size;
       request.size_requests[4] =
-        cfg.index_batch_size * sizeof(XTC2Traits::TransitionOffset);
+        (cfg.index_batch_size + NumStepKinds) * sizeof(StepOffset<XTC2Traits>);
+      request.size_requests[5] = cfg.index_batch_size * (sizeof(XTC2::Dgram) + 80);
 
       return request;
     }
@@ -207,8 +192,9 @@ namespace sbio {
       auto* smd_buf =
         storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
 
-      IOStatus status = get_stream<SMD>(streams).read_one(smd_buf,
-                                                          storage.template size<roles::Metadata>());
+      IOStatus status = get_stream<SMD>(streams).read_unit_at(smd_buf,
+                                                              storage.template size<roles::Metadata>(),
+                                                              0).status;
 
       if (status == IOStatus::Success) {
         auto* dg = reinterpret_cast<XTC2::Dgram*>(smd_buf);
@@ -222,294 +208,71 @@ namespace sbio {
       return status;
     }
 
-    template <IOTraits IO, class StorageViewT>
-    SBIO_HD static IOStatus index_stream(Stream<IO, XTC2Traits>* streams,
-                                         StorageViewT& storage,
-                                         StreamCatalog<XTC2Traits>& catalog,
-                                         IndexingCursor<XTC2Traits>& cursor,
-                                         const GenericStreamConfig<XTC2Traits>& cfg) {
-      auto events_per_read { cfg.index_batch_size };
-      std::size_t read_size { (sizeof(XTC2::Dgram) + 80) * events_per_read };
-      std::size_t missing_chunk { 0 };
-      std::size_t smd_stream_idx { 0 }; // SMD is stream variant 0
-      if (cursor.stream_offset[smd_stream_idx]) {
-        std::size_t last_bytes_read = get_stream<SMD>(streams).read_count();
-        missing_chunk = last_bytes_read - cursor.stream_offset[smd_stream_idx];
-      }
-
-      auto* smd_buf =
-        storage.template acquire<roles::Metadata, 1, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-      IOStatus status = get_stream<SMD>(streams).read_batch(smd_buf, read_size, missing_chunk);
-
-      if (status == IOStatus::ZeroBytesRead) {
-        catalog.num_steps[0] = 0; // L1Accept count
-        catalog.num_steps[1] = 0; // Transition count
-      } else if (status == IOStatus::Success) {
-        auto* l1_offsets_buf =
-          storage.template acquire<roles::Index, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        auto* l1_offsets { reinterpret_cast<EventOffset*>(l1_offsets_buf) };
-
-        auto* transition_offsets_buf =
-          storage.template acquire<roles::Index, 1, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        auto* transition_offsets { reinterpret_cast<TransitionOffset*>(transition_offsets_buf) };
-
-        std::size_t bytes_read = get_stream<SMD>(streams).read_count();
-        cursor.stream_offset[smd_stream_idx] = 0;
-
-        std::size_t n_events { 0 };
-        std::size_t n_transitions { 0 };
-        while (cursor.stream_offset[smd_stream_idx] < bytes_read) {
-          if (n_events >= events_per_read) {
-            status = IOStatus::AllRequestedRead;
-            break;
-          }
-
-          if (cursor.stream_offset[smd_stream_idx] + sizeof(XTC2::Dgram) > bytes_read) {
-            status = IOStatus::TruncatedRead;
-            break;
-          }
-
-          auto* dg =
-            reinterpret_cast<XTC2::Dgram*>(reinterpret_cast<char*>(smd_buf) + cursor.stream_offset[smd_stream_idx]);
-          cursor.stream_offset[smd_stream_idx] += populate_offsets(dg,
-                                                                   cursor,
-                                                                   catalog,
-                                                                   events_per_read,
-                                                                   0,
-                                                                   l1_offsets,
-                                                                   transition_offsets,
-                                                                   cursor.stream_offset[smd_stream_idx]);
-          if (dg->service() == XTC2::TransitionId::L1Accept) {
-            n_events++;
-          } else {
-            n_transitions++;
-          }
-        }
-
-        catalog.num_steps[0] = n_events;       // L1Accept
-        catalog.num_steps[1] = n_transitions;  // Transitions
-        storage.template release<roles::Index, 0>(l1_offsets);
-        storage.template release<roles::Index, 1>(transition_offsets);
-      }
-
-      storage.template release<roles::Metadata, 1>(smd_buf);
-      return status;
-    }
-
-    template <IOTraits IO, class StorageViewT>
-    SBIO_HD static IOStatus fetch_step(Stream<IO, XTC2Traits>* streams,
-                                       StorageViewT& storage,
-                                       const StreamCatalog<XTC2Traits>& catalog,
-                                       FetchCursor<XTC2Traits>& cursor,
-                                       const GenericStreamConfig<XTC2Traits>& cfg,
-                                       StepIdxType step_idx,
-                                       DataAccessPtn ptn) {
-      cursor.last_access_ptn = ptn;
-      std::size_t ptn_idx { static_cast<std::size_t>(ptn) };
-      if (ptn == DataAccessPtn::L1Accept) {
-        std::size_t adjusted_index { step_idx % cfg.index_batch_size };
-        if (adjusted_index >= catalog.num_steps[ptn_idx]) { // num_steps[0]
-          return IOStatus::AllRequestedRead;
-        }
-        auto* l1_offsets_buf =
-          storage.template acquire<roles::Index, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        auto* l1_offsets { reinterpret_cast<EventOffset*>(l1_offsets_buf) };
-
-        const auto& offset { l1_offsets[adjusted_index] };
-        auto* bd_buf { storage.template acquire<roles::Data, 0, ncarray::HostTag>() };
-        IOStatus status = get_stream<BD>(streams).read_at(bd_buf, offset.offset, offset.size);
-        if (status == IOStatus::Success) {
-          status = (get_stream<BD>(streams).read_count() == 0) ? IOStatus::ZeroBytesRead : IOStatus::Success;
-        }
-
-        storage.template release<roles::Index, 0>(l1_offsets);
-        storage.template release<roles::Data, 0>(bd_buf);
-
-        return status;
-      } else {
-        // Non-L1 transition fetch using cursor.offset_index[1]
-        std::size_t trans_ptn_idx { 1 };
-        XTC2::TransitionId transition_id = (ptn == DataAccessPtn::SlowUpdate)
-          ? XTC2::TransitionId::SlowUpdate
-          : XTC2::TransitionId::BeginStep;
-
-        std::size_t adjusted_index { step_idx % cfg.index_batch_size };
-        if (adjusted_index >= catalog.num_steps[0]) {
-          return IOStatus::AllRequestedRead;
-        }
-        auto* l1_offsets_buf =
-          storage.template acquire<roles::Index, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        auto* l1_offsets { reinterpret_cast<EventOffset*>(l1_offsets_buf) };
-
-        auto* transition_offsets_buf =
-          storage.template acquire<roles::Index, 1, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        auto* transition_offsets { reinterpret_cast<TransitionOffset*>(transition_offsets_buf) };
-        auto& curr_trans_idx { cursor.offset_index[trans_ptn_idx] }; // Access pattern 1 offset index
-        auto& offset { transition_offsets[curr_trans_idx] };
-
-        if (offset.previous_l1_index > static_cast<std::int64_t>(step_idx)) {
-          curr_trans_idx = 0;
-          offset = transition_offsets[0];
-        }
-
-        while (offset.transition_id != transition_id ||
-               offset.previous_l1_index <= static_cast<std::int64_t>(step_idx)) {
-          curr_trans_idx++;
-
-          if (curr_trans_idx >= catalog.num_steps[trans_ptn_idx]) {
-            storage.template release<roles::Index, 0>(l1_offsets);
-            storage.template release<roles::Index, 1>(transition_offsets);
-
-            return IOStatus::AllRequestedRead;
-          }
-
-          auto& next_trans_off { transition_offsets[curr_trans_idx] };
-          if (next_trans_off.previous_l1_index > static_cast<std::int64_t>(step_idx)) {
-            break;
-          }
-
-          if (next_trans_off.transition_id == transition_id) {
-            offset = transition_offsets[curr_trans_idx];
-          }
-        }
-
-        std::int64_t prev_l1_index { offset.previous_l1_index };
-        std::size_t read_size { 0 };
-        std::size_t file_offset { 0 };
-        if (prev_l1_index <= static_cast<std::int64_t>(step_idx) &&
-            curr_trans_idx < catalog.num_steps[trans_ptn_idx]) {
-          read_size = offset.size;
-
-          if (prev_l1_index == -1) {
-            auto& l1_offset { l1_offsets[0] };
-            std::size_t total_offset_from_l1 { read_size };
-            std::size_t transition_index { curr_trans_idx };
-
-            auto& next_trans_off { transition_offsets[transition_index] };
-            while (next_trans_off.previous_l1_index == -1) {
-              total_offset_from_l1 += next_trans_off.size;
-              transition_index++;
-              next_trans_off = transition_offsets[transition_index];
-            }
-
-            file_offset = l1_offset.offset - total_offset_from_l1;
-          } else {
-            file_offset = offset.offset;
-          }
-        }
-
-        auto* bd_buf { storage.template acquire<roles::Metadata, 0, ncarray::HostTag>() };
-        IOStatus status = get_stream<BD>(streams).read_at(bd_buf, file_offset, read_size);
-        if (status == IOStatus::Success) {
-          status = (get_stream<BD>(streams).read_count() == 0) ? IOStatus::ZeroBytesRead : IOStatus::Success;
-        }
-
-        storage.template release<roles::Index, 0>(l1_offsets);
-        storage.template release<roles::Index, 1>(transition_offsets);
-        storage.template release<roles::Metadata, 0>(bd_buf);
-
-        return status;
+    SBIO_HD static constexpr StepKind kind_for_ptn(DataAccessPtn ptn) {
+      switch (ptn) {
+      case DataAccessPtn::SlowUpdate: { return StepKind::SlowUpdate; }
+      case DataAccessPtn::BeginStep:  { return StepKind::BeginStep; }
+      default:                        { return StepKind::L1Accept; }
       }
     }
 
-    template <IOTraits IO, class StorageViewT>
-    SBIO_HD static IOStatus fetch_multi_steps(Stream<IO, XTC2Traits>* streams,
-                                              StorageViewT& storage,
-                                              const StreamCatalog<XTC2Traits>& catalog,
-                                              FetchCursor<XTC2Traits>& cursor,
-                                              const GenericStreamConfig<XTC2Traits>& cfg,
-                                              StepIdxType step_idx,
-                                              StepIdxType count,
-                                              DataAccessPtn ptn) {
-      cursor.last_access_ptn = ptn;
-      if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
-        std::size_t start_index { step_idx % cfg.index_batch_size };
-        std::size_t end_index { start_index + count - 1 };
-
-        if (end_index >= catalog.num_steps[0]) {
-          return IOStatus::AllRequestedRead;
+    SBIO_HD static std::optional<StepKind> kind_for_step(const DataUnit* step_data) {
+      if (step_data != nullptr) {
+        switch (step_data->service()) {
+        case XTC2::TransitionId::ClearReadout: { return StepKind::ClearReadout; }
+        case XTC2::TransitionId::Reset:        { return StepKind::Reset; }
+        case XTC2::TransitionId::Configure:    { return StepKind::Configure; }
+        case XTC2::TransitionId::Unconfigure:  { return StepKind::Unconfigure; }
+        case XTC2::TransitionId::BeginRun:     { return StepKind::BeginRun; }
+        case XTC2::TransitionId::EndRun:       { return StepKind::EndRun; }
+        case XTC2::TransitionId::BeginStep:    { return StepKind::BeginStep; }
+        case XTC2::TransitionId::EndStep:      { return StepKind::EndStep; }
+        case XTC2::TransitionId::Enable:       { return StepKind::Enable; }
+        case XTC2::TransitionId::Disable:      { return StepKind::Disable; }
+        case XTC2::TransitionId::SlowUpdate:   { return StepKind::SlowUpdate; }
+        case XTC2::TransitionId::Unused_11:    { return StepKind::Unused; }
+        case XTC2::TransitionId::L1Accept:     { return StepKind::L1Accept; }
+        default:                               { return std::nullopt; }
         }
-
-        auto* l1_offsets_buf =
-          storage.template acquire<roles::Index, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        auto* l1_offsets { reinterpret_cast<EventOffset*>(l1_offsets_buf) };
-
-        auto& start_offset = l1_offsets[start_index];
-        auto& end_offset = l1_offsets[end_index];
-        std::size_t file_offset { start_offset.offset };
-        std::size_t read_size { (end_offset.offset + end_offset.size) - file_offset };
-
-        std::size_t bd_buf_size { storage.template size<roles::Data, 0>() };
-        auto* bd_buf = storage.template acquire<roles::Data, 0, ncarray::HostTag>();
-
-        IOStatus status { IOStatus::Success };
-        if (read_size <= bd_buf_size) {
-          status = get_stream<BD>(streams).read_at(bd_buf, file_offset, read_size);
-        } else {
-          // First case, we have interspersed transitions in a batched read.
-          // If that's true, see if reading only the events in will get us under
-          // the limit
-          std::size_t l1s_size { 0 };
-          for (std::size_t i = start_index; i <= end_index; ++i) {
-            l1s_size += l1_offsets[i].size;
-          }
-
-          if (l1s_size <= bd_buf_size) {
-            // Must read in chunks
-            std::size_t dst_offset { 0 };
-            for (std::size_t i = start_index; i <= end_index; ++i) {
-              char* dst_ptr { reinterpret_cast<char*>(bd_buf) + dst_offset };
-              status = get_stream<BD>(streams).read_at(dst_ptr, l1_offsets[i].offset, l1_offsets[i].size);
-
-              if (status != IOStatus::Success) {
-                break;
-              }
-
-              dst_offset += l1_offsets[i].size;
-            }
-          } else {
-            // Too big sadly.
-            status = IOStatus::TruncatedRead;
-          }
-        }
-
-        if (status == IOStatus::Success) {
-          std::size_t read_count = get_stream<BD>(streams).read_count();
-          if (read_count == 0) {
-            status = IOStatus::ZeroBytesRead;
-          } else {
-            status = IOStatus::Success;
-          }
-        }
-
-        storage.template release<roles::Index, 0>(l1_offsets);
-        storage.template release<roles::Data, 0>(bd_buf);
-        return status;
-      } else {
-        /// TODO: Implement... something for this.
       }
 
-      return IOStatus::GeneralIOError;
+      return std::nullopt;
     }
 
-    template <IOTraits IO, class StorageViewT>
-    SBIO_HD static IOStatus fetch_multi_steps_stride(Stream<IO, XTC2Traits>* streams,
-                                                     StorageViewT& storage,
-                                                     const StreamCatalog<XTC2Traits>& catalog,
-                                                     FetchCursor<XTC2Traits>& cursor,
-                                                     const GenericStreamConfig<XTC2Traits>& cfg,
-                                                     StepIdxType step_idx,
-                                                     StepIdxType count,
-                                                     StepIdxType stride,
-                                                     DataAccessPtn ptn) {
-      cursor.last_access_ptn = ptn;
-      if (ptn == XTC2Traits::DataAccessPtn::L1Accept) {
-        /// TODO: Implement... something for this.
-      } else {
-        /// TODO: Implement... something for this.
+    SBIO_HD static std::size_t locate_bytes(const DataUnit* dg) {
+      if (dg->service() == XTC2::TransitionId::L1Accept) {
+        // L1Accept is 48 bytes into the SMD payload
+        // And since offset and size are both 8 bytes, size is 1 unit after
+        std::size_t offset_in_payload { 48 };
+        return sizeof(XTC2::Dgram) - sizeof(XTC2::Xtc) + offset_in_payload + 2 * sizeof(std::uint64_t);
+      }
+      return sizeof(XTC2::Dgram);
+    }
+
+    SBIO_HD static ByteRegion locate_step(const DataUnit* dg,
+                                          StepKind kind,
+                                          std::uint32_t scanned_stream,
+                                          std::uint64_t scan_offset) {
+      constexpr auto smd { static_cast<std::uint32_t>(StreamTypes::index_of<SMD>) };
+      constexpr auto bd { static_cast<std::uint32_t>(StreamTypes::index_of<BD>) };
+
+      if (kind == StepKind::L1Accept && scanned_stream == smd) {
+        // L1Accept is 48 bytes into the SMD payload
+        // And since offset and size are both 8 bytes, size is 1 unit after
+        std::size_t offset_in_payload { 48 };
+        std::uint64_t offset_size[2];
+        std::memcpy(offset_size,
+                    reinterpret_cast<const char*>(&dg->xtc) + offset_in_payload,
+                    sizeof(offset_size));
+        return { offset_size[0], offset_size[1], bd };
       }
 
-      return IOStatus::GeneralIOError;
+      // Transitions are complete in whichever stream is being scanned: read them in place.
+      return {
+        scan_offset,
+        sizeof(XTC2::Dgram) + static_cast<std::uint64_t>(dg->xtc.sizeofPayload()),
+        scanned_stream
+      };
     }
 
     template <class StorageViewT>
@@ -523,11 +286,18 @@ namespace sbio {
       void* bd_buf { nullptr };
       XTC2::Dgram* dg { nullptr };
 
-      if (ptn == DataAccessPtn::L1Accept) {
+      auto acquire_ptn_buffer = [&](auto P) {
         bd_buf =
-          storage.template acquire<roles::Data, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
+          storage.template acquire<
+            roles::Data,
+            decltype(P)::value,
+            ncarray::HostTag
+          >(AcquireIntent::CallerMemorySpace);
+      };
+      visit_ptn<XTC2Traits>(ptn, acquire_ptn_buffer);
+      dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
 
+      if (ptn == DataAccessPtn::L1Accept) {
         target_service = XTC2::TransitionId::L1Accept;
       } else {
         if (ptn == DataAccessPtn::SlowUpdate) {
@@ -555,10 +325,6 @@ namespace sbio {
             corrected_req.set<"field">(req.group_name.c_str());
           }
         }
-
-        bd_buf =
-          storage.template acquire<roles::Metadata, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
-        dg = reinterpret_cast<XTC2::Dgram*>(bd_buf);
       }
 
 
@@ -577,11 +343,11 @@ namespace sbio {
 
       DataResult res = XTC2Traits::resolve_data(dg, inv, corrected_req);
 
-      if (ptn == DataAccessPtn::L1Accept) {
-        res.data = storage.template release<roles::Data, 0>(bd_buf, res.data);
-      } else {
-        res.data = storage.template release<roles::Metadata, 0>(bd_buf, res.data);
-      }
+      auto release_ptn_buffer = [&](auto P) {
+        res.data =
+          storage.template release<roles::Data, decltype(P)::value>(bd_buf, res.data);
+      };
+      visit_ptn<XTC2Traits>(ptn, release_ptn_buffer);
 
       return res;
     }
