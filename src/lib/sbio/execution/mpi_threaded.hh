@@ -525,6 +525,13 @@ namespace sbio {
       return false;
     }
 
+    static void release_step() {
+      if (m_holding_step) {
+        m_holding_step = false;
+        m_in_flight.fetch_sub(1);
+      }
+    }
+
     /**
      * The MPIThreadedExecution policy generates step indices modulo MPI world size.
      *
@@ -559,6 +566,8 @@ namespace sbio {
         return FTraits::ExhaustedSentinel;
       }
 
+      release_step();
+
       int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
       int worker_rank;
       if (m_main_rank_loops || m_active_rank <= m_main_rank) {
@@ -587,6 +596,10 @@ namespace sbio {
           m_shared_capacity.load(std::memory_order_acquire);
 
         if (base_step >= current_cap) {
+          while (m_in_flight.load() != 0) { // Wait until no one is still fetching
+            std::this_thread::yield();
+          }
+
           std::lock_guard<std::mutex> lock(m_trigger_mutex);
 
           if (m_exhausted.load(std::memory_order_acquire)) {
@@ -636,13 +649,17 @@ namespace sbio {
           }
         }
 
+        // Make sure to stake claim before taking a step to ensure no missed triggers
+        m_in_flight.fetch_add(1);
         while (base_step < current_cap) {
           if (step >= current_cap) {
             if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+              m_in_flight.fetch_sub(1); // Didn't get a step
               break;
             }
           } else {
             if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+              m_holding_step = true;
               return step;
             }
           }
@@ -660,6 +677,7 @@ namespace sbio {
                             step,
                             max_capacity,
                             current_cap);
+            m_in_flight.fetch_sub(1); // Didn't get a step
             return FTraits::ExhaustedSentinel;
           }
         }
@@ -680,6 +698,15 @@ namespace sbio {
     static inline bool m_main_rank_loops { true };
 
     static inline std::size_t m_num_threads { 0 };
+
+    /**
+     * The number of steps handed out by next() and not yet finished processing.
+     *
+     * A thread returns a step at the start of each next() call.
+     */
+    static inline std::atomic<std::size_t> m_in_flight { 0 };
+
+    static inline thread_local bool m_holding_step; ///< Whether this thread is holding a step.
 
     /**
      * Communicator used when generating shareable buffers.
