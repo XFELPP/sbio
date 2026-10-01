@@ -102,6 +102,19 @@ namespace sbio {
   };
 
   /**
+   * Indicate how a step index should map onto a SegmentRef's actual steps.
+   *
+   * By default, all step indices will be traversed directly regardless of if
+   * some kinds of steps are more or less frequent. Alternatively, the BrokerGroup
+   * and GroupTopology can be set to align steps to a specific kind. E.g., to ensure
+   * that a low-frequency step kind is retrieved in alignment with a high-frequency one.
+   */
+  enum class StepMapping : hd_std::uint8_t {
+    PerKind = 0, ///< The BrokerGroup's step n is the SegmentRef's step n.
+    AlignTo      ///< The BrokerGroup's step n is the SegmentRef's latest step at or before step n of `align_ptn`
+  };
+
+  /**
    * The layout, post any sorting, of all segment references in a BrokerGroup.
    *
    * The topology organization is established once during the DISCOVERY state
@@ -140,6 +153,9 @@ namespace sbio {
 
     hd_std::array<SegmentRef<BrokerType>, MaxSegments> segments {};
     hd_std::size_t num_segments { 0 };
+
+    StepMapping step_mapping { StepMapping::PerKind };
+    DataAccessPtn align_ptn{}; ///< Pattern whose steps define the group's steps when AlignTo is used
 
     SBIO_HD bool empty() const { return num_segments == 0; }
 
@@ -307,6 +323,36 @@ namespace sbio {
 
 
     // --- Strategy and traits aware getters --- //
+    /**
+     * Translate the group's (already remapped) step index into the ordinal to fetch.
+     *
+     * @param[in] seg The SegmentRef to fetch the orginal for.
+     * @param[in] step_idx The already properly remapped step index.
+     * @param[out] ordinal The ordinal to fetch.
+     * @returns Whether the remap translation was successful.
+     */
+    SBIO_HD IOStatus map_step(const SegmentRef<BrokerType>& seg,
+                              hd_std::size_t step_idx,
+                              hd_std::size_t& ordinal) {
+      if constexpr (BrokerType::UsesGenericIndex) {
+        if (step_mapping == StepMapping::AlignTo && seg.access_ptn != align_ptn) {
+          hd_std::uint64_t ord { 0 };
+          const auto status {
+            seg.broker->preceding(DataFormat::kind_for_ptn(seg.access_ptn),
+                                  DataFormat::kind_for_ptn(align_ptn),
+                                  step_idx,
+                                  ord,
+                                  seg.cursor.get())
+          };
+          ordinal = static_cast<hd_std::size_t>(ord);
+          return status;
+        }
+      }
+
+      ordinal = step_idx;
+      return IOStatus::Success;
+    }
+
     /**
      * Retrieve the correct, active, StreamBroker for a specified step.
      *

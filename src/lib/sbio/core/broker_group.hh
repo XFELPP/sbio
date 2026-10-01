@@ -243,6 +243,17 @@ namespace sbio {
                                                                             max_batch_count);
     }
 
+    /**
+     * Configure and set the step remapping policy for the managed SegmentRefs.
+     *
+     * @param[in] mapping The mapping policy to use.
+     * @param[in] align_to The pattern to align to if using an aligning policy.
+     */
+    inline void set_step_mapping(StepMapping mapping, DataAccessPtn align_to = {}) {
+      m_topology.step_mapping = mapping;
+      m_topology.align_ptn = align_to;
+    }
+
     const char* group_name() const { return m_topology.group_name; }
     const char* group_type() const { return m_topology.group_type; }
 
@@ -269,8 +280,15 @@ namespace sbio {
 
     inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
       const auto& seg { m_topology.active_segment(step_idx, broker_no) };
+      auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
 
-      return seg.broker->fetch_step(step_idx, seg.access_ptn, seg.cursor.get());
+      std::size_t ordinal { 0 };
+      const auto status { m_topology.map_step(seg, remapped_step_idx, ordinal) };
+      if (status != IOStatus::Success) {
+        return status;
+      }
+
+      return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
     }
 
     inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
@@ -355,7 +373,13 @@ namespace sbio {
         const auto& seg { m_topology.active_segment(target_idx, i) };
         auto remapped_step_idx { m_topology.remap_step_idx(target_idx) };
 
-        return seg.broker->fetch_step(remapped_step_idx, seg.access_ptn, seg.cursor.get());
+        std::size_t ordinal { 0 };
+        const auto status { m_topology.map_step(seg, remapped_step_idx, ordinal) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
       };
 
       auto get_data_cb = [&](std::size_t i) {
@@ -464,7 +488,13 @@ namespace sbio {
         const auto& seg { m_topology.active_segment(target_idx, i) };
         auto remapped_step_idx { m_topology.remap_step_idx(target_idx) };
 
-        return seg.broker->fetch_step(remapped_step_idx, seg.access_ptn, seg.cursor.get());
+        std::size_t ordinal { 0 };
+        const auto status { m_topology.map_step(seg, remapped_step_idx, ordinal) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
       };
 
       auto get_data_cb = [&](std::size_t i) {
