@@ -226,6 +226,10 @@ namespace pysbio {
                                                 std::forward<IndexTrigger>(trigger));
     }
 
+    static void end_iteration_impl(IterationState& state) {
+      BasePolicy::end_iteration(state);
+    }
+
     template <class FTraits, class FetchCBType, class GetCBType>
     static sbio::IOStatus get_data_impl(typename FTraits::StepIdxType step_idx,
                                         FetchCBType&& unit_fetcher,
