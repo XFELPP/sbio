@@ -425,11 +425,63 @@ namespace sbio {
     using ConstIterator = IteratorImpl<const DataSource>;
 
     /**
+     * A range over the steps of a DataSource, for use in a range-based for loop.
+     *
+     * Each parallel executing unit (e.g. a thread or rank, etc.) iterating will setup
+     * its own range-based loop (`for (auto step : ds.steps()) {}`).
+     *
+     * @note Early exit from a loop invokes the EPolicy end iteration implementation.
+     *       This may be a no-op for some policies.
+     */
+    class StepRange {
+    public:
+      explicit StepRange(const DataSource& ds)
+        : m_ds(ds)
+      {}
+
+      ~StepRange() { EPolicy::end_iteration(m_ds.m_iteration_state); }
+
+      StepRange(const StepRange&) = delete;
+      StepRange& operator=(const StepRange&) = delete;
+
+      /**
+       * Return an iterator at the first step index.
+       *
+       * @note This will invoke `next` to get the first step *for this unit*
+       *
+       * @returns An iterator at the first step index.
+       */
+      ConstIterator begin() const { return ConstIterator(m_ds, m_ds.next()); }
+
+      /**
+       * Return an iterator pointing to the ExhaustedSentinel.
+       *
+       * @returns An iterator pointing to the ExhaustedSentinel.
+       */
+      ConstIterator end() const { return ConstIterator(m_ds, FTraits::ExhaustedSentinel); }
+
+    private:
+      const DataSource& m_ds;
+    };
+
+    /**
+     * Return a range over the steps of this DataSource for the calling unit.
+     *
+     * @returns A range to iterate over in a range-based for loop.
+     */
+    StepRange steps() const { return StepRange(*this); }
+
+    /**
      * Return an iterator at the first step index.
+     *
+     * @note This will invoke `next` to get the first step *for this unit*
+     * @note Using the DataSource directly for iteration doesn't use the EPolicy's
+     *       end iteration implementation for early exits. This must be manually
+     *       managed then, or instead, prefer the range-based loop with `steps()`.
      *
      * @returns An iterator at the first step index.
      */
-    Iterator begin() { return Iterator(*this, 0); }
+    Iterator begin() { return Iterator(*this, next()); }
     /**
      * Return an iterator pointing to the ExhasutedSentinel.
      *
@@ -437,7 +489,7 @@ namespace sbio {
      */
     Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
 
-    ConstIterator begin() const { return ConstIterator(*this, 0); }
+    ConstIterator begin() const { return ConstIterator(*this, next()); }
     ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
   private:
