@@ -207,6 +207,31 @@ namespace sbio {
     };
 
     class IterationState {
+    public:
+      IterationState() = default;
+
+      // Make move for Python bindings, handling atomics
+      IterationState(IterationState&& other) noexcept
+        : m_local_idx(other.m_local_idx.load())
+        , m_shared_capacity(other.m_shared_capacity.load())
+        , m_exhausted(other.m_exhausted.load())
+        , m_in_flight(other.m_in_flight.load())
+        , m_holding_step(other.m_holding_step)
+      {}
+
+      IterationState& operator=(IterationState&& other) noexcept {
+        if (this != &other) {
+          m_local_idx.store(other.m_local_idx.load());
+          m_shared_capacity.store(other.m_shared_capacity.load());
+          m_exhausted.store(other.m_exhausted.load());
+          m_in_flight.store(other.m_in_flight.load());
+          m_holding_step = other.m_holding_step;
+        }
+
+        return *this;
+      }
+
+    private:
       friend class MPIThreadedExecution;
 
       /**
