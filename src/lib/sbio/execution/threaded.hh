@@ -413,6 +413,15 @@ namespace sbio {
       }
     }
 
+    /**
+     * Exit the iteration with `state`, releasing any held steps.
+     *
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     */
+    static void end_iteration_impl(IterationState& state) {
+      release_step(state);
+    }
+
   private:
     static void release_step(IterationState& state) {
       bool& holding { state.m_holding_step.get() };

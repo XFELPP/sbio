@@ -477,6 +477,25 @@ namespace sbio {
                                                hd_std::forward<IndexTrigger>(trigger));
       }
     }
+
+    /**
+     * Exit the iteration with `state`, releasing any held steps.
+     *
+     * A specific EPolicy should provide an implementation of this API if their model
+     * requires a parallely executing unit to hold in various locations, most often
+     * for reindexing, until other outsstanding steps are released. In the absence
+     * of this API, an early exit from an iteration will cause hangs. E.g., useful
+     * in thread-based policies.
+     *
+     * @tparam IterState The EPolicy's IterationState type.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     */
+    template <class IterState>
+    SBIO_HD static void end_iteration(IterState& state) {
+      if constexpr (requires { Derived::end_iteration_impl(state); }) {
+        Derived::end_iteration_impl(state);
+      }
+    }
   };
 } // namespace sbio
 
