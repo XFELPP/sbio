@@ -483,8 +483,8 @@ namespace sbio {
      */
     Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
 
-    ConstIterator begin() const { return ConstIterator(*this, next()); }
-    ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
+    ConstIterator cbegin() const { return ConstIterator(*this, next()); }
+    ConstIterator cend() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
   private:
     SBIO_HD inline bool reindex_trigger() const {
