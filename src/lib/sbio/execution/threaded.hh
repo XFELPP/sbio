@@ -75,11 +75,6 @@ namespace sbio {
 
     static void configure_impl(const Config& config) {
       m_num_threads = config.num_threads;
-
-      // Reset collective state
-      m_shared_capacity.store(0, std::memory_order_release);
-      m_event_idx.store(0, std::memory_order_release);
-      m_exhausted.store(false, std::memory_order_release);
     }
 
     template <class T>
@@ -101,6 +96,62 @@ namespace sbio {
 
       std::uint64_t id;
       static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
+    class IterationState {
+    public:
+      IterationState() = default;
+
+      // Make move for Python bindings, handling atomics
+      IterationState(IterationState&& other) noexcept
+        : m_event_idx(other.m_event_idx.load())
+        , m_shared_capacity(other.m_shared_capacity.load())
+        , m_exhausted(other.m_exhausted.load())
+        , m_in_flight(other.m_in_flight.load())
+        , m_holding_step(other.m_holding_step)
+      {}
+
+      IterationState& operator=(IterationState&& other) noexcept {
+        if (this != &other) {
+          m_event_idx.store(other.m_event_idx.load());
+          m_shared_capacity.store(other.m_shared_capacity.load());
+          m_exhausted.store(other.m_exhausted.load());
+          m_in_flight.store(other.m_in_flight.load());
+          m_holding_step = other.m_holding_step;
+        }
+
+        return *this;
+      }
+
+    private:
+      friend class ThreadedExecution;
+
+      /**
+       * Thread-local index to index to distribute.
+       */
+      std::atomic<std::size_t> m_event_idx { 0 };
+      /**
+       * Capacity store for inter-thread synchronization of indices.
+       */
+      std::atomic<std::size_t> m_shared_capacity { 0 };
+      /**
+       * Latch for if exhausted all indices.
+       */
+      std::atomic<bool> m_exhausted { false };
+
+      /**
+       * The number of steps handed out by next() and not yet finished processing.
+       *
+       * A thread returns a step at the start of each next() call.
+       */
+      std::atomic<std::size_t> m_in_flight { 0 };
+
+      /**
+       * Mutex for thread synchronization on reindexing
+       */
+      std::mutex m_trigger_mutex;
+
+      SegmentState<bool> m_holding_step; ///< Whether this thread is holding a step.
     };
 
     /**
@@ -153,19 +204,6 @@ namespace sbio {
       ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
 
       return s;
-    }
-
-    /**
-     * Shared buffer roles are rewritten only once every step from next is released.
-     */
-    template <class Role, class StorageT>
-    static void pre_update_impl(StorageT& storage) {
-      if constexpr (!std::is_same_v<Role, roles::Data> &&
-                    !std::is_same_v<Role, roles::Table>) {
-        while (m_in_flight.load(std::memory_order_acquire) != 0) {
-          std::this_thread::yield();
-        }
-      }
     }
 
     /**
@@ -289,111 +327,102 @@ namespace sbio {
      *
      * @tparam FTraits The data-format traits.
      * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity (currently available indices).
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      release_step();
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
+      release_step(state);
 
-      typename FTraits::StepIdxType current { m_event_idx.load(std::memory_order_acquire) };
+      typename FTraits::StepIdxType current { state.m_event_idx.load(std::memory_order_acquire) };
 
       while (true) {
-        if (m_exhausted.load(std::memory_order_acquire)) {
+        if (state.m_exhausted.load(std::memory_order_acquire)) {
           m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
                           "shared_cap = {}, max_cap = {}, event_idx = {}",
                           std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          m_shared_capacity.load(),
+                          state.m_shared_capacity.load(),
                           max_capacity,
-                          m_event_idx.load());
+                          state.m_event_idx.load());
           return FTraits::ExhaustedSentinel;
         }
 
         typename FTraits::StepIdxType current_cap =
-          m_shared_capacity.load(std::memory_order_acquire);
+          state.m_shared_capacity.load(std::memory_order_acquire);
 
         if (current >= current_cap) {
-          std::lock_guard<std::mutex> lock(m_trigger_mutex);
+          std::lock_guard<std::mutex> lock(state.m_trigger_mutex);
 
-          if (m_exhausted.load(std::memory_order_acquire)) {
+          if (state.m_exhausted.load(std::memory_order_acquire)) {
             m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
                             "shared_cap = {}, max_cap = {}, event_idx = {}",
                             std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            m_shared_capacity.load(),
+                            state.m_shared_capacity.load(),
                             max_capacity,
-                            m_event_idx.load());
+                            state.m_event_idx.load());
             return FTraits::ExhaustedSentinel;
           }
 
-          if (m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
+          if (state.m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            state.m_shared_capacity.store(max_capacity, std::memory_order_release);
           }
 
-          current = m_event_idx.load(std::memory_order_acquire);
-          current_cap = m_shared_capacity.load(std::memory_order_relaxed);
+          current = state.m_event_idx.load(std::memory_order_acquire);
+          current_cap = state.m_shared_capacity.load(std::memory_order_relaxed);
 
           if (current >= current_cap) {
+            while (state.m_in_flight.load(std::memory_order_acquire) != 0) {
+              std::this_thread::yield(); // Wait for all handed out steps to be returned
+            }
+
             if (!trigger()) {
-              m_exhausted.store(true, std::memory_order_release);
+              state.m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Thread {}] Trigger returned exhausted: "
                               "shared_cap = {}, max_cap = {}, event_idx = {}",
                               std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              m_shared_capacity.load(),
+                              state.m_shared_capacity.load(),
                               max_capacity,
-                              m_event_idx.load());
+                              state.m_event_idx.load());
               return FTraits::ExhaustedSentinel;
             }
 
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
+            state.m_shared_capacity.store(max_capacity, std::memory_order_release);
             current_cap = max_capacity;
           }
         }
 
         // Make sure to stake claim before taking a step to ensure no missed triggers
-        m_in_flight.fetch_add(1);
+        state.m_in_flight.fetch_add(1);
         while (current < current_cap) {
-          if (m_event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
-            m_holding_step = true;
+          if (state.m_event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
+            state.m_holding_step.get() = true;
             return current;
           }
 
-          current_cap = m_shared_capacity.load(std::memory_order_acquire);
+          current_cap = state.m_shared_capacity.load(std::memory_order_acquire);
         }
 
         // Do NOT return exhausted here. The trigger must be entered in a coordinated
         // fashion
-        m_in_flight.fetch_sub(1); // Didn't get a step
+        state.m_in_flight.fetch_sub(1); // Didn't get a step
       }
     }
 
   private:
-    static void release_step() {
-      if (m_holding_step) {
-        m_holding_step = false;
-        m_in_flight.fetch_sub(1);
+    static void release_step(IterationState& state) {
+      bool& holding { state.m_holding_step.get() };
+      if (holding) {
+        holding = false;
+        state.m_in_flight.fetch_sub(1);
       }
     }
 
     static inline std::size_t m_num_threads { 0 };
-
-    /**
-     * The number of steps handed out by next() and not yet finished processing.
-     *
-     * A thread returns a step at the start of each next() call.
-     */
-    static inline std::atomic<std::size_t> m_in_flight { 0 };
-
-    static inline thread_local bool m_holding_step; ///< Whether this thread is holding a step.
-
-    static inline std::atomic<std::size_t> m_event_idx { 0 };
-
-    static inline std::mutex m_trigger_mutex;
-
-    static inline std::atomic<std::size_t> m_shared_capacity { 0 };
-
-    static inline std::atomic<bool> m_exhausted { false };
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };

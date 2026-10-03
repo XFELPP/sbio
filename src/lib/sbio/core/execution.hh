@@ -126,6 +126,16 @@ namespace sbio {
     struct DefaultConfig {};
 
     /**
+     * The state of an iteration over steps.
+     *
+     * The state should be held by the DataSource. Policies defining their own
+     * distribution strategy must define the IterationState. This state is accessed
+     * in the `next` implementations. It is moved out of the static state to allow
+     * multiple DataSource instances to run simultaneously.
+     */
+    struct IterationState {};
+
+    /**
      * The set of parallelization methods supported by the Execution policy.
      */
     static constexpr hd_std::bitset<
@@ -439,8 +449,10 @@ namespace sbio {
      * Request the next step index to read data for.
      *
      * @tparam FTraits The data format type.
+     * @tparam IterState The EPolicy's IterationState type.
      * @tparam IndexTrigger The type of the callback to be run on reaching the
      *         current maximum capacity.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity that the StreamBroker has
      *            before reindexing is required. For data formats that do not
      *            support indexing, the max capacity will always be 1, and the
@@ -449,15 +461,19 @@ namespace sbio {
      *            if applicable.
      * @returns The index of the next step to read data for.
      */
-    template <class FTraits, class IndexTrigger>
+    template <class FTraits, class IterState, class IndexTrigger>
     SBIO_HD static typename FTraits::StepIdxType
-    next(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
+    next(IterState& state,
+         typename FTraits::StepIdxType& max_capacity,
+         IndexTrigger&& trigger) {
       if constexpr (requires {
-          Derived::template next_impl<FTraits>(max_capacity,
+          Derived::template next_impl<FTraits>(state,
+                                               max_capacity,
                                                hd_std::forward<IndexTrigger>(trigger));
         }) {
         return
-          Derived::template next_impl<FTraits>(max_capacity,
+          Derived::template next_impl<FTraits>(state,
+                                               max_capacity,
                                                hd_std::forward<IndexTrigger>(trigger));
       }
     }

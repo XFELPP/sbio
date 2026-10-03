@@ -183,11 +183,6 @@ namespace sbio {
 
       m_main_rank = config.main_rank;
       m_main_rank_loops = config.main_rank_loops;
-
-      // Reset collective state
-      m_shared_capacity.store(0, std::memory_order_release);
-      m_local_idx.store(0, std::memory_order_release);
-      m_exhausted.store(false, std::memory_order_release);
     }
 
     template <class T>
@@ -209,6 +204,62 @@ namespace sbio {
 
       std::uint64_t id;
       static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
+    class IterationState {
+    public:
+      IterationState() = default;
+
+      // Make move for Python bindings, handling atomics
+      IterationState(IterationState&& other) noexcept
+        : m_local_idx(other.m_local_idx.load())
+        , m_shared_capacity(other.m_shared_capacity.load())
+        , m_exhausted(other.m_exhausted.load())
+        , m_in_flight(other.m_in_flight.load())
+        , m_holding_step(other.m_holding_step)
+      {}
+
+      IterationState& operator=(IterationState&& other) noexcept {
+        if (this != &other) {
+          m_local_idx.store(other.m_local_idx.load());
+          m_shared_capacity.store(other.m_shared_capacity.load());
+          m_exhausted.store(other.m_exhausted.load());
+          m_in_flight.store(other.m_in_flight.load());
+          m_holding_step = other.m_holding_step;
+        }
+
+        return *this;
+      }
+
+    private:
+      friend class MPIThreadedExecution;
+
+      /**
+       * Thread-local index within the rank's set of indices to distribute.
+       */
+      std::atomic<std::size_t> m_local_idx { 0 };
+      /**
+       * Intra-rank capacity store for inter-thread synchronization of indices.
+       */
+      std::atomic<std::size_t> m_shared_capacity { 0 };
+      /**
+       * Latch for if the rank has exhausted all indices.
+       */
+      std::atomic<bool> m_exhausted { false };
+
+      /**
+       * The number of steps handed out by next() and not yet finished processing.
+       *
+       * A thread returns a step at the start of each next() call.
+       */
+      std::atomic<std::size_t> m_in_flight { 0 };
+
+      /**
+       * Mutex for thread synchronization on reindexing
+       */
+      std::mutex m_trigger_mutex;
+
+      SegmentState<bool> m_holding_step; ///< Whether this thread is holding a step.
     };
 
     template <IsRequirementsList Requirements, class IO, class FTraits>
@@ -284,13 +335,6 @@ namespace sbio {
       using List = ExtractDescriptorsListT<StorageT>;
       using Descriptor = typename FindDescriptor<Role, 0, List>::type;
       using Hint = typename GetHint<Descriptor>::type;
-
-      if constexpr (!std::is_same_v<Role, roles::Data> &&
-                    !std::is_same_v<Role, roles::Table>) {
-        while (m_in_flight.load(std::memory_order_acquire) != 0) {
-          std::this_thread::yield();
-        }
-      }
 
       // NOTE: This policy only implements synchronization on Index/Shareable.
       //       DataRole updates (per-step hot path) do NOT synchronize.
@@ -555,18 +599,21 @@ namespace sbio {
      *
      * @tparam FTraits The data-format traits.
      * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity (currently available indices).
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
       if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
         return FTraits::ExhaustedSentinel;
       }
 
-      release_step();
+      release_step(state);
 
       int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
       int worker_rank;
@@ -577,93 +624,98 @@ namespace sbio {
       }
 
       while (true) {
-        if (m_exhausted.load(std::memory_order_acquire)) {
+        if (state.m_exhausted.load(std::memory_order_acquire)) {
           m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
                           "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                           m_rank,
                           std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          m_shared_capacity.load(),
+                          state.m_shared_capacity.load(),
                           max_capacity,
-                          m_local_idx.load());
+                          state.m_local_idx.load());
 
           return FTraits::ExhaustedSentinel;
         }
 
-        typename FTraits::StepIdxType idx { m_local_idx.load(std::memory_order_acquire) };
+        typename FTraits::StepIdxType idx { state.m_local_idx.load(std::memory_order_acquire) };
         typename FTraits::StepIdxType base_step { idx * worker_count };
         typename FTraits::StepIdxType step { base_step + worker_rank };
         typename FTraits::StepIdxType current_cap =
-          m_shared_capacity.load(std::memory_order_acquire);
+          state.m_shared_capacity.load(std::memory_order_acquire);
 
         if (base_step >= current_cap) {
-          std::lock_guard<std::mutex> lock(m_trigger_mutex);
+          std::lock_guard<std::mutex> lock(state.m_trigger_mutex);
 
-          if (m_exhausted.load(std::memory_order_acquire)) {
+          if (state.m_exhausted.load(std::memory_order_acquire)) {
             m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
                             "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                             m_rank,
                             std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            m_shared_capacity.load(),
+                            state.m_shared_capacity.load(),
                             max_capacity,
-                            m_local_idx.load());
+                            state.m_local_idx.load());
 
             return FTraits::ExhaustedSentinel;
           }
 
-          if (m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
+          if (state.m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            state.m_shared_capacity.store(max_capacity, std::memory_order_release);
           }
 
-          idx = m_local_idx.load(std::memory_order_acquire);
+          idx = state.m_local_idx.load(std::memory_order_acquire);
           base_step = idx * worker_count;
           step = base_step + worker_rank;
-          current_cap = m_shared_capacity.load(std::memory_order_relaxed);
+          current_cap = state.m_shared_capacity.load(std::memory_order_relaxed);
 
           if (base_step >= current_cap) {
             m_logger->debug("[Rank {} - thread {}] Entering trigger: "
                             "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                             m_rank,
                             std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            m_shared_capacity.load(),
+                            state.m_shared_capacity.load(),
                             max_capacity,
-                            m_local_idx.load());
+                            state.m_local_idx.load());
+
+            while (state.m_in_flight.load(std::memory_order_acquire) != 0) {
+              std::this_thread::yield(); // Wait for all handed out steps to be returned
+            }
+
             if (!trigger()) {
-              m_exhausted.store(true, std::memory_order_release);
+              state.m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted: "
                               "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                               m_rank,
                               std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              m_shared_capacity.load(),
+                              state.m_shared_capacity.load(),
                               max_capacity,
-                              m_local_idx.load());
+                              state.m_local_idx.load());
 
               return FTraits::ExhaustedSentinel;
             }
 
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
+            state.m_shared_capacity.store(max_capacity, std::memory_order_release);
             current_cap = max_capacity;
           }
         }
 
         // Make sure to stake claim before taking a step to ensure no missed triggers
-        m_in_flight.fetch_add(1);
+        state.m_in_flight.fetch_add(1);
         while (base_step < current_cap) {
           if (step >= current_cap) {
-            if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+            if (state.m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
               break;
             }
           } else {
-            if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
-              m_holding_step = true;
+            if (state.m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+              state.m_holding_step.get() = true;
               return step;
             }
           }
 
           base_step = idx * worker_count;
           step = base_step + worker_rank;
-          current_cap = m_shared_capacity.load(std::memory_order_acquire);
+          current_cap = state.m_shared_capacity.load(std::memory_order_acquire);
 
-          if (m_exhausted.load(std::memory_order_acquire)) {
+          if (state.m_exhausted.load(std::memory_order_acquire)) {
             m_logger->debug("[Rank {} - thread {}] Returned exhausted after current cap check: "
                             "base_step = {}, step = {}, max_cap = {}, current_cap = {}",
                             m_rank,
@@ -672,20 +724,21 @@ namespace sbio {
                             step,
                             max_capacity,
                             current_cap);
-            m_in_flight.fetch_sub(1); // Didn't get a step
+            state.m_in_flight.fetch_sub(1); // Didn't get a step
             return FTraits::ExhaustedSentinel;
           }
         }
 
-        m_in_flight.fetch_sub(1); // Didn't get a step
+        state.m_in_flight.fetch_sub(1); // Didn't get a step
       }
     }
 
   private:
-    static void release_step() {
-      if (m_holding_step) {
-        m_holding_step = false;
-        m_in_flight.fetch_sub(1);
+    static void release_step(IterationState& state) {
+      bool& holding { state.m_holding_step.get() };
+      if (holding) {
+        holding = false;
+        state.m_in_flight.fetch_sub(1);
       }
     }
 
@@ -704,36 +757,12 @@ namespace sbio {
     static inline std::size_t m_num_threads { 0 };
 
     /**
-     * The number of steps handed out by next() and not yet finished processing.
-     *
-     * A thread returns a step at the start of each next() call.
-     */
-    static inline std::atomic<std::size_t> m_in_flight { 0 };
-
-    static inline thread_local bool m_holding_step; ///< Whether this thread is holding a step.
-
-    /**
      * Communicator used when generating shareable buffers.
      */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 };     ///< This processes rank in the MPI world.
     static inline int m_size { -1 };     ///< The size of the MPI world.
-    /**
-     * Mutex for thread synchronization on reindexing
-     */
-    static inline std::mutex m_trigger_mutex;
-    /**
-     * Thread-local index within the rank's set of indices to distribute.
-     */
-    static inline std::atomic<std::size_t> m_local_idx { 0 };
-    /**
-     * Intra-rank capacity store for inter-thread synchronization of indices.
-     */
-    static inline std::atomic<std::size_t> m_shared_capacity { 0 };
-    /**
-     * Latch for if the rank has exhausted all indices.
-     */
-    static inline std::atomic<bool> m_exhausted { false };
+
     static inline std::shared_ptr<spdlog::logger> m_logger; ///< Execution policy logger
   };
 } // namespace sbio

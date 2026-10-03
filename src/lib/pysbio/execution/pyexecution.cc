@@ -46,6 +46,9 @@ namespace py = pybind11;
 namespace {
   template <typename Exec, typename PyExec>
   void bind_epolicy_functions(PyExec& exec_cls) {
+    py::classh<typename Exec::IterationState>(exec_cls, "IterationState")
+      .def(py::init<>());
+
     exec_cls.def(py::init<>())
       .def_static("configure", [](const typename Exec::Config& cfg) {
         Exec::configure(cfg);
@@ -70,7 +73,8 @@ namespace {
           throw std::runtime_error("Unrecognized data format selector provided!");
         }
       })
-      .def_static("next", [](std::size_t& capacity,
+      .def_static("next", [](typename Exec::IterationState& state,
+                             std::size_t& capacity,
                              py::function py_trigger,
                              pysbio::FTraits ftraits) {
         auto trigger = [&]() -> bool {
@@ -81,13 +85,13 @@ namespace {
 
         if (ftraits == pysbio::FTraits::XTC1) {
 #ifdef SBIO_HAS_XTC1
-          return Exec::template next<sbio::XTC1Traits>(capacity, trigger);
+          return Exec::template next<sbio::XTC1Traits>(state, capacity, trigger);
 #else
           throw std::runtime_error("XTC1 requested, but sbio was built without XTC1 support!");
 #endif
         } else if (ftraits == pysbio::FTraits::XTC2) {
 #ifdef SBIO_HAS_XTC2
-          return Exec::template next<sbio::XTC2Traits>(capacity, trigger);
+          return Exec::template next<sbio::XTC2Traits>(state, capacity, trigger);
 #else
           throw std::runtime_error("XTC2 requested, but sbio was built without XTC2 support!");
 #endif
@@ -95,6 +99,7 @@ namespace {
           throw std::runtime_error("Unrecognized data format selector provided!");
         }
       },
+                  py::arg("state"),
                   py::arg("max_capacity"),
                   py::arg("reindex_trigger"),
                   py::arg("ftraits"))
