@@ -86,6 +86,16 @@ namespace sbio {
        * The rank-local event/step index counter for distribution.
        */
       std::size_t m_event_idx { 0 };
+
+      /**
+       * The first step of current capacity window (for batch distribution).
+       */
+      std::size_t m_batch_window_start { 0 };
+
+      /**
+       * The number of batches distributed for current winodw.
+       */
+      std::size_t m_batch_round { 0 };
     };
 
     static constexpr std::bitset<
@@ -452,6 +462,77 @@ namespace sbio {
       return step;
     }
 
+    /**
+     * Retrieve the next contiguous batch of steps to process.
+     *
+     * Batches are distributed per capacity window (the steps added by one reindexing),
+     * as a batch cannot span a reindexing. Within a window, rank r receives the blocks
+     * of `batch_size` steps starting at `window_start + (round * world_size + r) * batch_size`.
+     * The last block of a window may be shorter. Once a rank has no block left in the
+     * current window it reindexes, and the next window starts at the previous capacity.
+     *
+     * @note Batches and single steps (`next_impl`) should not be mixed on one
+     *       iteration state.
+     *
+     * @tparam FTraits The FormatTraits for the data format.
+     * @tparam IndexTrigger The type of the lambda callback to reindex as needed.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The maximum number of steps in the batch.
+     * @param[in] max_capacity The current max capacity (i.e., already indexed steps).
+     * @param[in] trigger A callback to reindex (if appropriate) when capacity is exhausted.
+     * @returns The next batch of steps for this rank.
+     */
+    template <class FTraits, class IndexTrigger>
+    static StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      using StepIdx = typename FTraits::StepIdxType;
+      constexpr StepBatch<StepIdx> Exhausted { FTraits::ExhaustedSentinel, FTraits::ExhaustedSentinel };
+
+      if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
+        return Exhausted;
+      }
+
+      int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
+      int worker_rank;
+      if (m_main_rank_loops || m_active_rank <= m_main_rank) {
+        worker_rank = m_active_rank;
+      } else {
+        worker_rank = m_active_rank - 1;
+      }
+
+      const std::size_t size { batch_size > 0 ? batch_size : 1 };
+      std::size_t first {
+        state.m_batch_window_start + (state.m_batch_round * worker_count + worker_rank) * size
+      };
+      state.m_batch_round++;
+
+      while (first >= static_cast<std::size_t>(max_capacity)) {
+        // No block left for this rank in the current window so move to the next window
+        state.m_batch_window_start = static_cast<std::size_t>(max_capacity);
+        state.m_batch_round = 0;
+
+        if (!trigger()) {
+          m_logger->debug("[Rank {}] Trigger returned exhausted: "
+                          "max_cap = {}",
+                          m_rank,
+                          max_capacity);
+          return Exhausted;
+        }
+
+        first = state.m_batch_window_start + worker_rank * size;
+        state.m_batch_round = 1;
+      }
+
+      const std::size_t want { first + size };
+      const std::size_t last {
+        want < static_cast<std::size_t>(max_capacity) ? want : static_cast<std::size_t>(max_capacity)
+      };
+
+      return { static_cast<StepIdx>(first), static_cast<StepIdx>(last) };
+    }
   private:
     /**
      * Communicator for synchronizing across the whole MPI world.
