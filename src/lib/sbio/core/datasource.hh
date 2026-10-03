@@ -368,7 +368,7 @@ namespace sbio {
     class IteratorImpl {
     public:
       // Values generated on the fly so reference type is really value type
-      using iterator_category = std::forward_iterator_tag; // One-direction
+      using iterator_category = std::input_iterator_tag; // One-direction
       using difference_type = std::ptrdiff_t;
       using value_type = typename FTraits::StepIdxType;
       // using pointer = value_type*;
@@ -426,17 +426,22 @@ namespace sbio {
      *
      * @note Early exit from a loop invokes the EPolicy end iteration implementation.
      *       This may be a no-op for some policies.
+     *
+     * @tparam DS The DataSource to iterate over (const/non-const...)
      */
-    class StepRange {
+    template <class DS>
+    class StepRangeImpl {
     public:
-      explicit StepRange(const DataSource& ds)
+      using It = IteratorImpl<DS>;
+
+      explicit StepRangeImpl(DS& ds)
         : m_ds(ds)
       {}
 
-      ~StepRange() { EPolicy::end_iteration(m_ds.m_iteration_state); }
+      ~StepRangeImpl() { EPolicy::end_iteration(m_ds.m_iteration_state); }
 
-      StepRange(const StepRange&) = delete;
-      StepRange& operator=(const StepRange&) = delete;
+      StepRangeImpl(const StepRangeImpl&) = delete;
+      StepRangeImpl& operator=(const StepRangeImpl&) = delete;
 
       /**
        * Return an iterator at the first step index.
@@ -445,25 +450,30 @@ namespace sbio {
        *
        * @returns An iterator at the first step index.
        */
-      ConstIterator begin() const { return ConstIterator(m_ds, m_ds.next()); }
+      It begin() const { return It(m_ds, m_ds.next()); }
 
       /**
        * Return an iterator pointing to the ExhaustedSentinel.
        *
        * @returns An iterator pointing to the ExhaustedSentinel.
        */
-      ConstIterator end() const { return ConstIterator(m_ds, FTraits::ExhaustedSentinel); }
+      It end() const { return It(m_ds, FTraits::ExhaustedSentinel); }
 
     private:
-      const DataSource& m_ds;
+      DS& m_ds;
     };
+
+    using StepRange = StepRangeImpl<DataSource>;
+    using ConstStepRange = StepRangeImpl<const DataSource>;
 
     /**
      * Return a range over the steps of this DataSource for the calling unit.
      *
      * @returns A range to iterate over in a range-based for loop.
      */
-    StepRange steps() const { return StepRange(*this); }
+    StepRange steps() { return StepRange(*this); }
+    ConstStepRange steps() const { return ConstStepRange(*this); }
+    ConstStepRange csteps() const { return ConstStepRange(*this); }
 
     /**
      * Return an iterator at the first step index.
@@ -476,12 +486,14 @@ namespace sbio {
      * @returns An iterator at the first step index.
      */
     Iterator begin() { return Iterator(*this, next()); }
+    ConstIterator begin() const { return ConstIterator(*this, next()); }
     /**
      * Return an iterator pointing to the ExhasutedSentinel.
      *
      * @returns An iterator pointing to the ExhaustedSentinel.
      */
     Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
+    ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
     ConstIterator cbegin() const { return ConstIterator(*this, next()); }
     ConstIterator cend() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
