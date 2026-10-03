@@ -468,7 +468,8 @@ namespace sbio {
      * gets called. If its explicitly provided, then that gets used. Otherwise, a
      * default configuration will be invoked before any IO. This allows any global
      * state to be reset if iteratively creating multiple DataSource instantiations
-     * over time.
+     * over time. This only applies to static state (generally, process and environment).
+     * The remaining state is held in the member `m_iteration_state`.
      */
     bool m_epolicy_configured { false };
   };
