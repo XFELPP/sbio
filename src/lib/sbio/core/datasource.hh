@@ -295,7 +295,9 @@ namespace sbio {
         return total_capacity > 0;
       };
 
-      return EPolicy::template next<FTraits>(m_steps_capacity, trigger_reindexing);
+      return EPolicy::template next<FTraits>(m_iteration_state,
+                                             m_steps_capacity,
+                                             trigger_reindexing);
     }
 
     /**
@@ -443,14 +445,22 @@ namespace sbio {
      * The set of StreamBrokers in the DataSource
      */
     mutable BrokerType m_data_streams[MaxDataStreams];
+
     /**
      * The total number of StreamBrokers in the DataSource
      */
     std::size_t m_num_data_streams { 0 };
+
     /**
      * The current steps capacity before reindexing is required.
      */
     mutable std::size_t m_steps_capacity { 0 };
+
+    /**
+     * The EPolicy's state for iterating and distribution steps from this DataSource.
+     */
+    mutable typename EPolicy::IterationState m_iteration_state {};
+
     /**
      * Flag to track whether the Execution policy has been configured.
      *

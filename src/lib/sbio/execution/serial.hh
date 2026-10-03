@@ -60,10 +60,13 @@ namespace sbio {
       static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x0 }; // 0b00 - NONE
 
-    static void configure_impl(const Config&) {
-      // Just reset collective state, nothing else to configure
-      m_event_idx = 0;
-    }
+    static void configure_impl(const Config&) {}
+
+    class IterationState {
+      friend class SerialExecution;
+
+      std::size_t m_event_idx { 0 }; ///< The event/step index counter for distribution.
+    };
 
     template <class T>
     struct SegmentState {
@@ -130,40 +133,38 @@ namespace sbio {
      *
      * @tparam FTraits The data-format traits.
      * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity (currently available indices).
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      if (m_event_idx >= max_capacity) {
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
+      if (state.m_event_idx >= max_capacity) {
         if (!trigger()) {
           m_logger->debug("Trigger returned exhausted: "
                           "max_cap = {}, local_idx = {}",
                           max_capacity,
-                          m_event_idx);
+                          state.m_event_idx);
           return FTraits::ExhaustedSentinel;
         }
 
-        if (m_event_idx >= max_capacity) {
+        if (state.m_event_idx >= max_capacity) {
           m_logger->debug("Index exceeded capacity: "
                           "max_cap = {}, local_idx = {}",
                           max_capacity,
-                          m_event_idx);
+                          state.m_event_idx);
           return FTraits::ExhaustedSentinel;
         }
       }
 
-      return m_event_idx++;
+      return state.m_event_idx++;
     }
 
   private:
-    /**
-     * The event/step index counter for distribution.
-     */
-    static inline std::size_t m_event_idx { 0 };
-
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 } // namespace sbio
