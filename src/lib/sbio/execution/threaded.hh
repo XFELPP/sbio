@@ -156,6 +156,19 @@ namespace sbio {
     }
 
     /**
+     * Shared buffer roles are rewritten only once every step from next is released.
+     */
+    template <class Role, class StorageT>
+    static void pre_update_impl(StorageT& storage) {
+      if constexpr (!std::is_same_v<Role, roles::Data> &&
+                    !std::is_same_v<Role, roles::Table>) {
+        while (m_in_flight.load(std::memory_order_acquire) != 0) {
+          std::this_thread::yield();
+        }
+      }
+    }
+
+    /**
      * The ThreadedExecution policy splits BrokerGroup data fetch and resolution.
      *
      * When the BrokerGroup requests data of a specific kind for a specific index,
@@ -258,13 +271,6 @@ namespace sbio {
       return status;
     }
 
-    static void release_step() {
-      if (m_holding_step) {
-        m_holding_step = false;
-        m_in_flight.fetch_sub(1);
-      }
-    }
-
     /**
      * The ThreadedExecution policy generates step indices in monotonically.
      *
@@ -329,10 +335,6 @@ namespace sbio {
           current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (current >= current_cap) {
-            while (m_in_flight.load() != 0) { // Wait until no one is still fetching
-              std::this_thread::yield();
-            }
-
             if (!trigger()) {
               m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Thread {}] Trigger returned exhausted: "
@@ -367,6 +369,13 @@ namespace sbio {
     }
 
   private:
+    static void release_step() {
+      if (m_holding_step) {
+        m_holding_step = false;
+        m_in_flight.fetch_sub(1);
+      }
+    }
+
     static inline std::size_t m_num_threads { 0 };
 
     /**

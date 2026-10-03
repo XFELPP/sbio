@@ -285,6 +285,13 @@ namespace sbio {
       using Descriptor = typename FindDescriptor<Role, 0, List>::type;
       using Hint = typename GetHint<Descriptor>::type;
 
+      if constexpr (!std::is_same_v<Role, roles::Data> &&
+                    !std::is_same_v<Role, roles::Table>) {
+        while (m_in_flight.load(std::memory_order_acquire) != 0) {
+          std::this_thread::yield();
+        }
+      }
+
       // NOTE: This policy only implements synchronization on Index/Shareable.
       //       DataRole updates (per-step hot path) do NOT synchronize.
       if constexpr (std::is_same_v<Role, roles::Index> ||
@@ -525,13 +532,6 @@ namespace sbio {
       return false;
     }
 
-    static void release_step() {
-      if (m_holding_step) {
-        m_holding_step = false;
-        m_in_flight.fetch_sub(1);
-      }
-    }
-
     /**
      * The MPIThreadedExecution policy generates step indices modulo MPI world size.
      *
@@ -620,10 +620,6 @@ namespace sbio {
           current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (base_step >= current_cap) {
-            while (m_in_flight.load() != 0) { // Wait until no one is still fetching
-              std::this_thread::yield();
-            }
-
             m_logger->debug("[Rank {} - thread {}] Entering trigger: "
                             "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                             m_rank,
@@ -686,6 +682,13 @@ namespace sbio {
     }
 
   private:
+    static void release_step() {
+      if (m_holding_step) {
+        m_holding_step = false;
+        m_in_flight.fetch_sub(1);
+      }
+    }
+
     /**
      * Communicator for synchronizing across the whole MPI world.
      */
