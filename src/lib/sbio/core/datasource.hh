@@ -270,6 +270,31 @@ namespace sbio {
     }
 
     /**
+     * Request the next contiguous batch of indices for steps to read data for.
+     *
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy.
+     * @note If `batch_size` is left to 0, then the default size will be `max_batch_size`
+     *       used in the initial configuration of the StreamBrokers.
+     *
+     * @param[in] batch_size The maximum size of the batch of step indices to read.
+     * @returns The next batch of step indices [first, last) to fetch data for. The
+     *          Exhausted batch is returned as first and last equal to ExhaustedSentinel
+     */
+    SBIO_HD inline StepBatch<typename FTraits::StepIdxType>
+    next_batch(std::size_t batch_size = 0) const {
+      if (batch_size == 0) {
+        batch_size = m_data_streams[0].config().max_batch_size;
+      }
+      auto trigger_reindexing = [&]() { return reindex_trigger(); };
+
+      return EPolicy::template next_batch<FTraits>(m_iteration_state,
+                                                   batch_size,
+                                                   m_steps_capacity,
+                                                   trigger_reindexing);
+    }
+
+    /**
      * Construct a BrokerGroup by name from the set of StreamBrokers.
      *
      * @note The metadata discovery step MUST have been passed through for BrokerGroup
