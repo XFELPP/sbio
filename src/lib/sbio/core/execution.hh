@@ -466,16 +466,15 @@ namespace sbio {
     next(IterState& state,
          typename FTraits::StepIdxType& max_capacity,
          IndexTrigger&& trigger) {
-      if constexpr (requires {
+      static_assert(requires {
           Derived::template next_impl<FTraits>(state,
                                                max_capacity,
                                                hd_std::forward<IndexTrigger>(trigger));
-        }) {
-        return
-          Derived::template next_impl<FTraits>(state,
-                                               max_capacity,
-                                               hd_std::forward<IndexTrigger>(trigger));
-      }
+        }, "This EPolicy does not implement a next routine!");
+
+      return Derived::template next_impl<FTraits>(state,
+                                                  max_capacity,
+                                                  hd_std::forward<IndexTrigger>(trigger));
     }
 
     /**
