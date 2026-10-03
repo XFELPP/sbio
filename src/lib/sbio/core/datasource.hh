@@ -260,39 +260,8 @@ namespace sbio {
      *          no more data is available.
      */
     SBIO_HD inline typename FTraits::StepIdxType next() const {
-      using StepIdx = typename FTraits::StepIdxType;
-
-      auto trigger_reindexing = [&] () {
-        StepIdx total_capacity { std::numeric_limits<StepIdx>::lowest() };
-        bool failed { false };
-
-        for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
-          IOStatus status = m_data_streams[n_stream].index_stream();
-
-          if (status != IOStatus::Success) {
-            failed = true;
-            continue;
-          }
-
-          StepIdx stream_capacity = m_data_streams[n_stream].capacity();
-
-          if constexpr (FTraits::PartitioningStrategy ==
-                        StreamPartitioningStrategy::Chronological) {
-            total_capacity += stream_capacity;
-          } else {
-            if (stream_capacity > total_capacity) {
-              total_capacity = stream_capacity;
-            }
-          }
-        }
-
-        if (failed) {
-          return total_capacity > 0;
-        }
-
-        m_steps_capacity += total_capacity;
-
-        return total_capacity > 0;
+      auto trigger_reindexing = [&]() {
+        return reindex_trigger();
       };
 
       return EPolicy::template next<FTraits>(m_iteration_state,
@@ -493,6 +462,40 @@ namespace sbio {
     ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
   private:
+    SBIO_HD inline bool reindex_trigger() const {
+      using StepIdx = typename FTraits::StepIdxType;
+
+      StepIdx total_capacity { std::numeric_limits<StepIdx>::lowest() };
+      bool failed { false };
+
+      for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
+        IOStatus status = m_data_streams[n_stream].index_stream();
+
+        if (status != IOStatus::Success) {
+          failed = true;
+          continue;
+        }
+
+        StepIdx stream_capacity = m_data_streams[n_stream].capacity();
+
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          total_capacity += stream_capacity;
+        } else {
+          if (stream_capacity > total_capacity) {
+            total_capacity = stream_capacity;
+          }
+        }
+      }
+
+      if (failed) {
+        return total_capacity > 0;
+      }
+
+      m_steps_capacity += total_capacity;
+
+      return total_capacity > 0;
+    }
+
     /**
      * The set of StreamBrokers in the DataSource
      */
