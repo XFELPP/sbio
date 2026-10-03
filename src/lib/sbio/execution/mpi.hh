@@ -470,9 +470,6 @@ namespace sbio {
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 }; ///< This processes rank in the MPI world.
     static inline int m_size { -1 }; ///< The size of the MPI world.
-    /**
-     * Rank-local index within the MPI world's set of indices to distribute.
-     */
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
