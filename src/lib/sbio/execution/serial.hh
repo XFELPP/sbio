@@ -164,6 +164,41 @@ namespace sbio {
       return state.m_event_idx++;
     }
 
+    /**
+     * The SerialExecution policy hands out contiguous batches of steps.
+     *
+     * Like `next_impl`, the reindexing trigger is called once capacity is reached.
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy.
+     *
+     * @tparam FTraits The data-format traits.
+     * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The maximum number of steps in the batch.
+     * @param[in] max_capacity The current max capacity (currently available indices).
+     * @param[in] trigger The reindex callback routine.
+     * @returns The next batch of steps.
+     */
+    template <class FTraits, class IndexTrigger>
+    static StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      using StepIdx = typename FTraits::StepIdxType;
+
+      const StepIdx first { next_impl<FTraits>(state, max_capacity, trigger) };
+      if (first == FTraits::ExhaustedSentinel) {
+        return { FTraits::ExhaustedSentinel, FTraits::ExhaustedSentinel };
+      }
+
+      const StepIdx want { first + static_cast<StepIdx>(batch_size > 0 ? batch_size : 1) };
+      const StepIdx last { want < max_capacity ? want : max_capacity };
+      state.m_event_idx = last;
+
+      return { first, last };
+    }
+
   private:
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };

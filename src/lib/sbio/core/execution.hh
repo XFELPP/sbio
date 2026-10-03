@@ -478,6 +478,46 @@ namespace sbio {
     }
 
     /**
+     * Request the next contiguous batch of step indices to read data for.
+     *
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy. This is because the
+     *       batch cannot go over a reindexing trigger which by definition must be
+     *       colelctive.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IterState The EPolicy's IterationState type.
+     * @tparam IndexTrigger The type of the callback to be run on reaching the
+     *         current maximum capacity.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The maximum number of steps in the batch.
+     * @param[in] max_capacity The current max capacity that the StreamBroker
+     *            has before reindexing is required. For data formats that do not
+     *            support indexing, the max capacity will always be 1, and the
+     *            reindexing callback may be a noop.
+     * @param[in] trigger The callback to run to reindex upon reaching max_capacity.
+     * @returns The next batch of steps, or an exhausted batch if no steps remain.
+     */
+    template <class FTraits, class IterState, class IndexTrigger>
+    SBIO_HD static StepBatch<typename FTraits::StepIdxType>
+    next_batch(IterState& state,
+               hd_std::size_t batch_size,
+               typename FTraits::StepIdxType& max_capacity,
+               IndexTrigger&& trigger) {
+      static_assert(requires {
+          Derived::template next_batch_impl<FTraits>(state,
+                                                     batch_size,
+                                                     max_capacity,
+                                                     hd_std::forward<IndexTrigger>(trigger));
+        }, "This Execution policy does not support batches of steps.");
+
+      return Derived::template next_batch_impl<FTraits>(state,
+                                                        batch_size,
+                                                        max_capacity,
+                                                        hd_std::forward<IndexTrigger>(trigger));
+    }
+
+    /**
      * Exit the iteration with `state`, releasing any held steps.
      *
      * A specific EPolicy should provide an implementation of this API if their model
