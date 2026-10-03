@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/thread_local_buffer.hh"
@@ -81,6 +82,27 @@ namespace sbio {
       m_exhausted.store(false, std::memory_order_release);
     }
 
+    template <class T>
+    struct SegmentState {
+      SegmentState()
+        : id(next_id.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      T& get() const {
+        thread_local std::vector<std::pair<std::uint64_t, T>> registry;
+        for (auto& [key, v] : registry) {
+          if (key == id) {
+            return v;
+          }
+        }
+
+        return registry.emplace_back(id, T {}).second;
+      }
+
+      std::uint64_t id;
+      static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
     /**
      * Allocate ThreadLocalBuffer storage for Index/DataRole and HostBuffer otherwise.
      *
@@ -134,6 +156,19 @@ namespace sbio {
     }
 
     /**
+     * Shared buffer roles are rewritten only once every step from next is released.
+     */
+    template <class Role, class StorageT>
+    static void pre_update_impl(StorageT& storage) {
+      if constexpr (!std::is_same_v<Role, roles::Data> &&
+                    !std::is_same_v<Role, roles::Table>) {
+        while (m_in_flight.load(std::memory_order_acquire) != 0) {
+          std::this_thread::yield();
+        }
+      }
+    }
+
+    /**
      * The ThreadedExecution policy splits BrokerGroup data fetch and resolution.
      *
      * When the BrokerGroup requests data of a specific kind for a specific index,
@@ -172,7 +207,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -217,7 +251,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -263,6 +296,8 @@ namespace sbio {
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
     next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
+      release_step();
+
       typename FTraits::StepIdxType current { m_event_idx.load(std::memory_order_acquire) };
 
       while (true) {
@@ -316,8 +351,11 @@ namespace sbio {
           }
         }
 
+        // Make sure to stake claim before taking a step to ensure no missed triggers
+        m_in_flight.fetch_add(1);
         while (current < current_cap) {
           if (m_event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
+            m_holding_step = true;
             return current;
           }
 
@@ -326,11 +364,28 @@ namespace sbio {
 
         // Do NOT return exhausted here. The trigger must be entered in a coordinated
         // fashion
+        m_in_flight.fetch_sub(1); // Didn't get a step
       }
     }
 
   private:
+    static void release_step() {
+      if (m_holding_step) {
+        m_holding_step = false;
+        m_in_flight.fetch_sub(1);
+      }
+    }
+
     static inline std::size_t m_num_threads { 0 };
+
+    /**
+     * The number of steps handed out by next() and not yet finished processing.
+     *
+     * A thread returns a step at the start of each next() call.
+     */
+    static inline std::atomic<std::size_t> m_in_flight { 0 };
+
+    static inline thread_local bool m_holding_step; ///< Whether this thread is holding a step.
 
     static inline std::atomic<std::size_t> m_event_idx { 0 };
 
@@ -339,12 +394,6 @@ namespace sbio {
     static inline std::atomic<std::size_t> m_shared_capacity { 0 };
 
     static inline std::atomic<bool> m_exhausted { false };
-
-    /**
-     * Set of mutexes to allow different brokers of a group from different threads
-     * to fetch in parallel.
-     */
-    static inline std::mutex m_broker_mutexes[2048];
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };

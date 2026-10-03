@@ -39,7 +39,7 @@ namespace sbio {
 
     IOStatus connect(const char* path);
 
-    IOStatus read(std::uint64_t offset, std::size_t size, void* dest);
+    ReadResult read_impl(std::uint64_t offset, std::size_t size, void* dest) const;
 
   private:
 #ifdef _WIN32

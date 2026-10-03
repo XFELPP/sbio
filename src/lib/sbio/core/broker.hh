@@ -25,6 +25,7 @@
 #include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/stream.hh"
@@ -32,18 +33,33 @@
 #include "sbio/core/transaction.hh"
 #include "sbio/formats/format_traits.hh"
 
+#include <ncarray/storage.hh>
+
+#ifdef __CUDACC__
+
+#include <cuda/std/concepts>
+#include <cuda/std/cstdint>
+#include <cuda/std/initializer_list>
+#include <cuda/std/utility>
+
+namespace hd_std = cuda::std;
+
+#ifndef SBIO_HD
+#define SBIO_HD __host__ __device__
+#endif
+
 #include <concepts>
 #include <cstdint>
 #include <initializer_list>
 #include <utility> // std::forward
 
+namespace hd_std = std;
+
 #ifndef SBIO_HD
-#ifdef __CUDACC__
-#define SBIO_HD __host__ __device__
-#else
 #define SBIO_HD
 #endif
-#endif
+
+#endif // __CUDACC__
 
 namespace sbio {
   /**
@@ -53,11 +69,12 @@ namespace sbio {
   concept IsStreamBroker = requires(T broker,
                                     typename T::StepIdxType step_idx,
                                     typename T::DataAccessPtn ptn,
-                                    typename T::DataRequest req) {
+                                    typename T::DataRequest req,
+                                    SegmentCursor<typename T::DataFormat>& cursor) {
     { broker.allocate_storage() };
     { broker.open_data_stream() } -> std::convertible_to<IOStatus>;
     { broker.discover_metadata() } -> std::convertible_to<IOStatus>;
-    { broker.fetch_step(step_idx, ptn) } -> std::convertible_to<IOStatus>;
+    { broker.fetch_step(step_idx, ptn, cursor) } -> std::convertible_to<IOStatus>;
     { broker.get_data_in_buffer(req, ptn) } -> std::convertible_to<DataResult>;
     { broker.process() } -> std::convertible_to<IOStatus>;
     { broker.capacity() } -> std::convertible_to<std::size_t>;
@@ -142,6 +159,11 @@ namespace sbio {
     using SBStorageType = Storage<typename FTraits::BrokerBufferRequirements, EPolicy>;
 
     /**
+     * Whether the broker builds and queries the index itself (generic path).
+     */
+    static constexpr bool UsesGenericIndex { HasGenericIndex<FTraits> };
+
+    /**
      * The Execution policy configuration object type.
      *
      * `epolicy_config` objects configure the global behaviour of the Execution policy
@@ -157,10 +179,6 @@ namespace sbio {
      */
     using StreamConfig = typename FTraits::StreamParameters;
 
-    /**
-     * The type of state tracking object for the data format's Stream.
-     */
-    using StreamState = typename FTraits::DiscoveryState;
     /**
      * The type of the general metadata object for the data format's Stream.
      */
@@ -182,7 +200,28 @@ namespace sbio {
      */
     using StepIdxType = typename FTraits::StepIdxType;
 
+    /**
+     * Based on choice of ExecutionPolicy, data will return in host or device buffers.
+     *
+     * As data is returned via ncarray array objects, the MemTag converts a MemorySpace
+     * indicator in sbio to the tagging system used for host/device array constructs in
+     * ncarray.
+     */
+    using MemTag = hd_std::conditional_t<
+      ExecutionPolicy::result_memory_space() == MemorySpace::Host,
+      ncarray::HostTag,
+      ncarray::DevTag
+    >;
+
     static constexpr std::size_t StreamCount { FTraits::StreamTypes::size() };
+
+    static constexpr std::size_t NumStepKinds = []() {
+      if constexpr (requires { FTraits::NumStepKinds; }) {
+        return FTraits::NumStepKinds;
+      } else {
+        return 1;
+      }
+    }();
 
     /**
      * A default constructor is provided for simplicity.
@@ -374,12 +413,12 @@ namespace sbio {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->index_stream_impl();
         } else {
-          // Must ensure that the signatures match to avoid silent failures
-          const auto& cfg { m_config };
-          if constexpr (requires {
-            FTraits::index_stream(m_streams, sv, m_stream_state, cfg);
-          }) {
-            status = FTraits::index_stream(m_streams, sv, m_stream_state, cfg);
+          if constexpr (UsesGenericIndex) {
+            status = generic_index(sv);
+          } else {
+            // Must ensure that the signatures match to avoid silent failures
+            const auto& cfg { m_config };
+            status = FTraits::index_stream(m_streams, sv, m_catalog, m_indexing_cursor, cfg);
           }
         }
       }
@@ -408,8 +447,10 @@ namespace sbio {
      * @returns An IOStatus for whether the lookup was succesful.
      */
     SBIO_HD inline IOStatus fetch_step(StepIdxType step_idx,
-                                       const DataAccessPtn ptn) {
-      m_broker_state = BrokerState::STREAMING;
+                                       const DataAccessPtn ptn,
+                                       SegmentCursor<FTraits>& cursor) {
+      // TODO: Try to setup the state transitions again so safe for all EPolicies... (e.g. threads)
+      // m_broker_state = BrokerState::STREAMING;
 
       auto txn { Transaction<roles::Data, ExecutionPolicy, SBStorageType>(m_storage) };
       auto sv { txn.view() };
@@ -417,27 +458,34 @@ namespace sbio {
       IOStatus status { IOStatus::Success };
       if (EPolicy::template should_process<FTraits>(step_idx)) {
         if constexpr (!std::is_void_v<Derived>) {
-          status = static_cast<Derived*>(this)->fetch_step_impl(step_idx, ptn);
+          status = static_cast<Derived*>(this)->fetch_step_impl(step_idx, ptn, cursor);
         } else {
-          status =
-            FTraits::fetch_step(m_streams, sv, m_stream_state, m_config, step_idx, ptn);
+          if constexpr (UsesGenericIndex) {
+            status = generic_fetch(sv, step_idx, ptn, cursor);
+          } else {
+            status =
+              FTraits::fetch_step(m_streams, sv, m_catalog, cursor, m_config, step_idx, ptn);
+          }
         }
       }
 
       txn.commit(sync_vars(), status);
 
       // Should do an error check to set state properly.
-      m_broker_state = BrokerState::READY;
+      // m_broker_state = BrokerState::READY;
 
       return status;
     }
 
     SBIO_HD inline IOStatus fetch_steps(std::initializer_list<StepIdxType> steps,
-                                        const DataAccessPtn ptn) {
+                                        const DataAccessPtn ptn,
+                                        SegmentCursor<FTraits>& cursor) {
+
       if (steps.size() == 1) {
-        return fetch_step(*steps.begin(), ptn);
+        return fetch_step(*steps.begin(), ptn, cursor);
       } else if (steps.size() <= 3) {
-        m_broker_state = BrokerState::STREAMING;
+        // TODO: Try to setup the state transitions again so safe for all EPolicies... (e.g. threads)
+        // m_broker_state = BrokerState::STREAMING;
 
         auto txn { Transaction<roles::Data, ExecutionPolicy, SBStorageType>(m_storage) };
         auto sv { txn.view() };
@@ -459,20 +507,25 @@ namespace sbio {
             }) {
             status = static_cast<Derived*>(this)->fetch_steps_impl(steps, ptn);
           } else {
-            status = FTraits::fetch_multi_steps(m_streams,
-                                                sv,
-                                                m_stream_state,
-                                                m_config,
-                                                first,
-                                                count,
-                                                ptn);
+            if constexpr (UsesGenericIndex) {
+              status = generic_fetch_range(sv, first, count, ptn, cursor);
+            } else {
+              status = FTraits::fetch_multi_steps(m_streams,
+                                                  sv,
+                                                  m_catalog,
+                                                  cursor,
+                                                  m_config,
+                                                  first,
+                                                  count,
+                                                  ptn);
+            }
           }
         }
 
         txn.commit(sync_vars(), status);
 
         // Should do an error check to set state properly.
-        m_broker_state = BrokerState::READY;
+        // m_broker_state = BrokerState::READY;
 
         return status;
       } else {
@@ -516,21 +569,6 @@ namespace sbio {
      * @returns The current broker state along the state machine.
      */
     SBIO_HD inline BrokerState state() const { return m_broker_state; }
-    /**
-     * Return the underlying StreamState of the brokered stream(s).
-     *
-     * The StreamState tracks data format-specific information about the streamed
-     * data. This may include information such as counters, whether certain transitions
-     * have been encountered, or whether the stream has been exhausted/will be soon.
-     * Refer to the specific FormatTraits for the format of interest for more
-     * information.
-     *
-     * In cases where the broker manages multiple Streams, there is still one
-     * shared StreamState which encompasses all of them.
-     *
-     * @returns The current Stream(s) StreamState.
-     */
-    SBIO_HD inline StreamState stream_state() const { return m_stream_state; }
 
     /**
      * Return the current capacity for data formats that support indexing.
@@ -545,9 +583,13 @@ namespace sbio {
     SBIO_HD inline std::size_t capacity() const {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<const Derived*>(this)->capacity();
+      } else if constexpr (UsesGenericIndex) {
+        // TODO: This is an unspoken rule then... the first access pattern determines
+        //       the overall "count".
+        //       ... should consider how to make convention more explicit/smarter ...
+        return m_catalog.num_steps[kind_idx(FTraits::kind_for_ptn(DataAccessPtn {}))];
       } else {
-        const StorageView<const SBStorageType, EPolicy> sv(m_storage);
-        return FTraits::capacity(sv, m_stream_state);
+        return m_catalog.max_capacity();
       }
     }
 
@@ -568,8 +610,10 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->current_buffer();
       } else {
-        StorageView<SBStorageType, EPolicy> sv(m_storage);
-        return FTraits::current_buffer(sv, m_stream_state);
+        //StorageView<SBStorageType, EPolicy> sv(m_storage);
+        //return FTraits::current_buffer(sv, m_stream_state);
+        // TODO: Need new implementation for this now!
+        return nullptr;
       }
     }
 
@@ -659,10 +703,13 @@ namespace sbio {
     SBIO_HD inline auto sync_vars() {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->sync_vars();
-      } else if constexpr (requires { FTraits::sync_vars(m_stream_state); }) {
-        return FTraits::sync_vars(m_stream_state);
       } else {
-        return make_sync_group();
+        return make_sync_group(m_catalog.index_epoch,
+                               m_catalog.num_steps,
+                               m_catalog.cummulative_steps,
+                               m_catalog.num_rows,
+                               m_catalog.first_row,
+                               m_catalog.last_row);
       }
     }
 
@@ -671,13 +718,375 @@ namespace sbio {
     // TODO: Needs to implement some sortable index (mostly for Chronological mode)
     SBIO_HD std::uint32_t stream_idx() const { return 0; }
 
+    SBIO_HD inline StreamCatalog<FTraits>& catalog() noexcept {
+      return m_catalog;
+    }
+    SBIO_HD inline const StreamCatalog<FTraits>& catalog() const noexcept {
+      return m_catalog;
+    }
+
+    template <typename KindT>
+    requires UsesGenericIndex
+    SBIO_HD inline IOStatus preceding(KindT kind,
+                                      KindT ref_kind,
+                                      hd_std::uint64_t ref_ordinal,
+                                      hd_std::uint64_t& ordinal,
+                                      SegmentCursor<FTraits>& cursor) {
+      StorageView<SBStorageType, EPolicy> sv(m_storage);
+      const auto* rows { acquire_rows(sv) };
+
+      hd_std::uint32_t ref_row { NoRow };
+      IOStatus status {
+        find_row(rows, ref_kind, ref_ordinal, cursor.offset_index[kind_idx(ref_kind)], ref_row)
+      };
+
+      if (status == IOStatus::Success) {
+        cursor.offset_index[kind_idx(ref_kind)] = ref_row;
+
+        const auto k { kind_idx(kind) };
+        hd_std::uint32_t r { static_cast<hd_std::uint32_t>(cursor.offset_index[k]) };
+        if (r < m_catalog.num_rows && rows[r].step_kind == kind && r < ref_row) {
+          // Hint is before the reference: walk forward
+          while (rows[r].next_of_kind != NoRow && rows[r].next_of_kind < ref_row) {
+            r = rows[r].next_of_kind;
+          }
+        } else {
+          // Otherwise walk back from the last step of this kind
+          r = m_catalog.last_row[k];
+          while (r != NoRow && r > ref_row) {
+            r = rows[r].prev_of_kind;
+          }
+        }
+
+        if (r == NoRow) {
+          // Nothing of this kind before the reference
+          status = IOStatus::NoOffsetInData;
+        } else {
+          cursor.offset_index[k] = r;
+          ordinal = rows[r].ordinal;
+        }
+      }
+
+      sv.template release<roles::Index, index_ids::Steps>(const_cast<StepOffset<FTraits>*>(rows));
+      return status;
+    }
+
   protected:
     StreamType m_streams[StreamCount];
     GenericStreamConfig<DataFormat> m_config;
     BrokerState m_broker_state;
-    StreamState m_stream_state;
+
     StreamMetadata m_metadata_inv;
     SBStorageType m_storage;
+
+    StreamCatalog<FTraits> m_catalog {};
+    IndexingCursor<FTraits> m_indexing_cursor {};
+
+  private:
+    template <typename KindT>
+    SBIO_HD static constexpr hd_std::size_t kind_idx(KindT kind) {
+      return static_cast<hd_std::size_t>(kind);
+    }
+
+    template <typename UnitT>
+    SBIO_HD static hd_std::size_t unit_size(const UnitT* unit) {
+      if constexpr (requires { FTraits::unit_size(unit); }) {
+        return FTraits::unit_size(unit);
+      } else {
+        return sizeof(UnitT) + FTraits::get_payload_size(const_cast<UnitT*>(unit));
+      }
+    }
+
+    template <class SV>
+    SBIO_HD static StepOffset<FTraits>* acquire_rows(SV& sv) {
+      // TODO: Will eventually need to replace the hard-coded HostTag
+      return
+        static_cast<StepOffset<FTraits>*>(sv.template acquire<
+                                           roles::Index,
+                                           index_ids::Steps,
+                                           MemTag
+                                          >(AcquireIntent::CallerMemorySpace));
+    }
+
+    template <typename KindT>
+    SBIO_HD IOStatus find_row(const StepOffset<FTraits>* rows,
+                              KindT kind,
+                              hd_std::uint64_t ordinal,
+                              hd_std::size_t hint,
+                              hd_std::uint32_t& row) const {
+      const auto k { kind_idx(kind) };
+      if (ordinal >= m_catalog.cummulative_steps[k]) {
+        return IOStatus::AllRequestedRead;
+      }
+
+      const hd_std::uint32_t first { m_catalog.first_row[k] };
+      if (m_catalog.index_epoch == 0 ||
+          first == NoRow             ||
+          ordinal < rows[first].ordinal) {
+        return IOStatus::NoOffsetInData;
+      }
+
+      hd_std::uint32_t r { first };
+      if (hint < m_catalog.num_rows    &&
+          rows[hint].step_kind == kind &&
+          rows[hint].ordinal <= ordinal) {
+        r = static_cast<hd_std::uint32_t>(hint);
+      }
+
+      while (rows[r].ordinal < ordinal) {
+        r = rows[r].next_of_kind;
+      }
+
+      row = r;
+      return IOStatus::Success;
+    }
+
+    template <class SV>
+    SBIO_HD IOStatus generic_index(SV& sv) {
+      using Unit = typename FTraits::DataUnit;
+      constexpr hd_std::size_t NumKinds { StreamCatalog<FTraits>::NumStepKinds };
+
+      constexpr auto IndexSlotSigned {
+        FTraits::StreamTypes::template index_of_role<roles::Index>
+      };
+      static_assert(IndexSlotSigned >= 0, "No StreamVariant is indexable!");
+      constexpr auto IndexSlot { static_cast<hd_std::uint32_t>(IndexSlotSigned) };
+
+      const auto& stream { m_streams[IndexSlot] };
+      auto& pos { m_indexing_cursor.next_offset[IndexSlot] };
+
+      auto* rows { acquire_rows(sv) };
+      auto* scratch {
+        static_cast<char*>(sv.template acquire<
+                            roles::Metadata,
+                            index_ids::Scratch,
+                            MemTag
+                           >(AcquireIntent::CallerMemorySpace))
+      };
+
+      const hd_std::size_t rows_capacity {
+        sv.template size<roles::Index, index_ids::Steps>() / sizeof(StepOffset<FTraits>)
+      };
+      const hd_std::size_t scratch_size {
+        sv.template size<roles::Metadata, index_ids::Scratch>()
+      };
+
+      hd_std::array<StepOffset<FTraits>, NumKinds> carried {};
+      hd_std::array<bool, NumKinds> has_carried {};
+      for (hd_std::size_t k = 0; k < NumKinds; ++k) {
+        has_carried[k] = (m_catalog.index_epoch > 0 && m_catalog.last_row[k] != NoRow);
+        if (has_carried[k]) {
+          carried[k] = rows[m_catalog.last_row[k]];
+        }
+      }
+
+      m_catalog.num_rows = 0;
+      for (hd_std::size_t k = 0; k < NumKinds; ++k) {
+        m_catalog.num_steps[k] = 0;
+        m_catalog.first_row[k] = NoRow;
+        m_catalog.last_row[k] = NoRow;
+
+        if (has_carried[k]) {
+          const auto r { static_cast<hd_std::uint32_t>(m_catalog.num_rows++) };
+          rows[r] = carried[k];
+          rows[r].next_of_kind = NoRow;
+          rows[r].prev_of_kind = NoRow;
+          m_catalog.first_row[k] = r;
+          m_catalog.last_row[k] = r;
+        }
+      }
+      const hd_std::size_t carried_rows { m_catalog.num_rows };
+
+      IOStatus status { IOStatus::Success };
+      if (carried_rows >= rows_capacity) {
+        status = IOStatus::PayloadTruncatedError; // Index buffer can't hold more than the carried rows
+      }
+
+      // --- Scan
+      bool at_end { false };
+      while (status == IOStatus::Success && !at_end && m_catalog.num_rows < rows_capacity) {
+        const auto res { stream.read_span(scratch, pos, scratch_size) };
+        if (res.bytes == 0) {
+          if (res.status != IOStatus::ZeroBytesRead) {
+            status = res.status;
+          }
+          break;
+        }
+
+        hd_std::size_t used { 0 };
+        while (used + FTraits::HeaderSize <= res.bytes && m_catalog.num_rows < rows_capacity) {
+          const auto* unit { reinterpret_cast<const Unit*>(scratch + used) };
+
+          // locate_bytes will only read the first HeaderSize bytes
+          // The other routines can read up to the entire `locate_bytes` count
+          if (used + FTraits::locate_bytes(unit) > res.bytes) {
+            break; // Refill starting at this unit
+          }
+
+          const auto kind_opt { FTraits::kind_for_step(unit) };
+          if (!kind_opt) {
+            at_end = true; // Not a unit, means end of indexable data
+            break;
+          }
+
+          const auto kind { *kind_opt };
+          const auto k { kind_idx(kind) };
+          const auto r { static_cast<hd_std::uint32_t>(m_catalog.num_rows++) };
+
+          auto& step { rows[r] };
+          step.region = FTraits::locate_step(unit, kind, IndexSlot, pos + used);
+          step.next_of_kind = NoRow;
+          step.prev_of_kind = m_catalog.last_row[k];
+          step.step_kind = kind;
+          step.ordinal = m_catalog.cummulative_steps[k];
+
+          if (m_catalog.last_row[k] != NoRow) {
+            rows[m_catalog.last_row[k]].next_of_kind = r;
+          } else {
+            m_catalog.first_row[k] = r;
+          }
+          m_catalog.last_row[k] = r;
+          m_catalog.num_steps[k]++;
+          m_catalog.cummulative_steps[k]++;
+
+          // The increment may push past the read byte count --> Refill from that point
+          // next
+          used += unit_size(unit);
+        }
+
+        if (used == 0 && !at_end) {
+          if (pos + res.bytes >= stream.file_size()) {
+            // We found extra bytes that don't constitute a full DataUnit
+            at_end = true; // Trailing bytes that don't form a unit
+          } else {
+            // A unit's locate_bytes exceed the scratch buffer
+            status = IOStatus::PayloadTruncatedError;
+          }
+        }
+        pos += used;
+      }
+
+      m_catalog.index_epoch++;
+
+      sv.template release<roles::Metadata, index_ids::Scratch>(scratch);
+      sv.template release<roles::Index, index_ids::Steps>(rows);
+
+      if (status != IOStatus::Success) {
+        return status;
+      }
+      return (m_catalog.num_rows > carried_rows) ? IOStatus::Success : IOStatus::ZeroBytesRead;
+    }
+
+    template <class SV>
+    SBIO_HD IOStatus generic_fetch(SV& sv,
+                                   StepIdxType step_idx,
+                                   DataAccessPtn ptn,
+                                   SegmentCursor<FTraits>& cursor) {
+      const auto kind { FTraits::kind_for_ptn(ptn) };
+      const auto k { kind_idx(kind) };
+
+      const auto* rows { acquire_rows(sv) };
+
+      hd_std::uint32_t row { NoRow };
+      IOStatus status { find_row(rows, kind, step_idx, cursor.offset_index[k], row) };
+
+      if (status == IOStatus::Success) {
+        cursor.offset_index[k] = row;
+        const ByteRegion region { rows[row].region };
+
+        visit_ptn<FTraits>(ptn, [&](auto P) {
+          constexpr hd_std::size_t Id { decltype(P)::value };
+          if (region.length > sv.template size<roles::Data, Id>()) {
+            status = IOStatus::PayloadTruncatedError;
+            return;
+          }
+
+          auto* buf { sv.template acquire<roles::Data, Id, MemTag>() };
+          const auto res { m_streams[region.stream].read_at(buf, region.offset, region.length) };
+          sv.template release<roles::Data, Id>(buf);
+
+          cursor.read_count = res.bytes;
+          status = res.status;
+        });
+
+        cursor.last_region = region;
+      }
+
+      sv.template release<roles::Index, index_ids::Steps>(const_cast<StepOffset<FTraits>*>(rows));
+      return status;
+    }
+
+    template <class SV>
+    SBIO_HD IOStatus generic_fetch_range(SV& sv,
+                                         StepIdxType first,
+                                         StepIdxType count,
+                                         DataAccessPtn ptn,
+                                         SegmentCursor<FTraits>& cursor) {
+      const auto kind { FTraits::kind_for_ptn(ptn) };
+      const auto k { kind_idx(kind) };
+
+      const auto* rows { acquire_rows(sv) };
+
+      hd_std::uint32_t first_row { NoRow };
+      hd_std::uint32_t last_row { NoRow };
+      IOStatus status { find_row(rows, kind, first, cursor.offset_index[k], first_row) };
+      if (status == IOStatus::Success) {
+        status = find_row(rows, kind, first + count - 1, first_row, last_row);
+      }
+
+      if (status == IOStatus::Success) {
+        const ByteRegion first_region { rows[first_row].region };
+        const ByteRegion last_region { rows[last_row].region };
+
+        visit_ptn<FTraits>(ptn, [&](auto P) {
+          constexpr hd_std::size_t Id { decltype(P)::value };
+          const hd_std::size_t buf_size { sv.template size<roles::Data, Id>() };
+          auto* buf {
+            static_cast<char*>(sv.template acquire<roles::Data, Id, MemTag>())
+          };
+
+          const bool one_span {
+            first_region.stream == last_region.stream && last_region.offset >= first_region.offset
+          };
+          const hd_std::size_t span {
+            one_span ? (last_region.offset + last_region.length - first_region.offset) : 0
+          };
+
+          hd_std::size_t total { 0 };
+          if (one_span && span <= buf_size) {
+            // Will read the entire range in one read.
+            // This means we may end up with interleaved steps of different kinds.
+            // `get_data_in_buffer` will skip these when it walks over the batch
+            const auto res { m_streams[first_region.stream].read_at(buf, first_region.offset, span) };
+            status = res.status;
+            total = res.bytes;
+          } else {
+            hd_std::uint32_t r { first_row };
+            for (StepIdxType s = 0; s < count && status == IOStatus::Success; ++s) {
+              const ByteRegion& region { rows[r].region };
+              if (total + region.length > buf_size) {
+                status = IOStatus::PayloadTruncatedError;
+                break;
+              }
+
+              const auto res { m_streams[region.stream].read_at(buf + total, region.offset, region.length) };
+              status = res.status;
+              total += res.bytes;
+              r = rows[r].next_of_kind;
+            }
+          }
+
+          sv.template release<roles::Data, Id>(buf);
+          cursor.read_count = total;
+        });
+
+        cursor.offset_index[k] = last_row;
+        cursor.last_region = last_region;
+      }
+
+      sv.template release<roles::Index, index_ids::Steps>(const_cast<StepOffset<FTraits>*>(rows));
+      return status;
+    }
   };
 } // namespace sbio
 

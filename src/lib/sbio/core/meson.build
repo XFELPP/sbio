@@ -10,6 +10,7 @@ installed_core_headers = [
     'request.hh',
     'result.hh',
     'roles.hh',
+    'state_handle.hh',
     'storage.hh',
     'storage_view.hh',
     'stream.hh',

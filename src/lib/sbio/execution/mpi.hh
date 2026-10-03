@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/sync.hh"
 #include "sbio/storage/host_buffer.hh"
@@ -173,6 +174,12 @@ namespace sbio {
       // Reset remaining state
       m_event_idx = 0;
     }
+
+    template <class T>
+    struct SegmentState {
+      mutable T value {};
+      T& get() const { return value; }
+    };
 
     template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIExecution>

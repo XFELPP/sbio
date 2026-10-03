@@ -28,6 +28,12 @@ endif
 
 cpp = meson.get_compiler('cpp')
 
+add_project_arguments(
+    '-DOMPI_SKIP_MPICXX',
+    '-DMPICH_SKIP_MPICXX',
+    language : ['c', 'cpp', 'cuda']
+)
+
 # Check compiler versions (for C++23 suppport especially)
 if cpp.get_id() == 'gcc'
     gcc_version = cpp.version()
@@ -441,6 +447,8 @@ py_install_dir = py3.get_install_dir(pure: false)
 pysbio_install_dir = py_install_dir / 'sbio/core'
 pysbio_fmts_install_dir = py_install_dir / 'sbio/formats'
 
+fs = import('fs')
+
 if sbio_as_wheel_opt
     # Install C++ libraries inside the wheel structure
     # Package and library setup will be:
@@ -456,40 +464,29 @@ if sbio_as_wheel_opt
 
     libsbio_install_dir = py_install_dir / 'sbio/lib'
     header_install_dir = py_install_dir / 'sbio/include'
-
-    # Relative path from 'sbio/core' to 'sbio/lib'
-    py_to_lib_path = '../lib'
-
-    exe_prefix = py_install_dir
-    lib_prefix = pysbio_install_dir
 else
     # Normal install path
     libsbio_install_dir = get_option('libdir')
     header_install_dir = get_option('includedir')
-
-    # Relative path from '$PREFIX/lib/pythonMAJ.MIN/site-packages/sbio/core' to '$PREFIX/lib'
-    py_to_lib_path = '../../../../'
-
-    exe_prefix = get_option('prefix') / 'bin'
-    lib_prefix = pysbio_install_dir
 endif
 
-# For both the wheel and non-wheel case, executables relative path, for
-# $PREFIX/bin to $PREFIX/lib is
-exe_to_libsbio = '..' / libsbio_install_dir
+exe_prefix = get_option('prefix') / get_option('bindir')
 
-lib_install_rpath = '$ORIGIN'
-
-abs_exe_rpath = exe_prefix / exe_to_libsbio
-abs_lib_rpath = lib_prefix / py_to_lib_path
+# For normal installs will be:
+#  - Relative path from '$PREFIX/lib/pythonMAJ.MIN/site-packages/sbio/core' to '$PREFIX/lib'
+# For wheel installs will be:
+#  - Relative path from 'sbio/core' to 'sbio/lib' inside the Python package
+py_to_lib_path = fs.relative_to(libsbio_install_dir, pysbio_install_dir)
+exe_to_libsbio = fs.relative_to(libsbio_install_dir, exe_prefix)
 
 # Setup RPATH for various platforms, for any executables that may need it
+lib_install_rpath = '$ORIGIN'
 if host_machine.system() == 'darwin'
-    exe_install_rpath = '@executable_path' + ':' + ('@executable_path' / exe_to_libsbio) + ':' + abs_exe_rpath
-    py_to_lib_install_rpath = '@loader_path' + ':' + ('@loader_path' / py_to_lib_path)  + ':' + abs_lib_rpath
+    exe_install_rpath = '@executable_path' + ':' + ('@executable_path' / exe_to_libsbio) + ':' + exe_prefix
+    py_to_lib_install_rpath = '@loader_path' + ':' + ('@loader_path' / py_to_lib_path)  + ':' + libsbio_install_dir
 else
-    exe_install_rpath = '$ORIGIN' + ':' + ('$ORIGIN' / exe_to_libsbio)  + ':' + abs_exe_rpath
-    py_to_lib_install_rpath = '$ORIGIN' + ':' + ('$ORIGIN' / py_to_lib_path) + ':' + abs_lib_rpath
+    exe_install_rpath = '$ORIGIN' + ':' + ('$ORIGIN' / exe_to_libsbio)  + ':' + exe_prefix
+    py_to_lib_install_rpath = '$ORIGIN' + ':' + ('$ORIGIN' / py_to_lib_path) + ':' + libsbio_install_dir
 endif
 
 #### SBIO ####

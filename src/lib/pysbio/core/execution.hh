@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 
 #include "sbio/execution/serial.hh"
@@ -67,7 +68,11 @@ namespace pysbio {
   class PyExecution : public sbio::Execution<PyExecution<BasePolicy>> {
   public:
     using Config = typename BasePolicy::Config;
+
     static constexpr auto ParallelSupport = BasePolicy::ParallelSupport;
+
+    template <class T>
+    using SegmentState = typename BasePolicy::template SegmentState<T>;
 
     template <typename Descriptor>
     using BufferTypeFor = typename BasePolicy::template BufferTypeFor<Descriptor>;

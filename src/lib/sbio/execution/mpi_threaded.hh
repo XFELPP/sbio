@@ -23,6 +23,7 @@
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/host_buffer.hh"
@@ -189,6 +190,27 @@ namespace sbio {
       m_exhausted.store(false, std::memory_order_release);
     }
 
+    template <class T>
+    struct SegmentState {
+      SegmentState()
+        : id(next_id.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      T& get() const {
+        thread_local std::vector<std::pair<std::uint64_t, T>> registry;
+        for (auto& [key, v] : registry) {
+          if (key == id) {
+            return v;
+          }
+        }
+
+        return registry.emplace_back(id, T{}).second;
+      }
+
+      std::uint64_t id;
+      static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
     template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, MPIThreadedExecution>
     static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
@@ -262,6 +284,13 @@ namespace sbio {
       using List = ExtractDescriptorsListT<StorageT>;
       using Descriptor = typename FindDescriptor<Role, 0, List>::type;
       using Hint = typename GetHint<Descriptor>::type;
+
+      if constexpr (!std::is_same_v<Role, roles::Data> &&
+                    !std::is_same_v<Role, roles::Table>) {
+        while (m_in_flight.load(std::memory_order_acquire) != 0) {
+          std::this_thread::yield();
+        }
+      }
 
       // NOTE: This policy only implements synchronization on Index/Shareable.
       //       DataRole updates (per-step hot path) do NOT synchronize.
@@ -431,7 +460,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -475,7 +503,6 @@ namespace sbio {
       }
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -538,6 +565,8 @@ namespace sbio {
       if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
         return FTraits::ExhaustedSentinel;
       }
+
+      release_step();
 
       int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
       int worker_rank;
@@ -616,6 +645,8 @@ namespace sbio {
           }
         }
 
+        // Make sure to stake claim before taking a step to ensure no missed triggers
+        m_in_flight.fetch_add(1);
         while (base_step < current_cap) {
           if (step >= current_cap) {
             if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
@@ -623,6 +654,7 @@ namespace sbio {
             }
           } else {
             if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
+              m_holding_step = true;
               return step;
             }
           }
@@ -640,13 +672,23 @@ namespace sbio {
                             step,
                             max_capacity,
                             current_cap);
+            m_in_flight.fetch_sub(1); // Didn't get a step
             return FTraits::ExhaustedSentinel;
           }
         }
+
+        m_in_flight.fetch_sub(1); // Didn't get a step
       }
     }
 
   private:
+    static void release_step() {
+      if (m_holding_step) {
+        m_holding_step = false;
+        m_in_flight.fetch_sub(1);
+      }
+    }
+
     /**
      * Communicator for synchronizing across the whole MPI world.
      */
@@ -662,16 +704,20 @@ namespace sbio {
     static inline std::size_t m_num_threads { 0 };
 
     /**
+     * The number of steps handed out by next() and not yet finished processing.
+     *
+     * A thread returns a step at the start of each next() call.
+     */
+    static inline std::atomic<std::size_t> m_in_flight { 0 };
+
+    static inline thread_local bool m_holding_step; ///< Whether this thread is holding a step.
+
+    /**
      * Communicator used when generating shareable buffers.
      */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
     static inline int m_rank { -1 };     ///< This processes rank in the MPI world.
     static inline int m_size { -1 };     ///< The size of the MPI world.
-    /**
-     * Set of mutexes to allow different brokers of a group from different threads
-     * to fetch in parallel.
-     */
-    static inline std::mutex m_broker_mutexes[2048];
     /**
      * Mutex for thread synchronization on reindexing
      */

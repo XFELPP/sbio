@@ -110,16 +110,14 @@ namespace sbio {
   }
 #endif // _WIN32
 
-  IOStatus SyncPOSIXIO::read(std::uint64_t offset, std::size_t size, void* dest) {
+  ReadResult SyncPOSIXIO::read_impl(std::uint64_t offset, std::size_t size, void* dest) const {
 #ifdef _WIN32
     OVERLAPPED overlapped {};
     overlapped.Offset = static_cast<DWORD>(offset & 0xffffffff);
     overlapped.OffsetHigh = static_cast<DWORD>((offset >> 32) & 0xffffffff);
 
     DWORD bytes_read { 0 };
-    BOOL ok {
-      ReadFile(m_file, dest, static_cast<DWORD>(size), &bytes_read, &overlapped)
-    };
+    BOOL ok { ReadFile(m_file, dest, static_cast<DWORD>(size), &bytes_read, &overlapped) };
 
     ssize_t read_count { -1 };
     if (ok) {
@@ -129,22 +127,10 @@ namespace sbio {
         read_count = static_cast<ssize_t>(bytes_read);
       }
     }
-#else
-    ssize_t read_count { ::pread(m_fd, dest, size, offset) };
-#endif // _WIN32
-    if (read_count == 0) {
-      m_read_count = 0;
-      return IOStatus::ZeroBytesRead;
-    } else if (read_count == -1) {
-      m_read_count = 0;
-      return IOStatus::GeneralIOError;
-    }
 
-    m_read_count = read_count;
-    m_total_bytes_read += read_count;
-    if (read_count != static_cast<ssize_t>(size)) {
-      return IOStatus::TruncatedRead;
-    }
-    return IOStatus::Success;
+    return classify_read(read_count, size);
+#else
+    return classify_read(::pread(m_fd, dest, size, offset), size);
+#endif // _WIN32
   }
 } // namespace sbio

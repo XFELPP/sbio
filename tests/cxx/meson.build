@@ -24,6 +24,7 @@ if build_core_opt and build_tests_opt
         sbiofmt_test_sources,
         dependencies: deps_for_tests,
         install: true,
+        install_rpath: py_to_lib_install_rpath,
         include_directories: sbio_headers,
     )
     test('Running test suite using sbio rndfmt.', test_sbiofmt, verbose: true)

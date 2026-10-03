@@ -161,7 +161,9 @@ namespace sbio {
           reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + total_offset);
       } while(shapes_data->namesId() != nid);
 
-      descr.payload_offset = total_offset;
+      // TODO: This is incorrect -- cannot mutate! Depends on ExecutionPolicy if safe!
+      //       Need solution to handle this...
+      // descr.payload_offset = total_offset;
       sd_offset = total_offset;
     }
 
@@ -183,87 +185,5 @@ namespace sbio {
     };
 
     return res;
-  }
-
-
-  SBIO_HD std::size_t XTC2Traits::populate_offsets(XTC2Traits::DataUnit* dg, // Dgram*
-                                                   XTC2Traits::DiscoveryState& state,
-                                                   std::size_t beginning_offset,
-                                                   XTC2Traits::EventOffset* l1_offsets_buf,
-                                                   XTC2Traits::TransitionOffset* transition_offsets_buf,
-                                                   std::size_t access_offset) {
-    int payload_size { dg->xtc.sizeofPayload() };
-
-    if (dg->service() == XTC2::TransitionId::L1Accept) {
-      auto* char_ptr = reinterpret_cast<char*>(&(dg->xtc));
-      // L1Accept is 48 bytes into the SMD paylaod
-      std::size_t offset_in_payload { 48 };
-      auto* offset_ptr = reinterpret_cast<std::uint64_t*>(char_ptr + offset_in_payload);
-      std::uint64_t offset { *offset_ptr };
-      // Size is 1, 8 byte int later
-      std::uint64_t size = *(offset_ptr + 1);
-
-      auto buf_off = state.events_per_read
-        ? state.l1_offset_idx % state.events_per_read
-        : state.l1_offset_idx;
-
-      new (l1_offsets_buf + buf_off) XTC2Traits::EventOffset(offset, size);
-      state.last_l1_idx_seen++;
-      state.l1_offset_idx++;
-    } else {
-      std::uint64_t size = sizeof(*dg) + payload_size;
-
-      std::uint64_t offset;
-      if (state.last_l1_idx_seen < 0) {
-        // Have seen nothing but transitions... Then the smd file_offset can be used
-        // This is because entire transitions are also stored in .smd.xtc2 files
-        // If we have yet to see an L1Accept, then the offset in .smd.xtc2 is equal
-        // to the offset in .xtc2
-        /// TODO: The above actually doesn't seem to be true!!! Investigate why!
-        /// The Configure Transition size doesn't match between the .smd.xtc2
-        /// and .xtc2 files... The others do at least as far as I can tell.
-        /// For now, the BDReader must do some hackery if prev_l1 is -1. It will then
-        /// Calculate based on the size (which IS accurate at least) and the first
-        /// L1Accept offset what the correct SlowUpdate offset should be...
-
-
-        offset = beginning_offset + access_offset;
-      } else if (state.l1_offset_idx != 0) {
-        // Have seen L1 (and not wrapped)... Can use previous L1 offset+size
-        // But... Have to see if any other previous transitions as well
-        XTC2Traits::EventOffset prev_l1 = l1_offsets_buf[state.l1_offset_idx - 1];
-        offset = prev_l1.offset + prev_l1.size;
-
-        std::size_t prev_transition_idx = state.trans_offset_idx - 1;
-
-        auto prev_transition = transition_offsets_buf[prev_transition_idx];
-
-        while (prev_transition.previous_l1_index == state.last_l1_idx_seen) {
-          offset += prev_transition.size;
-          prev_transition_idx--;
-          prev_transition = transition_offsets_buf[prev_transition_idx];
-        }
-      } else {
-        XTC2Traits::EventOffset prev_l1 = l1_offsets_buf[state.l1_offset_idx - 1];
-        offset = prev_l1.offset + prev_l1.size;
-      }
-
-      auto buf_off = state.events_per_read
-        ? state.trans_offset_idx % state.events_per_read
-        : state.trans_offset_idx;
-
-      new (transition_offsets_buf + buf_off)
-        XTC2Traits::TransitionOffset(offset,
-                                     size,
-                                     state.last_l1_idx_seen,
-                                     dg->service());
-
-      state.trans_offset_idx++;
-      if (dg->service() == XTC2::TransitionId::EndRun) {
-        state.seen_end_run = true;
-      }
-    }
-
-    return sizeof(*dg) + payload_size;
   }
 } // namespace sbio

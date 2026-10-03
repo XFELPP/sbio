@@ -129,7 +129,7 @@ namespace sbio {
           // Just write 1 detector per stream for now...
           randfmt::DetectorSpec* stream_detectors { &spec };
           hd_std::uint8_t num_detectors_per_stream { 1 };
-          hd_std::uint8_t* det_block_ids { &d };
+          hd_std::uint8_t det_block_ids[2] { d, d }; // Config/Metadata has 1 + num detector sub-blocks
           randfmt::write_sbiornd_file(f_handle,
                                       curr_offset,
                                       num_detectors_per_stream,

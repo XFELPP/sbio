@@ -110,10 +110,6 @@ namespace sbio {
     using StreamConfig = typename FTraits::StreamParameters;
 
     /**
-     * The type of state tracking object for the data format's Stream.
-     */
-    using StreamState = typename FTraits::DiscoveryState;
-    /**
      * The type of the general metadata object for the data format's Stream.
      */
     using StreamMetadata = MetadataInventory<FTraits>;
@@ -247,6 +243,17 @@ namespace sbio {
                                                                             max_batch_count);
     }
 
+    /**
+     * Configure and set the step remapping policy for the managed SegmentRefs.
+     *
+     * @param[in] mapping The mapping policy to use.
+     * @param[in] align_to The pattern to align to if using an aligning policy.
+     */
+    inline void set_step_mapping(StepMapping mapping, DataAccessPtn align_to = {}) {
+      m_topology.step_mapping = mapping;
+      m_topology.align_ptn = align_to;
+    }
+
     const char* group_name() const { return m_topology.group_name; }
     const char* group_type() const { return m_topology.group_type; }
 
@@ -272,18 +279,23 @@ namespace sbio {
     inline std::size_t num_stream_brokers() const { return m_topology.num_stream_brokers; }
 
     inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
-      auto* stream_broker { m_topology.stream_broker(broker_no) };
-      const auto& access_ptn { m_topology.access_ptn(broker_no) };
+      const auto& seg { m_topology.active_segment(step_idx, broker_no) };
+      auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
 
-      return stream_broker->fetch_step(step_idx, access_ptn);
+      std::size_t ordinal { 0 };
+      const auto status { m_topology.map_step(seg, remapped_step_idx, ordinal) };
+      if (status != IOStatus::Success) {
+        return status;
+      }
+
+      return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
     }
 
     inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
                                     std::size_t broker_no) const {
-      auto* stream_broker { m_topology.stream_broker(broker_no) };
-      const auto& access_ptn { m_topology.access_ptn(broker_no) };
+      const auto& seg { m_topology.active_segment(*steps.begin(), broker_no) };
 
-      return stream_broker->fetch_steps(steps, access_ptn);
+      return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
     }
 
     template <class CBType>
@@ -352,13 +364,22 @@ namespace sbio {
       auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
-      auto read_cb = [&](std::size_t i) {
-        auto* broker { m_topology.active_stream_broker(step_idx, i) };
-        const auto& access_ptn { m_topology.active_access_ptn(step_idx, i) };
+      auto read_cb = [&](std::size_t i, auto&&... opt_step) {
+        auto target_idx { step_idx };
+        if constexpr (sizeof...(opt_step) > 0) {
+          target_idx = std::get<0>(std::forward_as_tuple(opt_step...));
+        }
 
-        auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
+        const auto& seg { m_topology.active_segment(target_idx, i) };
+        auto remapped_step_idx { m_topology.remap_step_idx(target_idx) };
 
-        return broker->fetch_step(remapped_step_idx, access_ptn);
+        std::size_t ordinal { 0 };
+        const auto status { m_topology.map_step(seg, remapped_step_idx, ordinal) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
       };
 
       auto get_data_cb = [&](std::size_t i) {
@@ -458,13 +479,22 @@ namespace sbio {
       auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
-      auto read_cb = [&](std::size_t i) {
-        auto* broker { m_topology.active_stream_broker(step_idx, i) };
-        const auto& access_ptn { m_topology.active_access_ptn(step_idx, i) };
+      auto read_cb = [&](std::size_t i, auto&&... opt_step) {
+        auto target_idx { step_idx };
+        if constexpr (sizeof...(opt_step) > 0) {
+          target_idx = std::get<0>(std::forward_as_tuple(opt_step...));
+        }
 
-        auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
+        const auto& seg { m_topology.active_segment(target_idx, i) };
+        auto remapped_step_idx { m_topology.remap_step_idx(target_idx) };
 
-        return broker->fetch_step(remapped_step_idx, access_ptn);
+        std::size_t ordinal { 0 };
+        const auto status { m_topology.map_step(seg, remapped_step_idx, ordinal) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
       };
 
       auto get_data_cb = [&](std::size_t i) {
@@ -550,13 +580,13 @@ namespace sbio {
       auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
 
-      auto read_cb = [&](std::size_t i) {
+      auto read_cb = [&](std::size_t i, auto&&... opt_step) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           /// TODO: Setup Chronological
         } else {
-          const auto& access_ptn { m_topology.access_ptn(i) };
+          const auto& seg { m_topology.active_segment(*steps.begin(), i) };
 
-          return m_topology.stream_broker(i)->fetch_steps(steps, access_ptn);
+          return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
         }
       };
 
@@ -636,13 +666,13 @@ namespace sbio {
       auto& ptr_buf = this->m_ptr_storage.template get<roles::Table>();
       const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
 
-      auto read_cb = [&](std::size_t i) {
+      auto read_cb = [&](std::size_t i, auto&&... opt_step) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           // TODO: Setup Chronological
         } else {
-          const auto& access_ptn { m_topology.access_ptn(i) };
+          const auto& seg { m_topology.active_segment(*steps.begin(), i) };
 
-          return m_topology.stream_broker(i)->fetch_steps(steps, access_ptn);
+          return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
         }
       };
 
