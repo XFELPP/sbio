@@ -498,6 +498,121 @@ namespace sbio {
     ConstIterator cbegin() const { return ConstIterator(*this, next()); }
     ConstIterator cend() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
+    /**
+     * An iterator generating batches of steps from the DataSource.
+     *
+     * @tparam DS The DataSource to iterate over (const/non-const...)
+     */
+    template <typename DS>
+    class BatchIteratorImpl {
+    public:
+      // Values generated on the fly so reference type is really value type
+      using iterator_category = std::input_iterator_tag;
+      using difference_type = std::ptrdiff_t;
+      using value_type = StepBatch<typename FTraits::StepIdxType>;
+      // using pointer = value_type*;
+      using pointer = void;
+      using reference = value_type;
+
+      BatchIteratorImpl(DS& ds, value_type batch, std::size_t batch_size)
+        : m_ds(ds)
+        , m_batch(batch)
+        , m_batch_size(batch_size)
+      {}
+
+      reference operator*() const { return m_batch; }
+
+      BatchIteratorImpl& operator++() {
+        m_batch = m_ds.next_batch(m_batch_size);
+        return *this;
+      }
+
+      friend bool operator==(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
+        // Need to figure out best way to compare DataSource
+        // For now, just punt and return comparison of indices...
+        return a.m_batch.first == b.m_batch.first;
+      }
+
+      friend bool operator!=(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
+        return !(a == b);
+      }
+
+    private:
+      DS& m_ds;
+      value_type m_batch;
+      std::size_t m_batch_size;
+    };
+
+    using BatchIterator = BatchIteratorImpl<DataSource>;
+    using ConstBatchIterator = BatchIteratorImpl<const DataSource>;
+
+    /**
+     * A range over contiguous batches of steps, for use in a range-based for
+     * loop.
+     *
+     * Each parallel executing unit (e.g. a thread or rank, etc.) iterating will setup
+     * its own range-based loop (`for (auto step : ds.batches()) {}`).
+     *
+     * @note Early exit from a loop invokes the EPolicy end iteration implementation
+     *       This may be a no-op for some policies.
+     *
+     * @tparam DS The DataSource to iterate over (const/non const...)
+     */
+    template <class DS>
+    class BatchRangeImpl {
+    public:
+      using BatchIt = BatchIteratorImpl<DS>;
+
+      BatchRangeImpl(DS& ds, std::size_t batch_size)
+        : m_ds(ds)
+        , m_batch_size(batch_size)
+      {}
+
+      ~BatchRangeImpl() { EPolicy::end_iteration(m_ds.m_iteration_state); }
+
+      BatchRangeImpl(const BatchRangeImpl&) = delete;
+      BatchRangeImpl& operator=(const BatchRangeImpl&) = delete;
+
+      BatchIt begin() const {
+        return BatchIt(m_ds, m_ds.next_batch(m_batch_size), m_batch_size);
+      }
+
+      BatchIt end() const {
+        using StepIdx = typename FTraits::StepIdxType;
+
+        return BatchIt(m_ds,
+                       StepBatch<StepIdx> {
+                         FTraits::ExhaustedSentinel,
+                         FTraits::ExhaustedSentinel
+                       },
+                       m_batch_size);
+      }
+
+    private:
+      DS& m_ds;
+      std::size_t m_batch_size;
+    };
+
+    using BatchRange = BatchRangeImpl<DataSource>;
+    using ConstBatchRange = BatchRangeImpl<const DataSource>;
+
+    /**
+     * Return a range over contiguous batches of steps for the calling unit.
+     *
+     * @param[in] batch_size The maximum number of steps per batch. The default is the
+     *            configured `max_batch_size`.
+     * @returns A range to iterate over in a range-based for loop.
+     */
+    BatchRange batches(std::size_t batch_size = 0) {
+      return BatchRange(*this, batch_size);
+    }
+    ConstBatchRange batches(std::size_t batch_size = 0) const {
+      return ConstBatchRange(*this, batch_size);
+    }
+    ConstBatchRange cbatches(std::size_t batch_size = 0) const {
+      return ConstBatchRange(*this, batch_size);
+    }
+
   private:
     SBIO_HD inline bool reindex_trigger() const {
       using StepIdx = typename FTraits::StepIdxType;
