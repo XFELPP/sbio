@@ -309,10 +309,6 @@ namespace sbio {
           m_shared_capacity.load(std::memory_order_acquire);
 
         if (current >= current_cap) {
-          while (m_in_flight.load() != 0) { // Wait until no one is still fetching
-            std::this_thread::yield();
-          }
-
           std::lock_guard<std::mutex> lock(m_trigger_mutex);
 
           if (m_exhausted.load(std::memory_order_acquire)) {
@@ -333,6 +329,10 @@ namespace sbio {
           current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (current >= current_cap) {
+            while (m_in_flight.load() != 0) { // Wait until no one is still fetching
+              std::this_thread::yield();
+            }
+
             if (!trigger()) {
               m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Thread {}] Trigger returned exhausted: "

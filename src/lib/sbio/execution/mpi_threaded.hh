@@ -596,10 +596,6 @@ namespace sbio {
           m_shared_capacity.load(std::memory_order_acquire);
 
         if (base_step >= current_cap) {
-          while (m_in_flight.load() != 0) { // Wait until no one is still fetching
-            std::this_thread::yield();
-          }
-
           std::lock_guard<std::mutex> lock(m_trigger_mutex);
 
           if (m_exhausted.load(std::memory_order_acquire)) {
@@ -624,6 +620,10 @@ namespace sbio {
           current_cap = m_shared_capacity.load(std::memory_order_relaxed);
 
           if (base_step >= current_cap) {
+            while (m_in_flight.load() != 0) { // Wait until no one is still fetching
+              std::this_thread::yield();
+            }
+
             m_logger->debug("[Rank {} - thread {}] Entering trigger: "
                             "shared_cap = {}, max_cap = {}, m_local_idx = {}",
                             m_rank,
@@ -654,7 +654,6 @@ namespace sbio {
         while (base_step < current_cap) {
           if (step >= current_cap) {
             if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
-              m_in_flight.fetch_sub(1); // Didn't get a step
               break;
             }
           } else {
@@ -681,6 +680,8 @@ namespace sbio {
             return FTraits::ExhaustedSentinel;
           }
         }
+
+        m_in_flight.fetch_sub(1); // Didn't get a step
       }
     }
 
