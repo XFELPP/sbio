@@ -79,6 +79,15 @@ namespace sbio {
       bool main_rank_loops { true };
     };
 
+    class IterationState {
+      friend class MPIExecution;
+
+      /**
+       * The rank-local event/step index counter for distribution.
+       */
+      std::size_t m_event_idx { 0 };
+    };
+
     static constexpr std::bitset<
       static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x2 }; // 0b10 - MPI
@@ -170,9 +179,6 @@ namespace sbio {
 
       m_main_rank = config.main_rank;
       m_main_rank_loops = config.main_rank_loops;
-
-      // Reset remaining state
-      m_event_idx = 0;
     }
 
     template <class T>
@@ -407,15 +413,16 @@ namespace sbio {
      *
      * @tparam FTraits The FormatTraits for the data format.
      * @tparam IndexTrigger The type of the lambda callback to reindex as needed.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity (i.e., already indexed steps).
-     * @param[in] trigger A callback to reindex (if appropriate) when capacity is
-     *            exhausted.
+     * @param[in] trigger A callback to reindex (if appropriate) when capacity is exhausted.
      * @returns The next step to process using the fixed offset of the world size.
      */
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      static typename FTraits::StepIdxType m_event_idx { 0 };
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
 
       if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
         return FTraits::ExhaustedSentinel;
@@ -429,8 +436,8 @@ namespace sbio {
         worker_rank = m_active_rank - 1;
       }
 
-      auto step = m_event_idx + worker_rank;
-      m_event_idx += worker_count;
+      auto step = state.m_event_idx + worker_rank;
+      state.m_event_idx += worker_count;
 
       while (step >= max_capacity) {
         if (!trigger()) {
@@ -466,7 +473,6 @@ namespace sbio {
     /**
      * Rank-local index within the MPI world's set of indices to distribute.
      */
-    static inline std::size_t m_event_idx { 0 };
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
