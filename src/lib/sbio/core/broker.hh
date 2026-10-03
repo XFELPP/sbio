@@ -580,8 +580,12 @@ namespace sbio {
     SBIO_HD inline std::size_t capacity() const {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<const Derived*>(this)->capacity();
+      } else if constexpr (UsesGenericIndex) {
+        // TODO: This is an unspoken rule then... the first access pattern determines
+        //       the overall "count".
+        //       ... should consider how to make convention more explicit/smarter ...
+        return m_catalog.num_steps[kind_idx(FTraits::kind_for_ptn(DataAccessPtn {}))];
       } else {
-
         return m_catalog.max_capacity();
       }
     }
