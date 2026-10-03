@@ -449,7 +449,8 @@ namespace sbio {
     SBIO_HD inline IOStatus fetch_step(StepIdxType step_idx,
                                        const DataAccessPtn ptn,
                                        SegmentCursor<FTraits>& cursor) {
-      m_broker_state = BrokerState::STREAMING;
+      // TODO: Try to setup the state transitions again so safe for all EPolicies... (e.g. threads)
+      // m_broker_state = BrokerState::STREAMING;
 
       auto txn { Transaction<roles::Data, ExecutionPolicy, SBStorageType>(m_storage) };
       auto sv { txn.view() };
@@ -471,7 +472,7 @@ namespace sbio {
       txn.commit(sync_vars(), status);
 
       // Should do an error check to set state properly.
-      m_broker_state = BrokerState::READY;
+      // m_broker_state = BrokerState::READY;
 
       return status;
     }
@@ -479,10 +480,12 @@ namespace sbio {
     SBIO_HD inline IOStatus fetch_steps(std::initializer_list<StepIdxType> steps,
                                         const DataAccessPtn ptn,
                                         SegmentCursor<FTraits>& cursor) {
+
       if (steps.size() == 1) {
         return fetch_step(*steps.begin(), ptn, cursor);
       } else if (steps.size() <= 3) {
-        m_broker_state = BrokerState::STREAMING;
+        // TODO: Try to setup the state transitions again so safe for all EPolicies... (e.g. threads)
+        // m_broker_state = BrokerState::STREAMING;
 
         auto txn { Transaction<roles::Data, ExecutionPolicy, SBStorageType>(m_storage) };
         auto sv { txn.view() };
@@ -522,7 +525,7 @@ namespace sbio {
         txn.commit(sync_vars(), status);
 
         // Should do an error check to set state properly.
-        m_broker_state = BrokerState::READY;
+        // m_broker_state = BrokerState::READY;
 
         return status;
       } else {
