@@ -325,18 +325,31 @@ namespace sbio {
      * must then be designed in a way to terminate the generation of indices
      * in some fashion, or it will continue forever.
      *
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy.
+     *
      * @tparam FTraits The data-format traits.
      * @tparam IndexTrigger The type of the reindex callback trigger.
      * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The *maximum* number of steps in a batch.
      * @param[in] max_capacity The current max capacity (currently available indices).
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
     template <class FTraits, class IndexTrigger>
-    static typename FTraits::StepIdxType
-    next_impl(IterationState& state,
-              typename FTraits::StepIdxType& max_capacity,
-              IndexTrigger&& trigger) {
+    static StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      using StepIdx = typename FTraits::StepIdxType;
+      constexpr StepBatch<StepIdx> Exhausted {
+        FTraits::ExhaustedSentinel,
+        FTraits::ExhaustedSentinel
+      };
+
+      const StepIdx max_count { static_cast<StepIdx>(batch_size > 0 ? batch_size : 1) };
+
       release_step(state);
 
       typename FTraits::StepIdxType current { state.m_event_idx.load(std::memory_order_acquire) };
@@ -349,7 +362,7 @@ namespace sbio {
                           state.m_shared_capacity.load(),
                           max_capacity,
                           state.m_event_idx.load());
-          return FTraits::ExhaustedSentinel;
+          return Exhausted;
         }
 
         typename FTraits::StepIdxType current_cap =
@@ -365,7 +378,7 @@ namespace sbio {
                             state.m_shared_capacity.load(),
                             max_capacity,
                             state.m_event_idx.load());
-            return FTraits::ExhaustedSentinel;
+            return Exhausted;
           }
 
           if (state.m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
@@ -388,7 +401,7 @@ namespace sbio {
                               state.m_shared_capacity.load(),
                               max_capacity,
                               state.m_event_idx.load());
-              return FTraits::ExhaustedSentinel;
+              return Exhausted;
             }
 
             state.m_shared_capacity.store(max_capacity, std::memory_order_release);
@@ -399,9 +412,12 @@ namespace sbio {
         // Make sure to stake claim before taking a step to ensure no missed triggers
         state.m_in_flight.fetch_add(1);
         while (current < current_cap) {
-          if (state.m_event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
+          const StepIdx remaining { current_cap - current };
+          const StepIdx count { max_count < remaining ? max_count : remaining };
+          if (state.m_event_idx.compare_exchange_weak(current, current + count,
+                                                      std::memory_order_acq_rel)) {
             state.m_holding_step.get() = true;
-            return current;
+            return { current, current + count };
           }
 
           current_cap = state.m_shared_capacity.load(std::memory_order_acquire);
@@ -411,6 +427,31 @@ namespace sbio {
         // fashion
         state.m_in_flight.fetch_sub(1); // Didn't get a step
       }
+    }
+
+    /**
+     * The ThreadedExecution policy generates step indices in monotonically.
+     *
+     * @note The ThreadedExecution policy uses the batch implementation with a
+     *       batch size of 1.
+     *
+     * @tparam FTraits The data-format traits.
+     * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] max_capacity The current max capacity (currently available indices).
+     * @param[in] trigger The reindex callback routine.
+     * @returns The next step_idx.
+     */
+    template <class FTraits, class IndexTrigger>
+    static typename FTraits::StepIdxType
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
+      // Since this API expects a single step index, return just the first of the pair
+      return next_batch_impl<FTraits>(state,
+                                      1,
+                                      max_capacity,
+                                      std::forward<IndexTrigger>(trigger)).first;
     }
 
     /**
