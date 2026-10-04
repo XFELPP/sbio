@@ -119,6 +119,134 @@ namespace sbio {
     IOStatus m_status;
   };
 
+  namespace impl {
+    /**
+     * The planned IO for a fixed set of BrokerGroups.
+     *
+     * Every distinct fetch (StreamBroker + access pattern + step mapping) across all the
+     * groups is recorded once, so a step (or batch) is fetched exactly once per distinct
+     * fetch, through the Execution policy's `get_data` / `get_data_steps` hooks.
+     *
+     * @tparam ExecutionPolicy The Execution policy.
+     * @tparam FTraits The data format.
+     * @tparam Groups The BrokerGroup types.
+     */
+    template <class ExecutionPolicy, class FTraits, class... Groups>
+    class ZipFetchPlan {
+    public:
+      using StepIdxType = typename FTraits::StepIdxType;
+
+      /**
+       * The maximum number of distinct fetches over every StreamBroker of every group.
+       */
+      static constexpr hd_std::size_t MaxFetches {
+        ( Groups::SegmentCapacity + ... + 0 )
+      };
+
+      SBIO_HD explicit ZipFetchPlan(const Groups&... groups)
+        : m_groups(&groups...)
+      {
+        plan_fetches(hd_std::index_sequence_for<Groups...> {});
+      }
+
+      /**
+       * Perform every planned fetch for the step, through the Execution policy.
+       *
+       * @param[in] step_idx The index of the step to fetch.
+       */
+      SBIO_HD IOStatus fetch(StepIdxType step_idx) const {
+        auto unit_fetcher = [&](hd_std::size_t i) {
+          return fetch_one(m_fetches[i], step_idx, hd_std::index_sequence_for<Groups...> {});
+        };
+        auto no_access = [](hd_std::size_t) {}; // Data is resolved on demand via StepHandle::get
+
+        return ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                           unit_fetcher,
+                                                           m_fetches.size(),
+                                                           no_access,
+                                                           0);
+      }
+
+    private:
+      /**
+       * Identifier for a fetch from the zipped groups.
+       *
+       * Indicates a fetch of StreamBroker `broker_no` in BrokerGroup `group`.
+       */
+      struct Fetch {
+        hd_std::size_t group;
+        hd_std::size_t broker_no;
+      };
+
+      template <hd_std::size_t... Is>
+      SBIO_HD void plan_fetches(hd_std::index_sequence<Is...>) {
+        ( plan_group<Is>(), ... );
+      }
+
+      template <hd_std::size_t G>
+      SBIO_HD void plan_group() {
+        const auto& group { *hd_std::get<G>(m_groups) };
+
+        using Group = hd_std::remove_cvref_t<decltype(group)>;
+        constexpr bool Chronological {
+          Group::DataFormat::PartitioningStrategy == StreamPartitioningStrategy::Chronological
+        };
+        // Chronological groups fetch a single, step-dependent, StreamBroker.
+        const hd_std::size_t num_brokers { Chronological ? 1 : group.num_stream_brokers() };
+
+        for (hd_std::size_t b = 0; b < num_brokers; ++b) {
+          bool shared { false };
+          for (const auto& f : m_fetches) {
+            shared = shared || shares_fetch(group, b, f, hd_std::index_sequence_for<Groups...> {});
+          }
+
+          if (!shared) {
+            m_fetches.push_back({ G, b });
+          }
+        }
+      }
+
+      template <class Group, hd_std::size_t... Is>
+      SBIO_HD bool shares_fetch(const Group& group,
+                                hd_std::size_t broker_no,
+                                const Fetch& fetch_,
+                                hd_std::index_sequence<Is...>) const {
+        bool shared { false };
+        auto check = [&](const auto* other, hd_std::size_t idx) {
+          if constexpr (hd_std::is_same_v<hd_std::remove_cvref_t<decltype(*other)>, Group>) {
+            if (idx == fetch_.group) {
+              shared = group.shares_fetch(broker_no, *other, fetch_.broker_no);
+            }
+          }
+        };
+
+        ( check(hd_std::get<Is>(m_groups), Is), ... );
+
+        return shared;
+      }
+
+      template <hd_std::size_t... Is>
+      SBIO_HD IOStatus fetch_one(const Fetch& fetch_,
+                                 StepIdxType step,
+                                 hd_std::index_sequence<Is...>) const {
+        IOStatus status { IOStatus::Success };
+        auto do_fetch = [&](const auto* group, hd_std::size_t idx) {
+          if (idx == fetch_.group) {
+            StepIdxType target_idx { step };
+            status = group->fetch_next_for(target_idx, fetch_.broker_no);
+          }
+        };
+
+        ( do_fetch(hd_std::get<Is>(m_groups), Is), ... );
+
+        return status;
+      }
+
+      hd_std::tuple<const Groups*...> m_groups;
+      BoundedList<Fetch, MaxFetches> m_fetches;
+    };
+  } // namespace impl
+
   /**
    * Iterate the steps of a DataSource with fetches over a set of BrokerGroups.
    *
@@ -147,25 +275,17 @@ namespace sbio {
     using ExecutionPolicy = typename hd_std::remove_const_t<DS>::ExecutionPolicy;
     using StepRange = decltype(hd_std::declval<DS&>().steps());
     using StepIt = decltype(hd_std::declval<const StepRange&>().begin());
-
-    /**
-     * The maximum number of distinct fetches over every StreamBroker of every group.
-     */
-    static constexpr hd_std::size_t MaxFetches {
-      ( Groups::SegmentCapacity + ... + 0 )
-    };
+    using FetchPlan = impl::ZipFetchPlan<ExecutionPolicy, FTraits, Groups...>;
 
     SBIO_HD ZippedGroupRange(DS& ds, const Groups&... groups)
       : m_steps(ds.steps())
-      , m_groups(&groups...)
-    {
-      plan_fetches(hd_std::index_sequence_for<Groups...> {});
-    }
+      , m_plan(groups...)
+    {}
 
     ZippedGroupRange(const ZippedGroupRange&) = delete;
     ZippedGroupRange& operator=(const ZippedGroupRange&) = delete;
 
-    template <class ZGR>
+    template <class FP>
     class IteratorImpl {
     public:
       using iterator_category = hd_std::input_iterator_tag;
@@ -174,8 +294,8 @@ namespace sbio {
       using pointer = void;
       using reference = value_type;
 
-      SBIO_HD IteratorImpl(ZGR* range, StepIt it)
-        : m_range(range)
+      SBIO_HD IteratorImpl(FP* plan, StepIt it)
+        : m_plan(plan)
         , m_it(it)
       {
         fetch();
@@ -202,19 +322,18 @@ namespace sbio {
     private:
       SBIO_HD void fetch() {
         const StepIdxType step { *m_it };
-
         if (step != FTraits::ExhaustedSentinel) {
-          m_status = m_range->fetch(step);
+          m_status = m_plan->fetch(step);
         }
       }
 
-      ZGR* m_range;
+      FP* m_plan;
       StepIt m_it;
       IOStatus m_status { IOStatus::Success };
     };
 
-    using Iterator = IteratorImpl<ZippedGroupRange>;
-    using ConstIterator = IteratorImpl<const ZippedGroupRange>;
+    using Iterator = IteratorImpl<FetchPlan>;
+    using ConstIterator = IteratorImpl<const FetchPlan>;
 
     /**
      * Return an iterator at the first step for this unit, with its data fetched.
@@ -222,10 +341,10 @@ namespace sbio {
      * @note This invokes `next` (once) to get the first step.
      */
     SBIO_HD ConstIterator begin() const {
-      return ConstIterator(this, m_steps.begin());
+      return ConstIterator(&m_plan, m_steps.begin());
     }
     SBIO_HD ConstIterator end() const {
-      return ConstIterator(this, m_steps.end());
+      return ConstIterator(&m_plan, m_steps.end());
     }
 
     SBIO_HD ConstIterator cbegin() const { return begin(); }
@@ -234,104 +353,11 @@ namespace sbio {
     /**
      * The number of distinct fetches performed per step.
      */
-    SBIO_HD hd_std::size_t num_fetches() const { return m_fetches.size(); }
+    SBIO_HD hd_std::size_t num_fetches() const { return m_plan.num_fetches(); }
 
   private:
-    /**
-     * Identifier for a fetch from the zipped groups.
-     *
-     * Indicates a fetch of StreamBroker `broker_no` in BrokerGroup `group`.
-     */
-    struct Fetch {
-      hd_std::size_t group;
-      hd_std::size_t broker_no;
-    };
-
-    template <hd_std::size_t... Is>
-    SBIO_HD void plan_fetches(hd_std::index_sequence<Is...>) {
-      ( plan_group<Is>(), ... );
-    }
-
-    template <hd_std::size_t G>
-    SBIO_HD void plan_group() {
-      const auto& group { *hd_std::get<G>(m_groups) };
-
-      using Group = hd_std::remove_cvref_t<decltype(group)>;
-      constexpr bool Chronological {
-        Group::DataFormat::PartitioningStrategy == StreamPartitioningStrategy::Chronological
-      };
-      // Chronological groups fetch a single, step-dependent, StreamBroker.
-      const hd_std::size_t num_brokers { Chronological ? 1 : group.num_stream_brokers() };
-
-      for (hd_std::size_t b = 0; b < num_brokers; ++b) {
-        bool shared { false };
-        for (const auto& f : m_fetches) {
-          shared = shared || shares_fetch(group, b, f, hd_std::index_sequence_for<Groups...> {});
-        }
-
-        if (!shared) {
-          m_fetches.push_back({ G, b });
-        }
-      }
-    }
-
-    template <class Group, hd_std::size_t... Is>
-    SBIO_HD bool shares_fetch(const Group& group,
-                              hd_std::size_t broker_no,
-                              const Fetch& fetch_,
-                              hd_std::index_sequence<Is...>) const {
-      bool shared { false };
-      auto check = [&](const auto* other, hd_std::size_t idx) {
-        if constexpr (hd_std::is_same_v<hd_std::remove_cvref_t<decltype(*other)>, Group>) {
-          if (idx == fetch_.group) {
-            shared = group.shares_fetch(broker_no, *other, fetch_.broker_no);
-          }
-        }
-      };
-
-      ( check(hd_std::get<Is>(m_groups), Is), ... );
-
-      return shared;
-    }
-
-    template <hd_std::size_t... Is>
-    SBIO_HD IOStatus fetch_one(const Fetch& fetch_,
-                               StepIdxType step_idx,
-                               hd_std::index_sequence<Is...>) const {
-      IOStatus status { IOStatus::Success };
-      auto do_fetch = [&](const auto* group, hd_std::size_t idx) {
-        if (idx == fetch_.group) {
-          StepIdxType target_idx { step_idx };
-          status = group->fetch_next_for(target_idx, fetch_.broker_no);
-        }
-      };
-
-      ( do_fetch(hd_std::get<Is>(m_groups), Is), ... );
-
-      return status;
-    }
-
-    /**
-     * Perform every planned fetch for the step, through the Execution policy.
-     *
-     * @param[in] step_idx The index of the step to fetch.
-     */
-    SBIO_HD IOStatus fetch(StepIdxType step_idx) const {
-      auto unit_fetcher = [&](hd_std::size_t i) {
-        return fetch_one(m_fetches[i], step_idx, hd_std::index_sequence_for<Groups...> {});
-      };
-      auto no_access = [](hd_std::size_t) {}; // Data is resolved on demand via StepHandle::get
-
-      return ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                         unit_fetcher,
-                                                         m_fetches.size(),
-                                                         no_access,
-                                                         0);
-    }
-
     StepRange m_steps;
-    hd_std::tuple<const Groups*...> m_groups;
-    impl::BoundedList<Fetch, MaxFetches> m_fetches;
+    FetchPlan m_plan;
   };
 
   /**
