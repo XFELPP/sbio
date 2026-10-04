@@ -119,6 +119,10 @@ namespace sbio {
      */
     using DataAccessPtn = typename FTraits::DataAccessPtn;
     /**
+     * The maximum number of segments (and therefore StreamBrokers) in the BrokerGroup.
+     */
+    static constexpr std::size_t SegmentCapacity { MaxSegments };
+    /**
      * The type of a request object used to query for data.
      */
     using DataRequest = typename FTraits::DataRequest;
@@ -348,7 +352,7 @@ namespace sbio {
      * @param[in] callback Optionally provide a callback to be run on every segment
      *            independently before the data is combined.
      * @param[in] args The arguments for the DataRequest constructor.
-     * @returns array The requested data as an NCArrayView or NCDevArrayView
+     * @returns array The requested data as an SOArrayView or SODevArrayView
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <class CBType, typename... Args>
@@ -465,7 +469,7 @@ namespace sbio {
      *         constructors (of which, there are possibly multiple).
      * @param[in] step_idx The index for the data to fetch.
      * @param[in] args The arguments for the DataRequest constructor.
-     * @returns array The requested data as an NCArrayView or NCDevArrayView
+     * @returns array The requested data as an SOArrayView or SODevArrayView
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <typename... Args>
@@ -560,6 +564,98 @@ namespace sbio {
       };
 
       return composite.to_array();
+    }
+
+    /**
+     * Resolve data for a step from the already fetched buffers, without any IO.
+     *
+     * This is the data resolution half of `get_data`. The step's data must already be
+     * in the StreamBrokers' buffers, e.g. fetched with `fetch_next_for` (directly or via
+     * a zipped iteration). As with `get_data`, the result is valid until the next fetch
+     * into the same buffers.
+     *
+     * @tparam Args... The variadic types for arguments to pass to the DataRequest
+     *         constructor. This set of arguments depends on the FormatTraits request
+     *         constructors (of which, there are possibly multiple).
+     * @param[in] step_idx The index of the (already fetched) step.
+     * @param[in] args The arguments for the DataRequest constructor.
+     * @returns array The requested data as an SOArrayView or SODevArrayView
+     *          depending on whether MemTag is HostTag or DevTag, respectively.
+     */
+    template <typename... Args>
+    inline ncarray::SOViewFor<MemTag> resolve_data(const StepIdxType& step_idx,
+                                                   Args&&... args) const {
+      DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
+
+      DataResult ref_res;
+
+      auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
+      const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
+
+      auto copy_ref = [&](const DataResult& res) {
+        // This assumes all segments are same shape...
+        ref_res.data = res.data;
+        ref_res.size = res.size;
+        ref_res.rank = res.rank;
+        for (std::uint16_t j = 0; j < res.rank; ++j) {
+          ref_res.shape[j] = res.shape[j];
+        }
+        ref_res.dtype = res.dtype;
+      };
+
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        auto active_stream_idx { step_idx % this->num_segments() };
+        auto res = get_data_for(req, active_stream_idx);
+
+        ptr_tbl[0] = const_cast<void*>(res.data);
+        copy_ref(res);
+      } else {
+        for (std::size_t i = 0; i < this->num_segments(); ++i) {
+          const auto& seg { m_topology.segment(i) };
+          auto res = get_data_for(req, i);
+
+          ptr_tbl[seg.logical_slot] = const_cast<void*>(res.data);
+          if (i == 0) {
+            copy_ref(res);
+          }
+        }
+      }
+
+      CompositeDataResult<MemTag> composite {
+        ptr_tbl,
+        m_topology.num_segments,
+        1,
+        ref_res.rank,
+        ref_res.shape,
+        ref_res.dtype
+      };
+      return composite.to_array();
+    }
+
+    /**
+     * Whether a fetch for this group's StreamBroker `broker_no` and a fetch for the
+     * other group's StreamBroker `other_no` fill the same buffer with the same step.
+     *
+     * This is the case when both use the same StreamBroker, with the same access
+     * pattern and the same step mapping. A zipped iteration then only fetches once.
+     *
+     * @param[in] broker_no The StreamBroker of this group.
+     * @param[in] other The other group.
+     * @param[in] other_no The StreamBroker of the other group.
+     * @returns Whether the two fetches are identical.
+     */
+    inline bool shares_fetch(std::size_t broker_no,
+                             const BrokerGroup& other,
+                             std::size_t other_no) const {
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        return false; // The fetched StreamBroker depends on the step
+      } else {
+        return
+          m_topology.stream_brokers[broker_no] == other.m_topology.stream_brokers[other_no] &&
+          m_topology.access_ptn(broker_no) == other.m_topology.access_ptn(other_no)         &&
+          m_topology.step_mapping == other.m_topology.step_mapping                          &&
+          m_topology.align_ptn == other.m_topology.align_ptn;
+      }
     }
 
     template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
