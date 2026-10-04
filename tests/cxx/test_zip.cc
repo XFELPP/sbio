@@ -11,6 +11,7 @@
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -172,5 +173,58 @@ namespace {
     // Both loops make the same reindexing reads
     // The straight loop reads every step's data a second time for grp2.
     EXPECT_EQ(straight_reads - zip_reads, NumEvents) << "zip reads each shared broker once per step";
+  }
+
+  TEST(ZippedGroups, SerialZippedGroupOfOne) {
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, 30, 7);
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+
+    std::size_t count { 0 };
+    for (auto step : sbio::zip(ds, grp1)) {
+      auto arr1 = step.get(grp1);
+
+      for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+        if (i == 0) {
+          EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count!";
+        } else {
+          EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect!";
+        }
+      }
+
+      // Check the actual bytes match as well
+      EXPECT_TRUE(bytes_match(arr1, step));
+    }
+  }
+
+  TEST(ZippedGroups, SerialBreakEarly) {
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, 30, 7);
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+
+    std::size_t count { 0 };
+    for (auto step : sbio::zip(ds, grp1)) {
+      auto arr1 = step.get(grp1);
+
+      for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+        if (i == 0) {
+          EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count!";
+        } else {
+          EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect!";
+        }
+      }
+
+      // Check the actual bytes match as well
+      EXPECT_TRUE(bytes_match(arr1, step));
+      if (count == 5) {
+        break;
+      }
+      count++;
+    }
+    EXPECT_EQ(count, 5u);
   }
 } // anonymous namespace
