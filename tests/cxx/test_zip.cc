@@ -245,4 +245,80 @@ namespace {
     }
     EXPECT_EQ(count, 5u);
   }
+
+  template <class Array>
+  std::size_t count_bad_batch(const Array& arr, std::size_t first, std::size_t last) {
+    const auto* tbl { reinterpret_cast<const void* const*>(arr.data()) };
+    std::size_t bad { 0 };
+
+    for (std::size_t s = first; s < last; ++s) {
+      const auto* bytes { static_cast<const std::uint8_t*>(tbl[s - first]) }; // 1 segment
+
+      if (bytes == nullptr                                     ||
+          bytes[0] != static_cast<std::uint8_t>(s & 0xFF)      ||
+          bytes[1] != static_cast<std::uint8_t>((s + 1) & 0xFF)) {
+        bad++;
+      }
+    }
+
+    return bad;
+  }
+
+  // BrokerGroups that use the same StreamBroker
+  // - There should only be 1 fetch per batch (the non-zip version will fetch twice, once
+  //   per each BrokerGroup)
+  TEST(ZippedGroups, BatchesSharedBrokerFetchedOnce) {
+    constexpr std::size_t NumEvents { 100 };
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { 7, 3 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    std::size_t singles { 0 };
+    {
+      auto zipped = sbio::zip_batches(ds, grp1, grp2);
+      EXPECT_EQ(zipped.num_fetches(), 1u);
+
+      for (auto batch : zipped) {
+        EXPECT_EQ(batch.status(), sbio::IOStatus::Success);
+        EXPECT_EQ(batch.first(), expected);
+        EXPECT_LE(batch.count(), 3u);
+
+        auto arr1 = batch.get(grp1);
+        auto arr2 = batch.get(grp2);
+
+        for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+          if (i == 0) {
+            EXPECT_EQ(arr1.shape(i), batch.count()) << "Unexpected batch count (arr1)!";
+            EXPECT_EQ(arr2.shape(i), batch.count()) << "Unexpected batch count (arr2)!";
+          } else if (i == 1) {
+            EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 1) << "Unexpected segment count (arr2)!";
+          } else {
+            EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 32) << "Segment size is incorrect (arr2)!";
+          }
+        }
+
+        singles += (batch.count() == 1);
+
+        // Check the actual bytes as well
+        bad += count_bad_batch(arr1, batch.first(), batch.last());
+        bad += count_bad_batch(arr2, batch.first(), batch.last());
+        expected = batch.last();
+      }
+    }
+
+    EXPECT_EQ(expected, NumEvents);
+    EXPECT_EQ(bad, 0u);
+    EXPECT_GT(singles, 0u) << "the windows should produce some batches of one step";
+  }
 } // anonymous namespace
