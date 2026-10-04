@@ -55,7 +55,50 @@ namespace {
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
   }
 
+  // Can verify contiguoity using the sequential pattern of randfmt
+  template <class Group>
+  std::size_t count_bad_steps(Group& grp, std::size_t first, std::size_t last) {
+    auto arr = grp.get_multi_data({ first, last });
+
+    const auto* tbl { reinterpret_cast<const void* const*>(arr.data()) };
+    const std::size_t num_segments { grp.num_segments() };
+
+    std::size_t bad { 0 };
+    for (std::size_t s = first; s < last; ++s) {
+      const auto* bytes { static_cast<const std::uint8_t*>(tbl[(s - first) * num_segments]) };
+      if (bytes == nullptr                                      ||
+          bytes[0] != static_cast<std::uint8_t>(s & 0xFF)       ||
+          bytes[1] != static_cast<std::uint8_t>((s + 1) & 0xFF)) {
+        bad++;
+      }
+    }
+
+    return bad;
+  }
+
   class SerialBatches : public ::testing::TestWithParam<BatchParams> {};
+
+  TEST_P(SerialBatches, ContiguousAndComplete) {
+    constexpr std::size_t NumEvents { 100 };
+    SerialRandomDataSource ds;
+    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, NumEvents, GetParam());
+
+    auto grp = ds.get_stream_group("det0");
+    ASSERT_GT(grp.num_segments(), 0u);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    for (auto batch : ds.batches()) {
+      EXPECT_EQ(batch.first, expected) << "batches are contiguous";
+      EXPECT_GE(batch.count(), 1u);
+      EXPECT_LE(batch.count(), GetParam().max_batch_size);
+      bad += count_bad_steps(grp, batch.first, batch.last);
+      expected = batch.last;
+    }
+
+    EXPECT_EQ(expected, NumEvents);
+    EXPECT_EQ(bad, 0u);
+  }
 
   TEST_P(SerialBatches, BatchAxisAlwaysPresent) {
     SerialRandomDataSource ds;
