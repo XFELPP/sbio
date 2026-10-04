@@ -10,13 +10,24 @@
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace {
   using SerialRandomDataSource = sbio::DataSource<
     sbio::SyncPOSIXIO,
     sbio::SerialExecution,
+    sbio::RandomTraits
+  >;
+
+  using ThreadedRandomDataSource = sbio::DataSource<
+    sbio::SyncPOSIXIO,
+    sbio::ThreadedExecution,
     sbio::RandomTraits
   >;
 
@@ -159,4 +170,70 @@ namespace {
                                                                    BatchParams { 7, 7 },
                                                                    BatchParams { 7, 10 },
                                                                    BatchParams { 50, 8 }));
+
+  class ThreadedBatches : public ::testing::TestWithParam<BatchParams> {};
+
+  // Test that threads properly execute - don't mix and match bytes, and each step seen once
+  // - Also test early thread exit
+  TEST_P(ThreadedBatches, EveryStepOnceWithBreak) {
+    constexpr std::size_t NumEvents { 400 };
+    constexpr std::size_t NumThreads { 8 };
+
+    ThreadedRandomDataSource ds;
+    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, NumEvents, GetParam());
+
+    auto grp = ds.get_stream_group("det0");
+    ASSERT_GT(grp.num_segments(), 0u);
+
+    std::atomic<std::size_t> bad { 0 };
+    std::mutex seen_mtx;
+    std::vector<std::size_t> seen;
+    std::vector<std::size_t> abandoned;
+
+    auto worker = [&](std::size_t tid) {
+      std::vector<std::size_t> mine;
+      for (auto batch : ds.batches()) {
+        EXPECT_LE(batch.count(), GetParam().max_batch_size);
+
+        if (tid == 0 && batch.first > 50) {
+          std::lock_guard<std::mutex> lock(seen_mtx);
+          for (std::size_t s = batch.first; s < batch.last; ++s) {
+            abandoned.push_back(s);
+          }
+
+          break; // Leave without fetching this batch
+        }
+
+        bad += count_bad_steps(grp, batch.first, batch.last);
+        for (std::size_t s = batch.first; s < batch.last; ++s) {
+          mine.push_back(s);
+        }
+      }
+
+      std::lock_guard<std::mutex> lock(seen_mtx);
+      seen.insert(seen.end(), mine.begin(), mine.end());
+    };
+
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < NumThreads; ++t) {
+      threads.emplace_back(worker, t);
+    }
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    EXPECT_EQ(bad.load(), 0u) << "steps returned another event's bytes";
+    seen.insert(seen.end(), abandoned.begin(), abandoned.end());
+
+    std::sort(seen.begin(), seen.end());
+    ASSERT_EQ(seen.size(), NumEvents) << "every step handed out exactly once";
+    for (std::size_t i = 0; i < seen.size(); ++i) {
+      ASSERT_EQ(seen[i], i);
+    }
+  }
+
+  INSTANTIATE_TEST_SUITE_P(Sizes, ThreadedBatches, ::testing::Values(BatchParams { 2, 1 },
+                                                                     BatchParams { 7, 3 },
+                                                                     BatchParams { 7, 10 },
+                                                                     BatchParams { 50, 8 }));
 } // anonymous namespace
