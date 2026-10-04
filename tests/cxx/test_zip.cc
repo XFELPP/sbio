@@ -48,11 +48,16 @@ namespace {
   template <class EPolicy>
   using CountingDS = sbio::DataSource<CountingIO, EPolicy, sbio::RandomTraits>;
 
+  struct BatchParams {
+    std::size_t index_batch_size { 10 };
+    std::size_t max_batch_size { 1 };
+  };
+
   template <class DS>
   void setup_datasource(DS& ds,
                         sbio::RandomTraits::IndexingMode mode,
                         std::size_t num_events = 50,
-                        std::size_t batch_size = 10) {
+                        const BatchParams bp = BatchParams{}) {
     sbio::randfmt::DetectorSpec detectors[10];
     std::uint8_t num_detectors { 1 };
 
@@ -68,10 +73,11 @@ namespace {
     params.num_events = num_events;
     params.pattern_type = 1; // Sequential
     params.indexing_mode = sbio::RandomTraits::IndexingMode::IndexBatch;
-    params.indexing_batch_size = batch_size;
+    params.indexing_batch_size = bp.index_batch_size;
 
     sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
     cfg.format_params = params;
+    cfg.max_batch_size = bp.max_batch_size;
 
     ASSERT_TRUE(ds.load_source(cfg, detectors, num_detectors));
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
@@ -99,7 +105,10 @@ namespace {
     std::size_t straight_reads { 0 };
     {
       CountingDS<sbio::SerialExecution> ds;
-      setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexAll, NumEvents, IndexBatch);
+      setup_datasource(ds,
+                       sbio::RandomTraits::IndexingMode::IndexAll,
+                       NumEvents,
+                       { IndexBatch, 1 });
 
       auto grp1 = ds.get_stream_group("det0");
       ASSERT_GT(grp1.num_segments(), 0u);
@@ -130,7 +139,10 @@ namespace {
     }
 
     CountingDS<sbio::SerialExecution> ds;
-    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, NumEvents, IndexBatch);
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { IndexBatch, 1 });
 
     auto grp1 = ds.get_stream_group("det0");
     ASSERT_GT(grp1.num_segments(), 0u);
@@ -177,7 +189,10 @@ namespace {
 
   TEST(ZippedGroups, SerialZippedGroupOfOne) {
     CountingDS<sbio::SerialExecution> ds;
-    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, 30, 7);
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 7, 1 });
 
     auto grp1 = ds.get_stream_group("det0");
     ASSERT_GT(grp1.num_segments(), 0u);
@@ -201,7 +216,10 @@ namespace {
 
   TEST(ZippedGroups, SerialBreakEarly) {
     CountingDS<sbio::SerialExecution> ds;
-    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, 30, 7);
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 7, 1 });
 
     auto grp1 = ds.get_stream_group("det0");
     ASSERT_GT(grp1.num_segments(), 0u);
