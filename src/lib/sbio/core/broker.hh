@@ -406,13 +406,14 @@ namespace sbio {
       m_broker_state = BrokerState::INDEXING;
 
       auto txn { Transaction<roles::Index, ExecutionPolicy, SBStorageType>(m_storage) };
-      auto sv { txn.view() };
 
       IOStatus status { IOStatus::Success };
       if (EPolicy::should_index()) {
         if constexpr (!std::is_void_v<Derived>) {
           status = static_cast<Derived*>(this)->index_stream_impl();
         } else {
+          auto sv { txn.view() };
+
           if constexpr (UsesGenericIndex) {
             status = generic_index(sv);
           } else {

@@ -1,0 +1,418 @@
+#include "sbio/core/datasource.hh"
+#include "sbio/core/iteration.hh"
+#include "sbio/execution/serial.hh"
+#include "sbio/execution/threaded.hh"
+#include "sbio/formats/random/randfmt.hh"
+#include "sbio/formats/random/random_locator.hh"
+#include "sbio/formats/random/random_traits.hh"
+#include "sbio/io/posix.hh"
+
+#include <gtest/gtest.h>
+#include <ncarray/ncarrays.hh>
+#include <ncarray/soarrays.hh>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <thread>
+#include <vector>
+
+namespace {
+  /**
+   * SyncPOSIXIO which counts reads, to check how often the same bytes are fetched.
+   *
+   * Needed this minor wrapper to verify that the zipping process really reduces the
+   * number of IO fetches.
+   */
+  struct CountingIO : public sbio::IOPolicy<CountingIO> {
+    static inline std::atomic<std::size_t> reads { 0 };
+
+    template <typename... Args>
+    sbio::IOStatus connect(Args&&... args) {
+      auto status { m_io.connect(std::forward<Args>(args)...) };
+      m_file_size = m_io.file_size();
+
+      return status;
+    }
+
+    sbio::ReadResult read_impl(std::uint64_t offset,
+                               std::size_t size,
+                               void* dest) const {
+      reads++;
+
+      return m_io.read(offset, size, dest);
+    }
+
+  private:
+    sbio::SyncPOSIXIO m_io;
+  };
+
+  template <class EPolicy>
+  using CountingDS = sbio::DataSource<CountingIO, EPolicy, sbio::RandomTraits>;
+
+  struct BatchParams {
+    std::size_t index_batch_size { 10 };
+    std::size_t max_batch_size { 1 };
+  };
+
+  template <class DS>
+  void setup_datasource(DS& ds,
+                        sbio::RandomTraits::IndexingMode mode,
+                        std::size_t num_events = 50,
+                        const BatchParams bp = BatchParams{}) {
+    sbio::randfmt::DetectorSpec detectors[10];
+    std::uint8_t num_detectors { 1 };
+
+    snprintf(detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
+    snprintf(detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det");
+
+    detectors[0].rank = 2;
+    detectors[0].shape[0] = 32;
+    detectors[0].shape[1] = 32;
+    detectors[0].dtype = ncarray::DType::uint16;
+
+    sbio::RandomTraits::StreamParameters params;
+    params.num_events = num_events;
+    params.pattern_type = 1; // Sequential
+    params.indexing_mode = mode;
+    params.indexing_batch_size = bp.index_batch_size;
+
+    sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
+    cfg.format_params = params;
+    cfg.max_batch_size = bp.max_batch_size;
+
+    ASSERT_TRUE(ds.load_source(cfg, detectors, num_detectors));
+    ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
+  }
+
+  template <class Array>
+  bool bytes_match(const Array& arr, std::size_t step) {
+    const auto* tbl { reinterpret_cast<const void* const*>(arr.data()) };
+    const auto* bytes { static_cast<const std::uint8_t*>(tbl[0]) };
+
+    return bytes != nullptr                                      &&
+           bytes[0] == static_cast<std::uint8_t>(step & 0xFF)    &&
+           bytes[1] == static_cast<std::uint8_t>((step + 1) & 0xFF);
+  }
+
+  // Test two BrokerGroups that use the same StreamBroker
+  // - There should only be 1 fetch per step (the non-zip version will fetch twice, once
+  //   per each BrokerGroup)
+  TEST(ZippedGroups, SharedBrokerFetchedOncePerStep) {
+    constexpr std::size_t NumEvents { 60 };
+    // With IndexAll, this value shouldn't matter -- will index everything
+    constexpr std::size_t IndexBatch { 1000 };
+
+    // Check how many happen without zipping
+    std::size_t straight_reads { 0 };
+    {
+      CountingDS<sbio::SerialExecution> ds;
+      setup_datasource(ds,
+                       sbio::RandomTraits::IndexingMode::IndexAll,
+                       NumEvents,
+                       { IndexBatch, 1 });
+
+      auto grp1 = ds.get_stream_group("det0");
+      ASSERT_GT(grp1.num_segments(), 0u);
+      auto grp2 = ds.get_stream_group("det0");
+      ASSERT_GT(grp2.num_segments(), 0u);
+
+      const std::size_t before { CountingIO::reads.load() };
+      for (auto step : ds.steps()) {
+        auto arr1 = grp1.get_data(step); // Can use same step for both groups
+        auto arr2 = grp2.get_data(step);
+
+        for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+          if (i == 0) {
+            EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 1) << "Unexpected segment count (arr2)!";
+          } else {
+            EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 32) << "Segment size is incorrect (arr2)!";
+          }
+        }
+
+        // Check the actual bytes as well
+        EXPECT_TRUE(bytes_match(arr1, step));
+        EXPECT_TRUE(bytes_match(arr2, step));
+      }
+
+      straight_reads = CountingIO::reads.load() - before;
+    }
+
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { IndexBatch, 1 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    // Now check how many fetches when zipped
+    const std::size_t before { CountingIO::reads.load() };
+    std::size_t expected { 0 };
+    {
+      auto zipped = sbio::zip(ds, grp1, grp2);
+      EXPECT_EQ(zipped.num_fetches(), 1u);
+
+      for (auto step : zipped) {
+        EXPECT_EQ(step.status(), sbio::IOStatus::Success);
+        EXPECT_EQ(static_cast<std::size_t>(step), expected);
+
+        auto arr1 = step.get(grp1);
+        auto arr2 = step.get(grp2);
+
+        for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+          if (i == 0) {
+            EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 1) << "Unexpected segment count (arr2)!";
+          } else {
+            EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 32) << "Segment size is incorrect (arr2)!";
+          }
+        }
+
+        EXPECT_TRUE(bytes_match(arr1, step));
+        EXPECT_TRUE(bytes_match(arr2, step));
+
+        expected++;
+      }
+    }
+    const std::size_t zip_reads { CountingIO::reads.load() - before };
+
+    EXPECT_EQ(expected, NumEvents);
+    // Both loops make the same reindexing reads
+    // The straight loop reads every step's data a second time for grp2.
+    EXPECT_EQ(straight_reads - zip_reads, NumEvents) << "zip reads each shared broker once per step";
+  }
+
+  TEST(ZippedGroups, SerialZippedGroupOfOne) {
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 7, 1 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+
+    std::size_t count { 0 };
+    for (auto step : sbio::zip(ds, grp1)) {
+      auto arr1 = step.get(grp1);
+
+      for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+        if (i == 0) {
+          EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count!";
+        } else {
+          EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect!";
+        }
+      }
+
+      // Check the actual bytes match as well
+      EXPECT_TRUE(bytes_match(arr1, step));
+    }
+  }
+
+  TEST(ZippedGroups, SerialBreakEarly) {
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 7, 1 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+
+    std::size_t count { 0 };
+    for (auto step : sbio::zip(ds, grp1)) {
+      auto arr1 = step.get(grp1);
+
+      for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+        if (i == 0) {
+          EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count!";
+        } else {
+          EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect!";
+        }
+      }
+
+      // Check the actual bytes match as well
+      EXPECT_TRUE(bytes_match(arr1, step));
+      if (count == 5) {
+        break;
+      }
+      count++;
+    }
+    EXPECT_EQ(count, 5u);
+  }
+
+  template <class Array>
+  std::size_t count_bad_batch(const Array& arr, std::size_t first, std::size_t last) {
+    const auto* tbl { reinterpret_cast<const void* const*>(arr.data()) };
+    std::size_t bad { 0 };
+
+    for (std::size_t s = first; s < last; ++s) {
+      const auto* bytes { static_cast<const std::uint8_t*>(tbl[s - first]) }; // 1 segment
+
+      if (bytes == nullptr                                     ||
+          bytes[0] != static_cast<std::uint8_t>(s & 0xFF)      ||
+          bytes[1] != static_cast<std::uint8_t>((s + 1) & 0xFF)) {
+        bad++;
+      }
+    }
+
+    return bad;
+  }
+
+  // BrokerGroups that use the same StreamBroker
+  // - There should only be 1 fetch per batch (the non-zip version will fetch twice, once
+  //   per each BrokerGroup)
+  TEST(ZippedGroups, BatchesSharedBrokerFetchedOnce) {
+    constexpr std::size_t NumEvents { 100 };
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { 7, 3 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    std::size_t singles { 0 };
+    {
+      auto zipped = sbio::zip_batches(ds, grp1, grp2);
+      EXPECT_EQ(zipped.num_fetches(), 1u);
+
+      for (auto batch : zipped) {
+        EXPECT_EQ(batch.status(), sbio::IOStatus::Success);
+        EXPECT_EQ(batch.first(), expected);
+        EXPECT_LE(batch.count(), 3u);
+
+        auto arr1 = batch.get(grp1);
+        auto arr2 = batch.get(grp2);
+
+        for (ssize_t i = 0; i < arr1.ndim(); ++i) {
+          if (i == 0) {
+            EXPECT_EQ(arr1.shape(i), batch.count()) << "Unexpected batch count (arr1)!";
+            EXPECT_EQ(arr2.shape(i), batch.count()) << "Unexpected batch count (arr2)!";
+          } else if (i == 1) {
+            EXPECT_EQ(arr1.shape(i), 1) << "Unexpected segment count (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 1) << "Unexpected segment count (arr2)!";
+          } else {
+            EXPECT_EQ(arr1.shape(i), 32) << "Segment size is incorrect (arr1)!";
+            EXPECT_EQ(arr2.shape(i), 32) << "Segment size is incorrect (arr2)!";
+          }
+        }
+
+        singles += (batch.count() == 1);
+
+        // Check the actual bytes as well
+        bad += count_bad_batch(arr1, batch.first(), batch.last());
+        bad += count_bad_batch(arr2, batch.first(), batch.last());
+        expected = batch.last();
+      }
+    }
+
+    EXPECT_EQ(expected, NumEvents);
+    EXPECT_EQ(bad, 0u);
+    EXPECT_GT(singles, 0u) << "the windows should produce some batches of one step";
+  }
+
+  TEST(ZippedGroups, ThreadedBatchesEveryStepOnce) {
+    constexpr std::size_t NumEvents { 400 };
+    constexpr std::size_t NumThreads { 8 };
+
+    CountingDS<sbio::ThreadedExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { 7, 3 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    std::atomic<std::size_t> bad { 0 };
+    std::atomic<std::size_t> total { 0 };
+
+    auto worker = [&]() {
+      for (auto batch : sbio::zip_batches(ds, grp1, grp2)) {
+        if (batch.status() != sbio::IOStatus::Success) {
+          bad++;
+        }
+
+        bad += count_bad_batch(batch.get(grp1), batch.first(), batch.last());
+        bad += count_bad_batch(batch.get(grp2), batch.first(), batch.last());
+        total += batch.count();
+      }
+    };
+
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < NumThreads; ++t) {
+      threads.emplace_back(worker);
+    }
+
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    EXPECT_EQ(bad.load(), 0u);
+    EXPECT_EQ(total.load(), NumEvents);
+  }
+
+  class ThreadedZip : public ::testing::TestWithParam<std::size_t> {};
+
+  TEST_P(ThreadedZip, EveryStepOnceWithBreak) {
+    constexpr std::size_t NumEvents { 400 };
+    constexpr std::size_t NumThreads { 8 };
+
+    CountingDS<sbio::ThreadedExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { GetParam(), 1 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    std::atomic<std::size_t> bad { 0 };
+    std::atomic<std::size_t> total { 0 };
+
+    auto worker = [&](std::size_t tid) {
+      for (auto step : sbio::zip(ds, grp1, grp2)) {
+        if (step.status() != sbio::IOStatus::Success ||
+            !bytes_match(step.get(grp1), step)         ||
+            !bytes_match(step.get(grp2), step)) {
+          bad++;
+        }
+
+        total++;
+        if (tid == 0) {
+          break;
+        }
+      }
+    };
+
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < NumThreads; ++t) {
+      threads.emplace_back(worker, t);
+    }
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    EXPECT_EQ(bad.load(), 0u);
+    EXPECT_EQ(total.load(), NumEvents);
+  }
+
+  INSTANTIATE_TEST_SUITE_P(BatchSizes, ThreadedZip, ::testing::Values(2, 3, 7, 50));
+} // anonymous namespace

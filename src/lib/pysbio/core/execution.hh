@@ -69,6 +69,8 @@ namespace pysbio {
   public:
     using Config = typename BasePolicy::Config;
 
+    using IterationState = typename BasePolicy::IterationState;
+
     static constexpr auto ParallelSupport = BasePolicy::ParallelSupport;
 
     template <class T>
@@ -203,7 +205,8 @@ namespace pysbio {
     }
 
     template <class FTraits, class IndexTrigger>
-    static typename FTraits::StepIdxType next_impl(typename FTraits::StepIdxType& max_capacity,
+    static typename FTraits::StepIdxType next_impl(IterationState& state,
+                                                   typename FTraits::StepIdxType& max_capacity,
                                                    IndexTrigger&& trigger) {
       {
         py::gil_scoped_acquire acquire;
@@ -218,7 +221,25 @@ namespace pysbio {
         }
       }
 
-      return BasePolicy::template next<FTraits>(max_capacity, std::forward<IndexTrigger>(trigger));
+      return BasePolicy::template next<FTraits>(state,
+                                                max_capacity,
+                                                std::forward<IndexTrigger>(trigger));
+    }
+
+    template <class FTraits, class IndexTrigger>
+    static sbio::StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      return BasePolicy::template next_batch<FTraits>(state,
+                                                      batch_size,
+                                                      max_capacity,
+                                                      std::forward<IndexTrigger>(trigger));
+    }
+
+    static void end_iteration_impl(IterationState& state) {
+      BasePolicy::end_iteration(state);
     }
 
     template <class FTraits, class FetchCBType, class GetCBType>

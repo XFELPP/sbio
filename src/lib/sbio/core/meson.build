@@ -5,6 +5,7 @@ installed_core_headers = [
     'datasource.hh',
     'execution.hh',
     'io.hh',
+    'iteration.hh',
     'locator.hh',
     'metadata.hh',
     'request.hh',

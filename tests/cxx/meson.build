@@ -14,10 +14,15 @@ if build_core_opt and build_tests_opt
     # endif
 
     sbiofmt_test_sources = [
-        'test_random_patterns.cc',
-        'test_indexing_modes.cc',
+        'test_batches.cc',
         'test_broker_group.cc',
         'test_execution_policies.cc',
+        'test_indexing_modes.cc',
+        'test_iteration.cc',
+        'test_random_patterns.cc',
+        'test_source_set.cc',
+        'test_two_ds.cc',
+        'test_zip.cc',
     ]
     test_sbiofmt = executable(
         'test_sbiofmt',
@@ -28,5 +33,4 @@ if build_core_opt and build_tests_opt
         include_directories: sbio_headers,
     )
     test('Running test suite using sbio rndfmt.', test_sbiofmt, verbose: true)
-
 endif # build_core_opt and build_tests_opt

@@ -101,6 +101,15 @@ namespace sbio {
      */
     hd_std::array<hd_std::uint32_t, SBIO_MAX_NDIM> segment_shape {};
     ncarray::DType dtype { ncarray::DType::uint8 };
+    /**
+     * Whether the result has a batch axis.
+     *
+     * Batched reads (e.g get_multi_data) always return a batch axis, even if it is
+     * of dimension 1. This is because the choice to use the batch API was explicit,
+     * and a "squeezed" result can be retrieved by just using the non-batch API when
+     * dealing with batch sizes of 1.
+     */
+    bool batched { false };
 
     SBIO_HD inline ncarray::SOViewFor<MemTag> to_array() const {
       hd_std::uint16_t composite_rank { static_cast<hd_std::uint16_t>(segment_rank + 1) };
@@ -111,7 +120,7 @@ namespace sbio {
 
       // Set composite axis metadata (the pointer table axes)
       ssize_t first_data { 1 };
-      if (batch_count > 1) {
+      if (batched) {
         first_data = 2;
         composite_rank += 1;
 
@@ -134,7 +143,7 @@ namespace sbio {
 
       ssize_t cur { static_cast<ssize_t>(ncarray::itemsize(dtype)) };
       for (ssize_t i = composite_rank - 1; i >= first_data; --i) {
-        meta_shape[i] = segment_shape[i - 1];
+        meta_shape[i] = segment_shape[i - first_data];
         meta_strides[i] = cur;
         meta_suboffsets[i] = -1;
         cur *= meta_shape[i];

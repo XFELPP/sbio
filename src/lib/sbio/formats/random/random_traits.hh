@@ -150,7 +150,8 @@ namespace sbio {
       AllocationRequest<RandomTraits> request;
 
       request.size_requests[0] = cfg.format_params.event_size;
-      request.size_requests[1] = cfg.format_params.event_size;
+      request.size_requests[1] =
+        cfg.format_params.event_size * (cfg.max_batch_size > 0 ? cfg.max_batch_size : 1);
 
       hd_std::size_t rows { 1 };
       if (cfg.format_params.indexing_mode == IndexingMode::IndexAll) {
