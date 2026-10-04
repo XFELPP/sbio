@@ -38,7 +38,7 @@ namespace {
     sbio::RandomTraits::StreamParameters params;
     params.num_events = num_events;
     params.pattern_type = 1; // Sequential
-    params.indexing_mode = sbio::RandomTraits::IndexingMode::IndexBatch;
+    params.indexing_mode = mode;
     params.indexing_batch_size = batch_size;
 
     sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
