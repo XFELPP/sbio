@@ -53,6 +53,9 @@
 namespace fs = std::filesystem;
 
 namespace sbio {
+  template <class... Sources>
+  class SourceSet;
+
   /**
    * The highest-level abstraction for defining the set of StreamBrokers that will be used.
    *
@@ -139,6 +142,13 @@ namespace sbio {
      * different data format's may use different underlying types.
      */
     using StepIdxType = typename FTraits::StepIdxType;
+    /**
+     * A SourceSet drives the reindexing of the DataSources it iterates.
+     *
+     * Reindexing is private - it was easiest to let the SourceSet be a friend.
+     */
+    template <class... Sources>
+    friend class SourceSet;
 
     DataSource() = default;
 

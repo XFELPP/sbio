@@ -586,6 +586,329 @@ namespace sbio {
                                                       const Groups&... groups) {
     return ZippedBatchRange<DS, Groups...>(ds, groups...);
   }
+
+  ///--- SourceSet Implementations (Zipping multiple DataSources) ---///
+
+  /**
+   * A set of DataSources iterated together, in lockstep by step index.
+   *
+   * The SourceSet allows grouping multiple DataSources, even those that are viewing
+   * different underlying data. Iteration over a SourceSet means iterating over each
+   * component DataSource simultaneously - ie.e when a SoruceSet returns a step `n`,
+   * it corresponds to step `n` for each DataSource. No remapping/alignment occurs.
+   *
+   * @note If using a SourceSet for iteration, the individual DataSources must NOT be
+   *       iterated independently!
+   *
+   * @note As the DataSources are iterated together without alignment the capacity is set
+   *       to the minimum capacity of all the component DataSources. If reindexing can
+   *       occur, though, only the DataSources who reached the capacity are reindexed to
+   *       avoid overwriting the step offset data.
+   *
+   * @note The SourceSet is restricted to DataSources with the same EPolicy and StepIdxType.
+   *
+   * @note The SourceSet must be constructed from DataSources after the metadata
+   *       discovery process.
+   *
+   * The SourceSet holds its own EPolicy IterationState and therefore behaves like an
+   * independent DataSource.
+   *
+   * Each parallel executing unit (e.g. a thread or rank, etc.) iterating will setup
+   * its own range-based for loop over the zipped set. First create the set, then zip
+   * the BrokerGroups of intereset.
+   *
+   * @code{.cpp}
+   *
+   * auto set = source_set(ds_a, ds_b);
+   * for (auto step : zip(set, bg1, bg2)) {
+   *   auto hdl1 = step.get(bg1);
+   *   auto hdl2 = step.get(bg2);
+   * }
+   *
+   * @endcode
+   *
+   * @note Early exit from a loop invokes the EPolicy end iteration implementation, the
+   *       same as using `DataSource::next()` (or `steps()`, etc.)
+   *
+   * @tparam Sources The DataSource types. They must use the same EPolicy and StepIdxType.
+   */
+  template <class... Sources>
+  class SourceSet {
+    static_assert(sizeof...(Sources) > 0, "A SourceSet needs at least one DataSource.");
+
+    using First = hd_std::remove_const_t<hd_std::tuple_element_t<0, hd_std::tuple<Sources...>>>;
+
+  public:
+    using DataFormat = typename First::DataFormat;
+    using ExecutionPolicy = typename First::ExecutionPolicy;
+    using StepIdxType = typename First::StepIdxType;
+
+    static_assert((hd_std::is_same_v<typename hd_std::remove_const_t<Sources>::ExecutionPolicy,
+                                     ExecutionPolicy> && ...),
+                  "The DataSources of a SourceSet must use the same EPolicy.");
+    static_assert((hd_std::is_same_v<typename hd_std::remove_const_t<Sources>::StepIdxType,
+                                     StepIdxType> && ...),
+                  "The DataSources of a SourceSet must use the same StepIdxType.");
+
+    /**
+     * Construct a set over DataSources which have already discovered their metadata.
+     */
+    SBIO_HD explicit SourceSet(Sources&... sources)
+      : m_sources(&sources...)
+    {
+      m_capacity = min_capacity();
+    }
+
+    SourceSet(const SourceSet&) = delete;
+    SourceSet& operator=(const SourceSet&) = delete;
+
+    /**
+     * Request the next index for a step to read data for, common to all DataSources.
+     *
+     * @returns The next step index to fetch and query data for, or the ExhaustedSentinel if
+     *          no more data is available.
+     */
+    SBIO_HD StepIdxType next() const {
+      auto trigger = [&] () { return reindex_trigger(); };
+
+      return ExecutionPolicy::template next<DataFormat>(m_iteration_state,
+                                                        m_capacity,
+                                                        trigger);
+    }
+
+    /**
+     * Request the next contiguous batch of indices for steps, common to all DataSources.
+     *
+     * @note A batch is providfed with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capacity.
+     *
+     * @note If `batch_size` is left to 0, then the default size will be the smallest
+     *       `max_batch_size` of the component DataSources in the set.
+     *
+     * @param[in] batch_size The maximum size of the batch of step indcies to read.
+     * @returns The next back of step indices [first, last) to fetch data for. The
+     *          Exhausted batch is returned as first and last equal to ExhaustedSentinel
+     */
+    SBIO_HD StepBatch<StepIdxType> next_batch(hd_std::size_t batch_size = 0) const {
+      if (batch_size == 0) {
+        batch_size = min_batch_size();
+      }
+
+      auto trigger = [&] () { return reindex_trigger(); };
+
+      return ExecutionPolicy::template next_batch<DataFormat>(m_iteration_state,
+                                                              batch_size,
+                                                              m_capacity,
+                                                              trigger);
+    }
+
+    /**
+     * An iterator implementation to allow generating step indices from the set.
+     *
+     * @tparam Set The SourceSet to iterate over (const/non-const etc.)
+     * @tparam Batched Whether the iterator generates batches of steps.
+     */
+    template <class Set, bool Batched>
+    class IteratorImpl {
+    public:
+      using iterator_category = hd_std::input_iterator_tag;
+      using difference_type = hd_std::ptrdiff_t;
+      using value_type = hd_std::conditional_t<Batched, StepBatch<StepIdxType>, StepIdxType>;
+      using pointer = void;
+      using reference = value_type;
+
+      SBIO_HD IteratorImpl(Set& set, value_type value, hd_std::size_t batch_size = 0)
+        : m_set(set)
+        , m_value(value)
+        , m_batch_size(batch_size)
+      {}
+
+      SBIO_HD reference operator*() const { return m_value; }
+
+      SBIO_HD IteratorImpl& operator++() {
+        if constexpr (Batched) {
+          m_value = m_set.next_batch(m_batch_size);
+        } else {
+          m_value = m_set.next();
+        }
+        return *this;
+      }
+
+      SBIO_HD void operator++(int) { ++(*this); }
+
+      SBIO_HD friend bool operator==(const IteratorImpl& a, const IteratorImpl& b) {
+        if constexpr (Batched) {
+          return a.m_value.first == b.m_value.first;
+        } else {
+          return a.m_value == b.m_value;
+        }
+      }
+
+      SBIO_HD friend bool operator!=(const IteratorImpl& a, const IteratorImpl& b) {
+        return !(a == b);
+      }
+
+    private:
+      Set& m_set;
+      value_type m_value;
+      hd_std::size_t m_batch_size;
+    };
+
+    using Iterator = IteratorImpl<SourceSet, false>;
+    using ConstIterator = IteratorImpl<const SourceSet, false>;
+
+    using BatchIterator = IteratorImpl<SourceSet, true>;
+    using ConstBatchIterator = IteratorImpl<const SourceSet, true>;
+
+    /**
+     * A range over the steps (or batches) of the set, for the calling unit.
+     *
+     * Leaving the loop, by exhaustion or by `break`, ends the unit's iteration
+     *with the Execution policy, as for a DataSource.
+     *
+     * @tparam Set The SourceSet to iterate over (const/non-const etc.)
+     * @tparam Batched Whether the range is over batches of steps.
+     */
+    template <class Set, bool Batched>
+    class RangeImpl {
+    public:
+      using It = IteratorImpl<Set, Batched>;
+
+      SBIO_HD RangeImpl(Set& set, hd_std::size_t batch_size = 0)
+        : m_set(set)
+        , m_batch_size(batch_size)
+      {}
+
+      SBIO_HD ~RangeImpl() { ExecutionPolicy::end_iteration(m_set.m_iteration_state); }
+
+      RangeImpl(const RangeImpl&) = delete;
+      RangeImpl& operator=(const RangeImpl&) = delete;
+
+      SBIO_HD It begin() const {
+        if constexpr (Batched) {
+          return It(m_set, m_set.next_batch(m_batch_size), m_batch_size);
+        } else {
+          return It(m_set, m_set.next());
+        }
+      }
+
+      SBIO_HD It end() const {
+        if constexpr (Batched) {
+          return It(m_set,
+                    StepBatch<StepIdxType> { DataFormat::ExhaustedSentinel, DataFormat::ExhaustedSentinel },
+                    m_batch_size);
+        } else {
+          return It(m_set, DataFormat::ExhaustedSentinel);
+        }
+      }
+
+      SBIO_HD It cbegin() const { return begin(); }
+      SBIO_HD It cend() const { return end(); }
+
+    private:
+      Set& m_set;
+      hd_std::size_t m_batch_size;
+    };
+
+    using StepRange = RangeImpl<SourceSet, false>;
+    using ConstStepRange = RangeImpl<const SourceSet, false>;
+
+    using BatchRange = RangeImpl<SourceSet, true>;
+    using ConstBatchRange = RangeImpl<const SourceSet, true>;
+
+    /**
+     * Return a range over the common steps of the set for the calling unit.
+     *
+     * @returns A range to iterate over in a range-based for loop.
+     */
+    SBIO_HD StepRange steps() { return StepRange(*this); }
+    SBIO_HD ConstStepRange steps() const { return ConstStepRange(*this); }
+    SBIO_HD ConstStepRange csteps() const { return ConstStepRange(*this); }
+
+    /**
+     * Return a range over contiguous batches of steps, common to the DataSources.
+     *
+     * @param[in] batch_size The maximum number of steps per batch. The default is the
+     *            smallest configured `max_batch_size`.
+     * @returns A range to iterate over in a range-based for loop.
+     */
+    SBIO_HD BatchRange batches(hd_std::size_t batch_size = 0) {
+      return BatchRange(*this, batch_size);
+    }
+    SBIO_HD ConstBatchRange batches(hd_std::size_t batch_size = 0) const {
+      return ConstBatchRange(*this, batch_size);
+    }
+    SBIO_HD ConstBatchRange cbatches(hd_std::size_t batch_size = 0) const {
+      return BatchRange(*this, batch_size);
+    }
+
+  private:
+    /**
+     * Reindex the DataSources which reached the common capacity.
+     *
+     * @returns Whether more common steps are available (false once any is exhausted).
+     */
+    SBIO_HD bool reindex_trigger() const {
+      bool more { true };
+
+      auto reindex = [&](auto* source) {
+        if (static_cast<StepIdxType>(source->m_steps_capacity) <= m_capacity) {
+          more = source->reindex_trigger() && more;
+        }
+      };
+
+      hd_std::apply([&](auto*... sources) { (reindex(sources), ...); }, m_sources);
+
+      m_capacity = min_capacity();
+
+      return more;
+    }
+
+    SBIO_HD StepIdxType min_capacity() const {
+      StepIdxType capacity {
+        static_cast<StepIdxType>(hd_std::get<0>(m_sources)->m_steps_capacity)
+      };
+
+      auto take_min = [&](auto* source) {
+        const auto c { static_cast<StepIdxType>(source->m_steps_capacity) };
+        capacity = (c < capacity) ? c : capacity;
+      };
+
+      hd_std::apply([&](auto*... sources) { (take_min(sources), ...); }, m_sources);
+
+      return capacity;
+    }
+
+    SBIO_HD hd_std::size_t min_batch_size() const {
+      hd_std::size_t size {
+        hd_std::get<0>(m_sources)->data_stream(0).config().max_batch_size
+      };
+
+      auto take_min = [&](auto* source) {
+        const hd_std::size_t s { source->data_stream(0).config().max_batch_size };
+        size = (s < size) ? s : size;
+      };
+
+      hd_std::apply([&](auto*... sources) { (take_min(sources), ...); }, m_sources);
+
+      return size;
+    }
+
+    hd_std::tuple<Sources*...> m_sources;
+    mutable typename ExecutionPolicy::IterationState m_iteration_state {};
+    mutable StepIdxType m_capacity { 0 };
+  };
+
+  /**
+   * Create a SourceSet to iterate several DataSources together, in lockstep.
+   *
+   * @param[in] sources The DataSources (after metadata discovery).
+   * @returns The SourceSet.
+   */
+  template <class... Sources>
+  SBIO_HD SourceSet<Sources...> source_set(Sources&... sources) {
+    return SourceSet<Sources...>(sources...);
+  }
 } // namespace sbio
 
 #endif // SBIO_CORE_ITERATION_HH
