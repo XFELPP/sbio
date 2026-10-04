@@ -711,7 +711,7 @@ namespace sbio {
             ref_res.rank = res.rank;
             // TODO: Consider ways to avoid copy....
             for (std::uint16_t j = 0; j < res.rank - 1; ++j) {
-              ref_res.shape[j + 1] = res.shape[j];
+              ref_res.shape[j] = res.shape[j];
             }
             ref_res.dtype = res.dtype;
           }
@@ -795,7 +795,7 @@ namespace sbio {
             ref_res.rank = res.rank;
             // TODO: Consider ways to avoid copy....
             for (std::uint16_t j = 0; j < res.rank; ++j) {
-              ref_res.shape[j + 1] = res.shape[j];
+              ref_res.shape[j] = res.shape[j];
             }
             ref_res.dtype = res.dtype;
           }
@@ -829,6 +829,69 @@ namespace sbio {
       return composite.to_array();
     }
 
+    /**
+     * Resolve data for a contiguous batch of steps [first, last) from the already
+     * fetched buffers, without any IO.
+     *
+     * This is the data resolution half of `get_multi_data`. The batch's data must
+     * already be in the StreamBrokers' buffers, e.g. fetched with `fetch_steps_for`
+     * (directly or via a zipped iteration over batches). The result always has a batch
+     * axis.
+     *
+     * @tparam Args... The variadic types for arguments to pass to the DataRequest
+     *         constructor. This set of arguments depends on the FormatTraits request
+     *         constructors (of which, there are possibly multiple).
+     * @param[in] first The first step of the (already fetched) batch.
+     * @param[in] last One past the last step of the batch.
+     * @param[in] args The arguments for the DataRequest constructor.
+     * @returns array The requested data as an SOArrayView or SODevArrayView
+     *          depending on whether MemTag is HostTag or DevTag, respectively.
+     */
+    template <typename... Args>
+    inline ncarray::SOViewFor<MemTag> resolve_multi_data(const StepIdxType& first,
+                                                         const StepIdxType& last,
+                                                         Args&&... args) const {
+      DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
+
+      const std::size_t count { (last > first) ? static_cast<std::size_t>(last - first) : 1 };
+
+      DataResult ref_res;
+
+      auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
+      const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
+
+      if constexpr (FTraits::PartitioningStrategy != StreamPartitioningStrategy::Chronological) {
+        for (std::size_t cnt = 0; cnt < count; ++cnt) {
+          for (std::size_t i = 0; i < this->num_segments(); ++i) {
+            const auto& seg { m_topology.segment(i) };
+            auto res = get_data_for(req, i, cnt);
+
+            ptr_tbl[cnt * this->num_segments() + seg.logical_slot] = const_cast<void*>(res.data);
+            if (i == 0 && cnt == 0) {
+              // This assumes all segments are same shape...
+              ref_res.data = res.data;
+              ref_res.size = res.size;
+              ref_res.rank = res.rank;
+              for (std::uint16_t j = 0; j < res.rank; ++j) {
+                ref_res.shape[j] = res.shape[j];
+              }
+              ref_res.dtype = res.dtype;
+            }
+          }
+        }
+      } // TODO: Setup Chronological (as for get_multi_data)
+
+      CompositeDataResult<MemTag> composite {
+        ptr_tbl,
+        m_topology.num_segments,
+        count,
+        ref_res.rank,
+        ref_res.shape,
+        ref_res.dtype,
+        true
+      };
+      return composite.to_array();
+    }
 
   private:
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
