@@ -703,12 +703,12 @@ namespace sbio {
           // problems if only "segment 2" is provided without 0 and 1, e.g.
           std::size_t ptr_idx { cnt * this->num_segments() + seg.logical_slot };
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
-          if (i == 0) {
+          if (i == 0 && cnt == 0) {
             // This assumes all segments are same shape...
+            // The batch axis is added by the CompositeDataResult
             ref_res.data = res.data;
             ref_res.size = res.size;
-            ref_res.rank = res.rank + 1;
-            ref_res.shape[0] = count;
+            ref_res.rank = res.rank;
             // TODO: Consider ways to avoid copy....
             for (std::uint16_t j = 0; j < res.rank - 1; ++j) {
               ref_res.shape[j + 1] = res.shape[j];
@@ -740,7 +740,8 @@ namespace sbio {
         count,
         ref_res.rank,
         ref_res.shape,
-        ref_res.dtype
+        ref_res.dtype,
+        true
       };
 
       return composite.to_array();
@@ -788,10 +789,10 @@ namespace sbio {
           ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
           if (i == 0 && cnt == 0) {
             // This assumes all segments are same shape...
+            // The batch axis is added by the CompositeDataResult
             ref_res.data = res.data;
             ref_res.size = res.size;
             ref_res.rank = res.rank;
-            ref_res.shape[0] = count;
             // TODO: Consider ways to avoid copy....
             for (std::uint16_t j = 0; j < res.rank; ++j) {
               ref_res.shape[j + 1] = res.shape[j];
@@ -821,7 +822,8 @@ namespace sbio {
         count,
         ref_res.rank,
         ref_res.shape,
-        ref_res.dtype
+        ref_res.dtype,
+        true
       };
 
       return composite.to_array();
