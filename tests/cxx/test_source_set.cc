@@ -72,6 +72,21 @@ namespace {
            bytes[1] == static_cast<std::uint8_t>((step + 1) & 0xFF);
   }
 
+  template <class Array>
+  std::size_t count_bad_batch(const Array& arr, std::size_t first, std::size_t last) {
+    std::size_t bad { 0 };
+    for (std::size_t s = first; s < last - 1; ++s) {
+      // NOTE: The data type is actually uint16, but the randfmt byte pattern is
+      //       still written by byte, so this comparison is accurate
+      std::uint8_t& v1 = arr[{s - first, 0, 0, 0}];
+      std::uint8_t& v2 = arr[{(s + 1) - first, 0, 0, 0}];
+      bad += !(v1 == static_cast<std::uint8_t>(s & 0xFF)      &&
+               v2 == static_cast<std::uint8_t>((s + 1) & 0xFF));
+    }
+
+    return bad;
+  }
+
   // Setup DataSources with different groups, indexing windows, lengths etc.
   // Should end after the minimum capacity, and reindexing should only happen for
   // the DataSource that hit ExhaustedSentinel so the other doesn't get overwritten.
@@ -81,7 +96,7 @@ namespace {
 
     setup_datasource(ds_a,
                      "det_a",
-                     sbio::RandomTraits::IndexingMode::IndexBatch
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
                      60,
                      { 7, 1 });
     setup_datasource(ds_b,
@@ -112,5 +127,113 @@ namespace {
 
     EXPECT_EQ(expected, 45u);
     EXPECT_EQ(bad, 0u);
+  }
+
+  TEST(SourceSet, SerialStepsWithoutZip) {
+    SerialRandomDataSource ds_a;
+    SerialRandomDataSource ds_b;
+    setup_datasource(ds_a,
+                     "det_a",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 4, 1 });
+    setup_datasource(ds_b,
+                     "det_b",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 9, 1 });
+
+    auto grp_a = ds_a.get_stream_group("det_a");
+    auto grp_b = ds_b.get_stream_group("det_b");
+
+    auto set = sbio::source_set(ds_a, ds_b);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    for (auto step : set.steps()) {
+      EXPECT_EQ(step, expected);
+
+      auto arr_a = grp_a.get_data(step);
+      auto arr_b = grp_b.get_data(step);
+
+      bad += !bytes_match(arr_a, step);
+      bad += !bytes_match(arr_b, step);
+
+      expected++;
+    }
+
+    EXPECT_EQ(expected, 30u);
+    EXPECT_EQ(bad, 0u);
+  }
+
+
+  TEST(SourceSet, SerialBatches) {
+    SerialRandomDataSource ds_a;
+    setup_datasource(ds_a,
+                     "det_a",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     60,
+                     { 7, 4 });
+    SerialRandomDataSource ds_b;
+    setup_datasource(ds_b,
+                     "det_b",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     45,
+                     { 5, 3 });
+
+    auto grp_a = ds_a.get_stream_group("det_a");
+    auto grp_b = ds_b.get_stream_group("det_b");
+
+    auto set = sbio::source_set(ds_a, ds_b);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    for (auto batch : sbio::zip_batches(set, grp_a, grp_b)) {
+      EXPECT_EQ(batch.status(), sbio::IOStatus::Success);
+      EXPECT_EQ(batch.first(), expected);
+      EXPECT_LE(batch.count(), 3u) << "smallest max_batch_size of the sources";
+
+      auto arr_a = batch.get(grp_a);
+      auto arr_b = batch.get(grp_b);
+
+      bad += count_bad_batch(arr_a, batch.first(), batch.last());
+      bad += count_bad_batch(arr_b, batch.first(), batch.last());
+
+      expected = batch.last();
+    }
+
+    EXPECT_EQ(expected, 45u);
+    EXPECT_EQ(bad, 0u);
+  }
+
+  TEST(SourceSet, SerialBreakEarly) {
+    SerialRandomDataSource ds_a;
+    setup_datasource(ds_a,
+                     "det_a",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 7, 1 });
+    SerialRandomDataSource ds_b;
+    setup_datasource(ds_b,
+                     "det_b",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     30,
+                     { 5, 1 });
+
+    auto grp_a = ds_a.get_stream_group("det_a");
+    auto grp_b = ds_b.get_stream_group("det_b");
+
+    auto set = sbio::source_set(ds_a, ds_b);
+
+    std::size_t count { 0 };
+    for (auto step : sbio::zip(set, grp_a, grp_b)) {
+      auto arr_a = step.get(grp_a);
+
+      EXPECT_TRUE(bytes_match(arr_a, step));
+      if (++count == 5) {
+        break;
+      }
+    }
+    EXPECT_EQ(count, 5u);
   }
 } // anonymous namespace
