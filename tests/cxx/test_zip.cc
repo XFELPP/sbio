@@ -14,6 +14,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <thread>
+#include <vector>
 
 namespace {
   /**
@@ -72,7 +74,7 @@ namespace {
     sbio::RandomTraits::StreamParameters params;
     params.num_events = num_events;
     params.pattern_type = 1; // Sequential
-    params.indexing_mode = sbio::RandomTraits::IndexingMode::IndexBatch;
+    params.indexing_mode = mode;
     params.indexing_batch_size = bp.index_batch_size;
 
     sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
@@ -321,4 +323,96 @@ namespace {
     EXPECT_EQ(bad, 0u);
     EXPECT_GT(singles, 0u) << "the windows should produce some batches of one step";
   }
+
+  TEST(ZippedGroups, ThreadedBatchesEveryStepOnce) {
+    constexpr std::size_t NumEvents { 400 };
+    constexpr std::size_t NumThreads { 8 };
+
+    CountingDS<sbio::ThreadedExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { 7, 3 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    std::atomic<std::size_t> bad { 0 };
+    std::atomic<std::size_t> total { 0 };
+
+    auto worker = [&]() {
+      for (auto batch : sbio::zip_batches(ds, grp1, grp2)) {
+        if (batch.status() != sbio::IOStatus::Success) {
+          bad++;
+        }
+
+        bad += count_bad_batch(batch.get(grp1), batch.first(), batch.last());
+        bad += count_bad_batch(batch.get(grp2), batch.first(), batch.last());
+        total += batch.count();
+      }
+    };
+
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < NumThreads; ++t) {
+      threads.emplace_back(worker);
+    }
+
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    EXPECT_EQ(bad.load(), 0u);
+    EXPECT_EQ(total.load(), NumEvents);
+  }
+
+  class ThreadedZip : public ::testing::TestWithParam<std::size_t> {};
+
+  TEST_P(ThreadedZip, EveryStepOnceWithBreak) {
+    constexpr std::size_t NumEvents { 400 };
+    constexpr std::size_t NumThreads { 8 };
+
+    CountingDS<sbio::ThreadedExecution> ds;
+    setup_datasource(ds,
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     NumEvents,
+                     { GetParam(), 1 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    ASSERT_GT(grp1.num_segments(), 0u);
+    auto grp2 = ds.get_stream_group("det0");
+    ASSERT_GT(grp2.num_segments(), 0u);
+
+    std::atomic<std::size_t> bad { 0 };
+    std::atomic<std::size_t> total { 0 };
+
+    auto worker = [&](std::size_t tid) {
+      for (auto step : sbio::zip(ds, grp1, grp2)) {
+        if (step.status() != sbio::IOStatus::Success ||
+            !bytes_match(step.get(grp1), step)         ||
+            !bytes_match(step.get(grp2), step)) {
+          bad++;
+        }
+
+        total++;
+        if (tid == 0) {
+          break;
+        }
+      }
+    };
+
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < NumThreads; ++t) {
+      threads.emplace_back(worker, t);
+    }
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    EXPECT_EQ(bad.load(), 0u);
+    EXPECT_EQ(total.load(), NumEvents);
+  }
+
+  INSTANTIATE_TEST_SUITE_P(BatchSizes, ThreadedZip, ::testing::Values(2, 3, 7, 50));
 } // anonymous namespace

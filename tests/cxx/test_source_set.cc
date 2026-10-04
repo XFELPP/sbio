@@ -11,8 +11,13 @@
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace {
   using SerialRandomDataSource = sbio::DataSource<
@@ -236,4 +241,72 @@ namespace {
     }
     EXPECT_EQ(count, 5u);
   }
+
+  class ThreadedSourceSet : public ::testing::TestWithParam<std::size_t> {};
+
+  TEST_P(ThreadedSourceSet, EveryCommonStepOnceWithBreak) {
+    constexpr std::size_t NumThreads { 8 };
+
+    ThreadedRandomDataSource ds_a;
+    setup_datasource(ds_a,
+                     "det_a",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     400,
+                     { GetParam(), 1 });
+
+    ThreadedRandomDataSource ds_b;
+    setup_datasource(ds_b,
+                     "det_b",
+                     sbio::RandomTraits::IndexingMode::IndexBatch,
+                     350,
+                     { GetParam() + 3, 1 });
+
+    auto grp_a = ds_a.get_stream_group("det_a");
+    auto grp_b = ds_b.get_stream_group("det_b");
+
+    auto set = sbio::source_set(ds_a, ds_b);
+
+    std::atomic<std::size_t> bad { 0 };
+    std::mutex seen_mtx;
+    std::vector<std::size_t> seen;
+
+    auto worker = [&](std::size_t tid) {
+      std::vector<std::size_t> mine;
+      for (auto step : sbio::zip(set, grp_a, grp_b)) {
+        auto arr_a = step.get(grp_a);
+        auto arr_b = step.get(grp_b);
+
+        if (step.status() != sbio::IOStatus::Success ||
+            !bytes_match(arr_a, step)        ||
+            !bytes_match(arr_b, step)) {
+          bad++;
+        }
+
+        mine.push_back(step);
+        if (tid == 0) {
+          break;
+        }
+      }
+
+      std::lock_guard<std::mutex> lock(seen_mtx);
+      seen.insert(seen.end(), mine.begin(), mine.end());
+    };
+
+    std::vector<std::thread> threads;
+    for (std::size_t t = 0; t < NumThreads; ++t) {
+      threads.emplace_back(worker, t);
+    }
+    for (auto& th : threads) {
+      th.join();
+    }
+
+    EXPECT_EQ(bad.load(), 0u);
+    std::sort(seen.begin(), seen.end());
+    ASSERT_EQ(seen.size(), 350u) << "every common step exactly once";
+    for (std::size_t i = 0; i < seen.size(); ++i) {
+      ASSERT_EQ(seen[i], i);
+    }
+  }
+
+  INSTANTIATE_TEST_SUITE_P(BatchSizes, ThreadedSourceSet, ::testing::Values(2, 3, 7, 50));
 } // anonymous namespace

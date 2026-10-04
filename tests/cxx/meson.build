@@ -20,7 +20,9 @@ if build_core_opt and build_tests_opt
         'test_indexing_modes.cc',
         'test_iteration.cc',
         'test_random_patterns.cc',
+        'test_source_set.cc',
         'test_two_ds.cc',
+        'test_zip.cc',
     ]
     test_sbiofmt = executable(
         'test_sbiofmt',
