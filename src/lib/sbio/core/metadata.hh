@@ -260,7 +260,7 @@ namespace sbio {
      * @brief The FieldDescriptor describes how to retrieve and interpret a field.
      */
     struct FieldDescriptor {
-      mutable hd_std::uint32_t payload_offset { 0 };   ///< The byte offset into a `DataUnit` to find the field
+      hd_std::uint32_t payload_offset { 0 };           ///< The byte offset into a `DataUnit` to find the field
       ncarray::DType dtype;                            ///< The datatype of the field's data.
       hd_std::uint16_t rank { 0 };                     ///< The number of dimensions of the field's data.
       mutable hd_std::uint32_t shape[SBIO_MAX_NDIM]{}; ///< The full shape of the field's dimensions.
@@ -481,6 +481,20 @@ namespace sbio {
       }
 
       return nullptr;
+    }
+
+    /**
+     * @brief The identifier of a field entry (position in the inventory.)
+     *
+     * The identifier is stable as long as the inventory is not rebuilt.
+     * It is used as a key for per-unit cache lookups (PayloadOffsetCache).
+     * The lookup result must be validated regardless, however.
+     *
+     * @param[in] entry An entry returned by `lookup`
+     * @returns The entry's identifier.
+     */
+    SBIO_HD inline hd_std::uint32_t field_id(const FieldEntry* entry) const {
+      return static_cast<hd_std::uint32_t>(entry - m_fields.data());
     }
 
     /**
