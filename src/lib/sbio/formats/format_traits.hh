@@ -177,9 +177,10 @@ namespace sbio {
   template <typename T>
   concept CanResolveData = requires(void* buf,
                                     const MetadataInventory<T>& inv,
-                                    const typename T::DataRequest& req) {
+                                    const typename T::DataRequest& req,
+                                    PayloadOffsetCache& cache) {
     // Can resolve data into a sbio DataResult
-    { T::resolve_data(buf, inv, req) } -> std::same_as<DataResult>;
+    { T::resolve_data(buf, inv, req, cache) } -> std::same_as<DataResult>;
 
     // Can give the total size of the retrieved data
     { T::get_payload_size(buf) } -> std::convertible_to<std::size_t>;
@@ -189,9 +190,10 @@ namespace sbio {
   concept CanFillBuffer = requires(StorageViewT& storage,
                                    const MetadataInventory<T>& inv,
                                    const typename T::DataRequest& req,
+                                   PayloadOffsetCache& cache,
                                    typename T::DataAccessPtn ptn,
                                    std::size_t batch_idx) {
-    { T::get_data_in_buffer(storage, inv, req, ptn, batch_idx) } -> std::convertible_to<DataResult>;
+    { T::get_data_in_buffer(storage, inv, req, cache, ptn, batch_idx) } -> std::convertible_to<DataResult>;
   };
 
   /**
@@ -276,15 +278,20 @@ namespace sbio {
    *
    *   // CanResolveData && CanFillBuffer
    *   // -------------------------------
+   *   // The cache belongs to the caller parallel unit (likely from SegmentCursor)
+   *   // It stores an offset for where the requested field was found wihtin the buf.
+   *   // It is safe to write/update that offset, without synchronization.
    *   static inline DataResult resolve_data(void* buf,
    *                                         const MetadataInventory<ImplementsFormatTraits>& inv,
-   *                                         const DataRequest& req);
+   *                                         const DataRequest& req,
+   *                                         PayloadOffsetCache& cache);
    *   static std::size_t get_payload_size(void* buf);
    *
    *   template <class StorageViewT>
    *   static DataResult get_data_in_buffer(StorageViewT& storage,
    *                                        const MetadataInventory<ImplementsFormatTraits>& inv,
    *                                        const DataRequest& req,
+   *                                        PayloadOffsetCache& cache,
    *                                        DataAccessPtn ptn,
    *                                        std::size_t batch_idx);
    *  };

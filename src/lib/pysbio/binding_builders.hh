@@ -74,6 +74,7 @@ namespace pysbio::impl {
            &BrokerT::get_data_in_buffer,
            py::arg("data_req"),
            py::arg("access_ptn"),
+           py::arg("cursor"),
            py::arg("batch_idx"));
   }
 
