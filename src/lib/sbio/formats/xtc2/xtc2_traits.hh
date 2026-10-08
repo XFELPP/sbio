@@ -170,7 +170,8 @@ namespace sbio {
 
     SBIO_HD static DataResult resolve_data(void* buffer,
                                            const MetadataInventory<XTC2Traits>& inv,
-                                           const DataRequest& req);
+                                           const DataRequest& req,
+                                           PayloadOffsetCache& cache);
 
     SBIO_HD static AllocationRequest<XTC2Traits> get_allocation_request(GenericStreamConfig<XTC2Traits>& cfg) {
       AllocationRequest<XTC2Traits> request;
@@ -279,6 +280,7 @@ namespace sbio {
     SBIO_HD static DataResult get_data_in_buffer(StorageViewT& storage,
                                                  const MetadataInventory<XTC2Traits>& inv,
                                                  const DataRequest& req,
+                                                 PayloadOffsetCache& cache,
                                                  DataAccessPtn ptn,
                                                  std::size_t batch_idx = 0) {
       DataRequest corrected_req { req };
@@ -341,7 +343,7 @@ namespace sbio {
         }
       }
 
-      DataResult res = XTC2Traits::resolve_data(dg, inv, corrected_req);
+      DataResult res = XTC2Traits::resolve_data(dg, inv, corrected_req, cache);
 
       auto release_ptn_buffer = [&](auto P) {
         res.data =
