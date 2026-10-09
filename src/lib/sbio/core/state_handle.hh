@@ -148,13 +148,81 @@ namespace sbio {
 #endif // _WIN32
   };
 
+  /**
+   * A cache of field offsets within fetched DataUnits.
+   *
+   * The cache is intended to live on the SegmentCursor which can be constructed
+   * in a safe manner per each EPolicy (defined via `SegmentState`). Usage in this
+   * manner allows safe writes to the cache without synchronization.
+   *
+   * @note Field identication within the PayloadOffsetCache is determined by the
+   *       field's position within the MetadataInventory MODULO the slot count.
+   *       In normal usage this is fine, as typically only a few fields are accessed,
+   *       however, it does mean that two fields can evict each other from a cache
+   *       slot. Absence of an offset in the cache simply means that i must be
+   *       recalculated using the correct mechanism for the FormatTraits being read.
+   *
+   * @note Cached offsets are hints as for some data formats, the offset may change
+   *       over time (e.g. if variably sized output is supported). It is the callers
+   *       responsibility to verify the validity of the offset!
+   */
+  struct PayloadOffsetCache {
+    static constexpr hd_std::size_t NumSlots { 8 };
+    static constexpr hd_std::uint32_t NoField { 0xFFFFFFFFu };
+
+    /**
+     * Look up the cached offset of a field.
+     *
+     * @param[in] field_id The field's position in the MetadataInventory.
+     * @param[out] offset The cached offset, if found.
+     * @returns `true` if the field has a cached offset.
+     */
+    SBIO_HD inline bool find(hd_std::uint32_t field_id, hd_std::uint32_t& offset) const {
+      const auto& slot { m_slots[field_id % NumSlots] };
+      if (slot.field_id != field_id) {
+        return false;
+      }
+
+      offset = slot.offset;
+      return true;
+    }
+
+    /**
+     * Cache the offset at which a field was found.
+     *
+     * @param[in] field_id The field's position in the MetadataInventory.
+     * @param[in] offset The offset of the field within the DataUnit.
+     */
+    SBIO_HD inline void store(hd_std::uint32_t field_id, hd_std::uint32_t offset) {
+      m_slots[field_id % NumSlots] = Slot { field_id, offset };
+    }
+
+  private:
+    struct Slot {
+      hd_std::uint32_t field_id { NoField };
+      hd_std::uint32_t offset { 0 };
+    };
+
+    hd_std::array<Slot, NumSlots> m_slots {};
+  };
+
+  /**
+   * The cursor into a data Stream corresponding to a single segment of a BrokerGroup.
+   *
+   * The cursor tracks byte position along a stream and contains cached information
+   * for facilitating faster lookup of data fields with offests into retrieved DataUnits.
+   */
   template <typename FTraits>
   struct SegmentCursor {
     static constexpr hd_std::size_t NumStepKinds { impl::num_step_kinds<FTraits>() };
 
     hd_std::array<hd_std::size_t, NumStepKinds> offset_index {}; ///< Index into offset buffers
-    ByteRegion last_region {}; ///< Last region read (to track size change / re-copy check)
-    hd_std::size_t read_count { 0 };
+    /**
+     * Last region read. This can be used to, e.g., track size change or do re-copy checks.
+     */
+    ByteRegion last_region {};
+    hd_std::size_t read_count { 0 };       ///< Bytes read on the last read
+    PayloadOffsetCache payload_offsets {}; ///< Where this unit last found field offsets
   };
 } // namespace sbio
 

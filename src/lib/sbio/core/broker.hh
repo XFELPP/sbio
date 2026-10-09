@@ -75,7 +75,7 @@ namespace sbio {
     { broker.open_data_stream() } -> std::convertible_to<IOStatus>;
     { broker.discover_metadata() } -> std::convertible_to<IOStatus>;
     { broker.fetch_step(step_idx, ptn, cursor) } -> std::convertible_to<IOStatus>;
-    { broker.get_data_in_buffer(req, ptn) } -> std::convertible_to<DataResult>;
+    { broker.get_data_in_buffer(req, ptn, cursor) } -> std::convertible_to<DataResult>;
     { broker.process() } -> std::convertible_to<IOStatus>;
     { broker.capacity() } -> std::convertible_to<std::size_t>;
     { broker.sync_vars() };
@@ -634,12 +634,18 @@ namespace sbio {
     SBIO_HD inline DataResult
     get_data_in_buffer(const DataRequest& req,
                        const DataAccessPtn ptn,
+                       SegmentCursor<FTraits>& cursor,
                        std::size_t batch_idx = 0) {
       if constexpr (!std::is_void_v<Derived>) {
-        return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn, batch_idx);
+        return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn, cursor, batch_idx);
       } else {
         StorageView<SBStorageType, EPolicy> sv(m_storage);
-        return FTraits::get_data_in_buffer(sv, m_metadata_inv, req, ptn, batch_idx);
+        return FTraits::get_data_in_buffer(sv,
+                                           m_metadata_inv,
+                                           req,
+                                           cursor.payload_offsets,
+                                           ptn,
+                                           batch_idx);
       }
     }
 

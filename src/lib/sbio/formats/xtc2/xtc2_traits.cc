@@ -21,6 +21,7 @@
 
 #include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/formats/xtc2/traversal.hh"
 #include "sbio/util/string.hh"
 
@@ -131,7 +132,8 @@ namespace sbio {
 
   SBIO_HD DataResult XTC2Traits::resolve_data(void* buffer,
                                               const MetadataInventory<XTC2Traits>& inv,
-                                              const XTC2Traits::DataRequest& req) {
+                                              const XTC2Traits::DataRequest& req,
+                                              PayloadOffsetCache& cache) {
     auto* entry { inv.lookup(req) };
     if (entry == nullptr) {
       return {};
@@ -144,9 +146,25 @@ namespace sbio {
     std::uint32_t f_idx { xtc2_meta.field_idx };
     const XTC2::Name* field_schema { &(xtc2_meta.field_name) };
 
+    // Try starting from the last cached offset (if there)
+    // Fallback on the offset recorded during discovery phase
+    // NOTE: Because these offsets and so on were recorded at a transition in
+    // smd (likely, at any rate) they may be incorrect for actual data.
+    const std::uint32_t field_id { inv.field_id(entry) };
     std::uint32_t sd_offset { descr.payload_offset };
-    // NOTE: Because these offsets and so on were recorded at a transition in smd
-    // (likely, at any rate) they may be incorrect for actual data.
+    std::uint32_t cached_offset { 0 };
+    if (cache.find(field_id, cached_offset)) {
+      const auto* dg { reinterpret_cast<XTC2::Dgram*>(buffer) };
+      const std::size_t dgram_size { sizeof(XTC2::Dgram) + dg->xtc.sizeofPayload() };
+      if (cached_offset + sizeof(XTC2::ShapesData) <= dgram_size) {
+        const auto* cached =
+          reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + cached_offset);
+        if (cached->namesId() == nid) {
+          sd_offset = cached_offset;
+        }
+      }
+    }
+
     // Double check here if they match what we want.
     auto* shapes_data =
         reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + sd_offset);
@@ -161,10 +179,8 @@ namespace sbio {
           reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + total_offset);
       } while(shapes_data->namesId() != nid);
 
-      // TODO: This is incorrect -- cannot mutate! Depends on ExecutionPolicy if safe!
-      //       Need solution to handle this...
-      // descr.payload_offset = total_offset;
-      sd_offset = total_offset;
+      // Cache the newly found offset
+      cache.store(field_id, sd_offset);
     }
 
     XTC2::DataResult xtc2_res =

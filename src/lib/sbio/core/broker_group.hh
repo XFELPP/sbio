@@ -311,8 +311,9 @@ namespace sbio {
 
       auto* stream_broker { m_topology.broker_for_segment(segment_no) };
       const auto& access_ptn { m_topology.pattern_for_segment(segment_no) };
+      auto& cursor { m_topology.segment(segment_no).cursor.get() };
 
-      auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
+      auto res = stream_broker->get_data_in_buffer(req, access_ptn, cursor, batch_idx);
 
       if constexpr (requires { callback(res, segment_no); }) {
         callback(res, segment_no);
@@ -329,8 +330,9 @@ namespace sbio {
 
       auto* stream_broker { m_topology.broker_for_segment(segment_no) };
       auto& access_ptn { m_topology.pattern_for_segment(segment_no) };
+      auto& cursor { m_topology.segment(segment_no).cursor.get() };
 
-      auto res = stream_broker->get_data_in_buffer(req, access_ptn, batch_idx);
+      auto res = stream_broker->get_data_in_buffer(req, access_ptn, cursor, batch_idx);
       return res;
     }
 
