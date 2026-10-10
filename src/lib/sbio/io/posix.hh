@@ -43,6 +43,14 @@ namespace sbio {
    */
   struct SBIO_API SyncPOSIXIO : public IOPolicy<SyncPOSIXIO> {
   public:
+    /**
+     * Read into host memory (pageable or pinned) from any thread.
+     *
+     * @note This is the same as the default set.
+     */
+    static constexpr IOCapability Capabilities {
+      IOCapability::ReadToHost | IOCapability::ReadToPinned | IOCapability::ConcurrentReads
+    };
 
     SyncPOSIXIO();
 

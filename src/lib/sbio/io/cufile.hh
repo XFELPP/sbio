@@ -34,6 +34,13 @@ namespace sbio {
    */
   struct SBIO_API cuFileIO : public IOPolicy<cuFileIO> {
   public:
+    /**
+     * Read into registered device memory.
+     *
+     * @note Reads use O_DIRECT so require aligned sizes and offsets.
+     */
+    static constexpr IOCapability Capabilities { IOCapability::ReadToDevice };
+
     cuFileIO();
     ~cuFileIO();
 
