@@ -50,8 +50,6 @@
 #endif
 #endif
 
-namespace fs = std::filesystem;
-
 namespace sbio {
   template <class... Sources>
   class SourceSet;
@@ -448,7 +446,13 @@ namespace sbio {
         : m_ds(ds)
       {}
 
-      ~StepRangeImpl() { EPolicy::end_iteration(m_ds.m_iteration_state); }
+      ~StepRangeImpl() {
+        auto trigger_reindexing = [&]() { return m_ds.reindex_trigger(); };
+
+        EPolicy::template end_iteration<FTraits>(m_ds.m_iteration_state,
+                                                 m_ds.m_steps_capacity,
+                                                 trigger_reindexing);
+      }
 
       StepRangeImpl(const StepRangeImpl&) = delete;
       StepRangeImpl& operator=(const StepRangeImpl&) = delete;
@@ -578,7 +582,13 @@ namespace sbio {
         , m_batch_size(batch_size)
       {}
 
-      ~BatchRangeImpl() { EPolicy::end_iteration(m_ds.m_iteration_state); }
+      ~BatchRangeImpl() {
+        auto trigger_reindexing = [&]() { return m_ds.reindex_trigger(); };
+
+        EPolicy::template end_iteration<FTraits>(m_ds.m_iteration_state,
+                                                 m_ds.m_steps_capacity,
+                                                 trigger_reindexing);
+      }
 
       BatchRangeImpl(const BatchRangeImpl&) = delete;
       BatchRangeImpl& operator=(const BatchRangeImpl&) = delete;
