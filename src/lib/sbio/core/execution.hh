@@ -526,12 +526,35 @@ namespace sbio {
      * of this API, an early exit from an iteration will cause hangs. E.g., useful
      * in thread-based policies.
      *
+     * The capacity and reindex trigger are passed like with the next API. A Policy
+     * may require that an executing unit continue to participate in reindexing even
+     * after the unit itself has exhausted its step indices. However, this is policy
+     * dependent, so it may implement a simpler API using only the state.
+     *
+     * @note An EPolicy may implment `end_iteration_impl<FTraits>(state, max_cap, trigger)`
+     *       OR, alternatively, `end_iteration_impl<FTraits>(state)`, if it implements
+     *       the API at all.
+     *
+     * @tparam FTraits The data format type.
      * @tparam IterState The EPolicy's IterationState type.
+     * @tparam IndexTrigger The type of the reindex callbakc trigger.
      * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] max_capacity The current max capacity.
+     * @param[in] trigger The reindex callback to run.
      */
-    template <class IterState>
-    SBIO_HD static void end_iteration(IterState& state) {
-      if constexpr (requires { Derived::end_iteration_impl(state); }) {
+    template <class FTraits, class IterState, class IndexTrigger>
+    SBIO_HD static void end_iteration(IterState& state,
+                                      typename FTraits::StepIdxType& max_capacity,
+                                      IndexTrigger&& trigger) {
+      if constexpr (requires {
+          Derived::template end_iteration_impl<FTraits>(state,
+                                                        max_capacity,
+                                                        hd_std::forward<IndexTrigger>(trigger));
+        }) {
+        Derived::template end_iteration_impl<FTraits>(state,
+                                                      max_capacity,
+                                                      hd_std::forward<IndexTrigger>(trigger));
+      } else if constexpr (requires { Derived::end_iteration_impl(state); }) {
         Derived::end_iteration_impl(state);
       }
     }

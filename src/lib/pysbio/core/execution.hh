@@ -238,8 +238,13 @@ namespace pysbio {
                                                       std::forward<IndexTrigger>(trigger));
     }
 
-    static void end_iteration_impl(IterationState& state) {
-      BasePolicy::end_iteration(state);
+    template <class FTraits, class IndexTrigger>
+    static void end_iteration_impl(IterationState& state,
+                                   typename FTraits::StepIdxType& max_capacity,
+                                   IndexTrigger&& trigger) {
+      BasePolicy::template end_iteration<FTraits>(state,
+                                                  max_capacity,
+                                                  std::forward<IndexTrigger>(trigger));
     }
 
     template <class FTraits, class FetchCBType, class GetCBType>

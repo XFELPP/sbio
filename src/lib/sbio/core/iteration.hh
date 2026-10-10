@@ -779,7 +779,12 @@ namespace sbio {
         , m_batch_size(batch_size)
       {}
 
-      SBIO_HD ~RangeImpl() { ExecutionPolicy::end_iteration(m_set.m_iteration_state); }
+      SBIO_HD ~RangeImpl() {
+        auto trigger_reindexing = [&]() { return m_set.reindex_trigger(); };
+        ExecutionPolicy::template end_iteration<DataFormat>(m_set.m_iteration_state,
+                                                            m_set.m_capacity,
+                                                            trigger_reindexing);
+      }
 
       RangeImpl(const RangeImpl&) = delete;
       RangeImpl& operator=(const RangeImpl&) = delete;
