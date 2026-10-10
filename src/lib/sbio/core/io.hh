@@ -98,6 +98,67 @@ namespace sbio {
     return { (n == want) ? IOStatus::Success : IOStatus::TruncatedRead, n };
   }
 
+  /**
+   * Feature and capability flags for what an IO policy can do.
+   *
+   * IO implementations are composed (via template) with various Execution policies
+   * completely freely; however, not all IOPolicy implementations have the same
+   * capabilities. The IOPolicy, therefore, states the capabilities it provides/supports
+   * using feature flags that can be queried at compile time.
+   */
+  enum class IOCapability : hd_std::uint32_t {
+    None            =       0,
+    ReadToHost      = 1u << 0, ///< Can read into (pageable) host memory
+    ReadToPinned    = 1u << 1, ///< Can read into pinned (page-locked) host memory
+    ReadToDevice    = 1u << 2, ///< Can read into device (GPU) memory
+    ConcurrentReads = 1u << 3, ///< One Stream can be read by multiple threads at once
+    DeviceCallable  = 1u << 4, ///< `read` APIs can be called directly from device (GPU) code
+  };
+
+  SBIO_HD constexpr IOCapability operator|(IOCapability cap_a, IOCapability cap_b) {
+    return static_cast<IOCapability>(static_cast<hd_std::uint32_t>(cap_a) |
+                                     static_cast<hd_std::uint32_t>(cap_b));
+  }
+
+  SBIO_HD constexpr IOCapability operator&(IOCapability cap_a, IOCapability cap_b) {
+    return static_cast<IOCapability>(static_cast<hd_std::uint32_t>(cap_a) &
+                                     static_cast<hd_std::uint32_t>(cap_b));
+  }
+
+  /**
+   * Check if the set of capabilities matches some required set.
+   */
+  SBIO_HD constexpr bool has_capabilities(IOCapability set, IOCapability required) {
+    return (set & required) == required;
+  }
+
+  /**
+   * The default set of capabilities assumed, if the policy does not state its own.
+   *
+   * Before the introduction of the explicit IOCapability flags, this set was the
+   * implicitly assumed set. I.e., that an IOPolicy could synchornously read into
+   * host memory (from any executing thread).
+   */
+  inline constexpr IOCapability DefaultIOCapabilities {
+    IOCapability::ReadToHost | IOCapability::ReadToPinned | IOCapability::ConcurrentReads
+  };
+
+  /**
+   * Query the capabilties of a specific IO policy.
+   *
+   * @tparam IO The IOPolicy to check capabilities of.
+   * @returns The policy's capabilties, or DefaultIOCapabilities if the policy does not
+   *          define any explicitly.
+   */
+  template <typename IO>
+  SBIO_HD constexpr IOCapability io_capabilities() {
+    if constexpr (requires { IO::Capabilities; }) {
+      return IO::Capabilities;
+    } else {
+      return DefaultIOCapabilities;
+    }
+  }
+
   template <typename Derived>
   struct IOPolicy {
   public:
