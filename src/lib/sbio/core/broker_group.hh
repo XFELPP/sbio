@@ -660,7 +660,7 @@ namespace sbio {
       }
     }
 
-    template <typename MemTag = ncarray::HostTag, class CBType, typename... Args>
+    template <class CBType, typename... Args>
     requires std::invocable<CBType, DataResult>
     inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,
                                                      CBType&& callback,
@@ -749,7 +749,7 @@ namespace sbio {
       return composite.to_array();
     }
 
-    template <typename MemTag = ncarray::HostTag, typename... Args>
+    template <typename... Args>
     inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,
                                                      Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
