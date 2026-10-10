@@ -43,6 +43,8 @@ namespace sbio {
       MPI_Finalized(&finalized);
 
       if (initialized && !finalized && win && *win != MPI_WIN_NULL) {
+        // The EPolicy uses a lock_all epcoh - otherwise get a synchronization error
+        MPI_Win_unlock_all(*win);
         MPI_Win_free(win);
       }
     }
