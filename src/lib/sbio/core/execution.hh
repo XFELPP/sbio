@@ -285,6 +285,54 @@ namespace sbio {
       }
     }
 
+    /**
+     * Publish bytes written to a view of a buffer.
+     *
+     * Called after IO has written `nbytes` to the start of `view`, which is a view
+     * acquired from the the buffer `buf`.
+     *
+     * If the current IO policy reads into a staging view (`view`), here they will
+     * be moved to the actual buffer (`buf`).
+     *
+     * @note By default, this is a no-op.
+     *
+     * @param[in] buf The buffer the view is acquired from.
+     * @param[in] view The view used for the IO (e.g. staging).
+     * @param[in] nbytes The number of bytes into the view.
+     */
+    template <typename Buffer>
+    SBIO_HD static void publish_broker_view(Buffer& buf, void* view, hd_std::size_t nbytes) {
+      if constexpr (requires { Derived::publish_broker_view_impl(buf, view, nbytes); }) {
+        Derived::publish_broker_view_impl(buf, view, nbytes);
+      }
+    }
+
+    /**
+     * Query the capabiltiies this EPolicy requires for an IOPolicy to use it with.
+     *
+     * By default, it requires reads to host memory, and concurrent reads if thread
+     * support is provided by the EPolicy.
+     *
+     * @tparam IO The IO policy to use with the EPolicy.
+     * @returns The required set of capabilities.
+     */
+    template <typename IO>
+    static constexpr IOCapability required_io_capabilities() {
+      if constexpr (requires { Derived::template required_io_capabilities_impl<IO>(); }) {
+        return Derived::template required_io_capabilities_impl<IO>();
+      } else {
+        // bitset test is only constexpr from C++23 (C++20 support for lower CUDA toolkit vers.)
+        constexpr bool threaded {
+          Derived::ParallelSupport[static_cast<hd_std::size_t>(ParallelizationMethods::THREADS)]
+        };
+
+        return
+          threaded
+          ? (IOCapability::ReadToHost | IOCapability::ConcurrentReads)
+          : IOCapability::ReadToHost;
+      }
+    }
+
     // --- BrokerGroup level policies --- //
     // ---------------------------------- //
     template <class IO, class FTraits>

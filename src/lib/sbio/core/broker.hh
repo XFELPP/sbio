@@ -48,6 +48,8 @@ namespace hd_std = cuda::std;
 #define SBIO_HD __host__ __device__
 #endif
 
+#else
+
 #include <concepts>
 #include <cstdint>
 #include <initializer_list>
@@ -162,6 +164,24 @@ namespace sbio {
      * Whether the broker builds and queries the index itself (generic path).
      */
     static constexpr bool UsesGenericIndex { HasGenericIndex<FTraits> };
+
+    // Check that IOPolicy and EPolicy are compatible
+    static_assert(has_capabilities(io_capabilities<IO>(),
+                                   EPolicy::template required_io_capabilities<IO>()),
+                  "This IOPolicy lacks capabiltiies required by the Execution Policy. "
+                  "(Refer to IOCapability, IO::Capabilities, required_io_capabilities)");
+
+    /**
+     * The memory space that the IOPolicy reads data into.
+     *
+     * Set to device memory if the IOPolicy declares ReadToDevice, else host.
+     */
+    using IOMemTag = hd_std::conditional_t<
+      has_capabilities(EPolicy::template required_io_capabilities<IO>(),
+                       IOCapability::ReadToDevice),
+      ncarray::DevTag,
+      ncarray::HostTag
+    >;
 
     /**
      * The Execution policy configuration object type.
@@ -1008,9 +1028,11 @@ namespace sbio {
             return;
           }
 
-          auto* buf { sv.template acquire<roles::Data, Id, MemTag>() };
+          auto* buf {
+            sv.template acquire<roles::Data, Id, IOMemTag>(AcquireIntent::CallerMemorySpace)
+          };
           const auto res { m_streams[region.stream].read_at(buf, region.offset, region.length) };
-          sv.template release<roles::Data, Id>(buf);
+          sv.template release_written<roles::Data, Id>(buf, res.bytes);
 
           cursor.read_count = res.bytes;
           status = res.status;
@@ -1049,7 +1071,7 @@ namespace sbio {
           constexpr hd_std::size_t Id { decltype(P)::value };
           const hd_std::size_t buf_size { sv.template size<roles::Data, Id>() };
           auto* buf {
-            static_cast<char*>(sv.template acquire<roles::Data, Id, MemTag>())
+            static_cast<char*>(sv.template acquire<roles::Data, Id, IOMemTag>(AcquireIntent::CallerMemorySpace))
           };
 
           const bool one_span {
@@ -1083,7 +1105,7 @@ namespace sbio {
             }
           }
 
-          sv.template release<roles::Data, Id>(buf);
+          sv.template release_written<roles::Data, Id>(buf, total);
           cursor.read_count = total;
         });
 

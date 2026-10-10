@@ -119,6 +119,22 @@ namespace sbio {
 #endif
     }
 
+    /**
+     * Release a view after writing bytes to the start of it.
+     *
+     * The EPolicy publishes the written bytes (moves from view to buffer) and then
+     * the view is released.
+     *
+     * @note This is no-op unls a staging copy is in play.
+     */
+    template <class Role, hd_std::size_t Index, class ViewT>
+    SBIO_HD inline void release_written(ViewT view, hd_std::size_t nbytes) {
+      auto& buf { m_storage.template get<Role, Index>() };
+      EPolicy::publish_broker_view(buf, static_cast<void*>(view), nbytes);
+
+      release<Role, Index>(view);
+    }
+
     template <class Role, hd_std::size_t Index, class ViewT, typename PtrT>
     requires hd_std::is_pointer_v<PtrT>
     SBIO_HD inline auto release(ViewT view, PtrT offset_ptr) {
