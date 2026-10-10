@@ -1091,8 +1091,8 @@ namespace sbio {
      * Communicator used when generating shareable buffers.
      */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
-    static inline int m_shmem_rank { -1 };
-    static inline int m_shmem_size { 0 };
+    static inline int m_shmem_rank { -1 };   ///< This rank within its node (m_shmem_comm).
+    static inline int m_shmem_size { 0 };    ///< The number of (active) ranks on this node.
     static inline int m_node_indexer { -1 }; ///< The node rank which indexes for the node.
     /**
      * For each rank on the node, whether it iterates (calls `next`).
