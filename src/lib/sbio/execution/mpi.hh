@@ -734,7 +734,7 @@ namespace sbio {
         int msg { 0 };
         MPI_Recv(&msg, 1, MPI_INT, rank, tag, m_shmem_comm, MPI_STATUS_IGNORE);
         if (msg == NodeDeparted) {
-          state.m_node_departed[ur] = 1;
+          state.m_node_departed[u_rank] = 1;
         }
       }
     }
