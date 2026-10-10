@@ -164,6 +164,29 @@ namespace sbio {
       }
     }
 
+    /**
+     * Verify that the runtime environment supports the EPolicy.
+     *
+     * The verification is run before the actual configuration. E.g., for MPI, it
+     * may be required that a certain thread level be supported by the MPI
+     * implementation.
+     *
+     * @note The function is used by the Context. By default there is nothing to
+     *       validate.
+     *
+     * @param[in] config The configuration to use (if environment is validated).
+     * @param[out] error A description of the problem if validation fails.
+     * @returns true if the config can be used with the EPolicy in this environment.
+     */
+    template <class ConfigT>
+    static bool validate_environment(const ConfigT& config, const char*& error) {
+      if constexpr (requires { Derived::validate_environment_impl(config, error); }) {
+        return Derived::validate_environment_impl(config, error);
+      } else {
+        return true;
+      }
+    }
+
     // --- StreamBroker level policies --- //
     // ----------------------------------- //
 

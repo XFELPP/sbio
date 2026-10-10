@@ -90,6 +90,20 @@ namespace sbio {
       static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x2 }; // 0b10 - MPI
 
+    /**
+     * The only requirement is that MPI was not finalized before launch.
+     */
+    static bool validate_environment_impl(const Config& config, const char*& error) {
+      int finalized { 0 };
+      MPI_Finalized(&finalized);
+      if (finalized) {
+        error = "MPI was finalized already, cannot use MPIExecution!";
+        return false;
+      }
+
+      return true;
+    }
+
     static void configure_impl(const Config& config) {
       int initialized { 0 };
       MPI_Initialized(&initialized);
