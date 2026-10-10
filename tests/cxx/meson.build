@@ -33,4 +33,17 @@ if build_core_opt and build_tests_opt
         include_directories: sbio_headers,
     )
     test('Running test suite using sbio rndfmt.', test_sbiofmt, verbose: true)
+
+    if sbio_has_cuda
+        sbiofmt_cuda_sources = ['test_cuda_staged.cc']
+        test_sbiofmt_cuda = executable(
+            'test_sbiofmt_cuda',
+            sbiofmt_cuda_sources,
+            dependencies: deps_for_tests + [cuda_dep],
+            install: true,
+            install_rpath: py_to_lib_install_rpath,
+            include_directories: sbio_headers,
+        )
+        test('Running CUDA test suite using sbio rndfmt.', test_sbiofmt_cuda, verbose: true)
+    endif
 endif # build_core_opt and build_tests_opt
