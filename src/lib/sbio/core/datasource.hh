@@ -302,6 +302,7 @@ namespace sbio {
      *       not extend beyond the current maximum capactiy.
      * @note If `batch_size` is left to 0, then the default size will be `max_batch_size`
      *       used in the initial configuration of the StreamBrokers.
+     * @note The batch_size will never be larger than max_batch_size either.
      *
      * @param[in] batch_size The maximum size of the batch of step indices to read.
      * @returns The next batch of step indices [first, last) to fetch data for. The
@@ -309,7 +310,7 @@ namespace sbio {
      */
     SBIO_HD inline StepBatch<typename FTraits::StepIdxType>
     next_batch(std::size_t batch_size = 0) const {
-      if (batch_size == 0) {
+      if (batch_size == 0 || batch_size > m_data_streams[0].config().max_batch_size) {
         batch_size = m_data_streams[0].config().max_batch_size;
       }
       auto trigger_reindexing = [&]() { return reindex_trigger(); };
@@ -401,7 +402,7 @@ namespace sbio {
       using pointer = void;
       using reference = value_type;
 
-      IteratorImpl(DS& ds, value_type idx)
+      SBIO_HD IteratorImpl(DS& ds, value_type idx)
         : m_ds(ds)
         , m_idx(idx)
       {}
@@ -409,30 +410,30 @@ namespace sbio {
       // We're going to just generate indices and return by value for now.
       // The normal reference/pointer iterator semantics don't match perfectly
       // because there's nothing to "point to" or "reference".
-      reference operator*() const { return m_idx; }
+      SBIO_HD reference operator*() const { return m_idx; }
 
       // pointer operator->() { } // Not immediately sure how to do this
 
       // Incrementing the iterator calls the associated datasource's next function
       // This will trigger stream reindexing and so on.
       // You'll either get a new index. Or the ExhaustedSentinel if done.
-      IteratorImpl& operator++() {
+      SBIO_HD IteratorImpl& operator++() {
         m_idx = m_ds.next();
         return *this;
       }
-      IteratorImpl operator++(int) {
+      SBIO_HD IteratorImpl operator++(int) {
         IteratorImpl tmp = *this;
         ++(*this);
         return tmp;
       }
 
-      friend bool operator==(const IteratorImpl& a, const IteratorImpl& b) {
+      SBIO_HD friend bool operator==(const IteratorImpl& a, const IteratorImpl& b) {
         // Need to figure out best way to compare DataSource
         // For now, just punt and return comparison of indices...
         return (a.m_idx == b.m_idx);
       }
 
-      friend bool operator!=(const IteratorImpl& a, const IteratorImpl& b) {
+      SBIO_HD friend bool operator!=(const IteratorImpl& a, const IteratorImpl& b) {
         return !(a == b);
       }
 
@@ -460,11 +461,11 @@ namespace sbio {
     public:
       using It = IteratorImpl<DS>;
 
-      explicit StepRangeImpl(DS& ds)
+      SBIO_HD explicit StepRangeImpl(DS& ds)
         : m_ds(ds)
       {}
 
-      ~StepRangeImpl() {
+      SBIO_HD ~StepRangeImpl() {
         auto trigger_reindexing = [&]() { return m_ds.reindex_trigger(); };
 
         EPolicy::template end_iteration<FTraits>(m_ds.m_iteration_state,
@@ -482,14 +483,14 @@ namespace sbio {
        *
        * @returns An iterator at the first step index.
        */
-      It begin() const { return It(m_ds, m_ds.next()); }
+      SBIO_HD It begin() const { return It(m_ds, m_ds.next()); }
 
       /**
        * Return an iterator pointing to the ExhaustedSentinel.
        *
        * @returns An iterator pointing to the ExhaustedSentinel.
        */
-      It end() const { return It(m_ds, FTraits::ExhaustedSentinel); }
+      SBIO_HD It end() const { return It(m_ds, FTraits::ExhaustedSentinel); }
 
     private:
       DS& m_ds;
@@ -503,9 +504,9 @@ namespace sbio {
      *
      * @returns A range to iterate over in a range-based for loop.
      */
-    StepRange steps() { return StepRange(*this); }
-    ConstStepRange steps() const { return ConstStepRange(*this); }
-    ConstStepRange csteps() const { return ConstStepRange(*this); }
+    SBIO_HD StepRange steps() { return StepRange(*this); }
+    SBIO_HD ConstStepRange steps() const { return ConstStepRange(*this); }
+    SBIO_HD ConstStepRange csteps() const { return ConstStepRange(*this); }
 
     /**
      * Return an iterator at the first step index.
@@ -517,18 +518,18 @@ namespace sbio {
      *
      * @returns An iterator at the first step index.
      */
-    Iterator begin() { return Iterator(*this, next()); }
-    ConstIterator begin() const { return ConstIterator(*this, next()); }
+    SBIO_HD Iterator begin() { return Iterator(*this, next()); }
+    SBIO_HD ConstIterator begin() const { return ConstIterator(*this, next()); }
     /**
      * Return an iterator pointing to the ExhasutedSentinel.
      *
      * @returns An iterator pointing to the ExhaustedSentinel.
      */
-    Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
-    ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
+    SBIO_HD Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
+    SBIO_HD ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
-    ConstIterator cbegin() const { return ConstIterator(*this, next()); }
-    ConstIterator cend() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
+    SBIO_HD ConstIterator cbegin() const { return ConstIterator(*this, next()); }
+    SBIO_HD ConstIterator cend() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
     /**
      * An iterator generating batches of steps from the DataSource.
@@ -546,26 +547,26 @@ namespace sbio {
       using pointer = void;
       using reference = value_type;
 
-      BatchIteratorImpl(DS& ds, value_type batch, std::size_t batch_size)
+      SBIO_HD BatchIteratorImpl(DS& ds, value_type batch, std::size_t batch_size)
         : m_ds(ds)
         , m_batch(batch)
         , m_batch_size(batch_size)
       {}
 
-      reference operator*() const { return m_batch; }
+      SBIO_HD reference operator*() const { return m_batch; }
 
-      BatchIteratorImpl& operator++() {
+      SBIO_HD BatchIteratorImpl& operator++() {
         m_batch = m_ds.next_batch(m_batch_size);
         return *this;
       }
 
-      friend bool operator==(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
+      SBIO_HD friend bool operator==(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
         // Need to figure out best way to compare DataSource
         // For now, just punt and return comparison of indices...
         return a.m_batch.first == b.m_batch.first;
       }
 
-      friend bool operator!=(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
+      SBIO_HD friend bool operator!=(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
         return !(a == b);
       }
 
@@ -595,12 +596,12 @@ namespace sbio {
     public:
       using BatchIt = BatchIteratorImpl<DS>;
 
-      BatchRangeImpl(DS& ds, std::size_t batch_size)
+      SBIO_HD BatchRangeImpl(DS& ds, std::size_t batch_size)
         : m_ds(ds)
         , m_batch_size(batch_size)
       {}
 
-      ~BatchRangeImpl() {
+      SBIO_HD ~BatchRangeImpl() {
         auto trigger_reindexing = [&]() { return m_ds.reindex_trigger(); };
 
         EPolicy::template end_iteration<FTraits>(m_ds.m_iteration_state,
@@ -611,11 +612,11 @@ namespace sbio {
       BatchRangeImpl(const BatchRangeImpl&) = delete;
       BatchRangeImpl& operator=(const BatchRangeImpl&) = delete;
 
-      BatchIt begin() const {
+      SBIO_HD BatchIt begin() const {
         return BatchIt(m_ds, m_ds.next_batch(m_batch_size), m_batch_size);
       }
 
-      BatchIt end() const {
+      SBIO_HD BatchIt end() const {
         using StepIdx = typename FTraits::StepIdxType;
 
         return BatchIt(m_ds,
@@ -641,13 +642,13 @@ namespace sbio {
      *            configured `max_batch_size`.
      * @returns A range to iterate over in a range-based for loop.
      */
-    BatchRange batches(std::size_t batch_size = 0) {
+    SBIO_HD BatchRange batches(std::size_t batch_size = 0) {
       return BatchRange(*this, batch_size);
     }
-    ConstBatchRange batches(std::size_t batch_size = 0) const {
+    SBIO_HD ConstBatchRange batches(std::size_t batch_size = 0) const {
       return ConstBatchRange(*this, batch_size);
     }
-    ConstBatchRange cbatches(std::size_t batch_size = 0) const {
+    SBIO_HD ConstBatchRange cbatches(std::size_t batch_size = 0) const {
       return ConstBatchRange(*this, batch_size);
     }
 

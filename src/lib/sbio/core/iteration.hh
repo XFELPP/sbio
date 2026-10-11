@@ -684,13 +684,14 @@ namespace sbio {
      *
      * @note If `batch_size` is left to 0, then the default size will be the smallest
      *       `max_batch_size` of the component DataSources in the set.
+     * @note The batch_size will never be larger than max_batch_size either.
      *
      * @param[in] batch_size The maximum size of the batch of step indcies to read.
      * @returns The next back of step indices [first, last) to fetch data for. The
      *          Exhausted batch is returned as first and last equal to ExhaustedSentinel
      */
     SBIO_HD StepBatch<StepIdxType> next_batch(hd_std::size_t batch_size = 0) const {
-      if (batch_size == 0) {
+      if (batch_size == 0 || batch_size > min_batch_size()) {
         batch_size = min_batch_size();
       }
 
