@@ -282,12 +282,12 @@ namespace sbio {
                                                                 ptn,
                                                                 batch_idx);
         }) {
-        Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
-                                                              inv,
-                                                              req,
-                                                              cache,
-                                                              ptn,
-                                                              batch_idx);
+        return Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                                     inv,
+                                                                     req,
+                                                                     cache,
+                                                                     ptn,
+                                                                     batch_idx);
       } else {
         StorageView<StorageT, Derived> sv(storage);
         return FTraits::get_data_in_buffer(sv, inv, req, cache, ptn, batch_idx);
