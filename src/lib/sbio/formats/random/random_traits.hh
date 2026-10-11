@@ -264,7 +264,7 @@ namespace sbio {
                                                  DataAccessPtn ptn,
                                                  std::size_t batch_idx = 0) {
       void* data_buf =
-          storage.template acquire<roles::Data, 0, ncarray::HostTag>(AcquireIntent::CallerMemorySpace);
+          storage.template acquire<roles::Data, 0, ViewMemTag>(AcquireIntent::CallerMemorySpace);
 
       const char* ptr { reinterpret_cast<const char*>(data_buf) };
       for (hd_std::size_t b = 0; b < batch_idx; ++b) {

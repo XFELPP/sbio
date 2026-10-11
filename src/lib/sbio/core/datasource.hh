@@ -55,6 +55,14 @@ namespace sbio {
   class SourceSet;
 
   /**
+   * A tag indicating the EPolicy was configured prior to DataSource construction.
+   *
+   * @note This is used by the DataSource to prevent re-configuration. The configuration
+   *       may have been done by the `Context`, e.g., if using that interface.
+   */
+  struct ExecutionPolicyConfigured {};
+
+  /**
    * The highest-level abstraction for defining the set of StreamBrokers that will be used.
    *
    * The DataSource is used to find and collect together the group of all StreamBrokers
@@ -149,6 +157,16 @@ namespace sbio {
     friend class SourceSet;
 
     DataSource() = default;
+
+    /**
+     * Construct a DataSource, with the execution policy already configured.
+     *
+     * @note This constructor is used by the `Context`, which manages various
+     *       configuration steps itself.
+     */
+    explicit DataSource(ExecutionPolicyConfigured)
+      : m_epolicy_configured(true)
+    {}
 
     /**
      * Construct a DataSource and initialize the Execution policy.

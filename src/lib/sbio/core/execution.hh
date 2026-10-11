@@ -4,6 +4,7 @@
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
 #include "sbio/formats/format_traits.hh"
 
 #ifdef __CUDACC__
@@ -164,6 +165,29 @@ namespace sbio {
       }
     }
 
+    /**
+     * Verify that the runtime environment supports the EPolicy.
+     *
+     * The verification is run before the actual configuration. E.g., for MPI, it
+     * may be required that a certain thread level be supported by the MPI
+     * implementation.
+     *
+     * @note The function is used by the Context. By default there is nothing to
+     *       validate.
+     *
+     * @param[in] config The configuration to use (if environment is validated).
+     * @param[out] error A description of the problem if validation fails.
+     * @returns true if the config can be used with the EPolicy in this environment.
+     */
+    template <class ConfigT>
+    static bool validate_environment(const ConfigT& config, const char*& error) {
+      if constexpr (requires { Derived::validate_environment_impl(config, error); }) {
+        return Derived::validate_environment_impl(config, error);
+      } else {
+        return true;
+      }
+    }
+
     // --- StreamBroker level policies --- //
     // ----------------------------------- //
 
@@ -225,6 +249,52 @@ namespace sbio {
     }
 
     /**
+     * Resolve a DataRequest for a StreamBroker into the indicated buffers.
+     *
+     * The StreamBroker can use this routine to offload the DataRequest to an EPolicy
+     * when it may need to resolve differences in MemorySpace between the data location
+     * and the buffers. E.g., a policy can implement handling on GPU.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IO The IO policy used by the StreamBroker.
+     * @tparam StorageT The type of the overall storage of the StreamBroker
+     * @tparam InventoryT The type of the MetadataInventory fo the StreamBroker
+     * @param[in] storage The StreamBroker's storage
+     * @param[in] inv The StreamBroker's MetadataInventory
+     * @param[in] req The DataRequest for retrieval
+     * @param[in/out] cache The cache for holding field offsets
+     * @param[in] ptn The data access pattern for the fetched data (format-dependent)
+     * @param[in] batch_idx The step within a fetched batch.
+     * @returns The resolved data.
+     */
+    template <class FTraits, class IO, class StorageT, class InventoryT>
+    SBIO_HD static DataResult resolve_in_buffer(StorageT& storage,
+                                                const InventoryT& inv,
+                                                const typename FTraits::DataRequest& req,
+                                                PayloadOffsetCache& cache,
+                                                typename FTraits::DataAccessPtn ptn,
+                                                hd_std::size_t batch_idx) {
+      if constexpr (requires {
+          Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                                inv,
+                                                                req,
+                                                                cache,
+                                                                ptn,
+                                                                batch_idx);
+        }) {
+        Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                              inv,
+                                                              req,
+                                                              cache,
+                                                              ptn,
+                                                              batch_idx);
+      } else {
+        StorageView<StorageT, Derived> sv(storage);
+        return FTraits::get_data_in_buffer(sv, inv, req, cache, ptn, batch_idx);
+      }
+    }
+
+    /**
      * An opportunity to provide explicit synchronization immediately after every step.
      *
      * @param[in] buffer The underlying buffer which was filled by the step.
@@ -282,6 +352,54 @@ namespace sbio {
         return Derived::acquire_broker_view_impl(buf);
       } else {
         return buf.ptr();
+      }
+    }
+
+    /**
+     * Publish bytes written to a view of a buffer.
+     *
+     * Called after IO has written `nbytes` to the start of `view`, which is a view
+     * acquired from the the buffer `buf`.
+     *
+     * If the current IO policy reads into a staging view (`view`), here they will
+     * be moved to the actual buffer (`buf`).
+     *
+     * @note By default, this is a no-op.
+     *
+     * @param[in] buf The buffer the view is acquired from.
+     * @param[in] view The view used for the IO (e.g. staging).
+     * @param[in] nbytes The number of bytes into the view.
+     */
+    template <typename Buffer>
+    SBIO_HD static void publish_broker_view(Buffer& buf, void* view, hd_std::size_t nbytes) {
+      if constexpr (requires { Derived::publish_broker_view_impl(buf, view, nbytes); }) {
+        Derived::publish_broker_view_impl(buf, view, nbytes);
+      }
+    }
+
+    /**
+     * Query the capabiltiies this EPolicy requires for an IOPolicy to use it with.
+     *
+     * By default, it requires reads to host memory, and concurrent reads if thread
+     * support is provided by the EPolicy.
+     *
+     * @tparam IO The IO policy to use with the EPolicy.
+     * @returns The required set of capabilities.
+     */
+    template <typename IO>
+    static constexpr IOCapability required_io_capabilities() {
+      if constexpr (requires { Derived::template required_io_capabilities_impl<IO>(); }) {
+        return Derived::template required_io_capabilities_impl<IO>();
+      } else {
+        // bitset test is only constexpr from C++23 (C++20 support for lower CUDA toolkit vers.)
+        constexpr bool threaded {
+          Derived::ParallelSupport[static_cast<hd_std::size_t>(ParallelizationMethods::THREADS)]
+        };
+
+        return
+          threaded
+          ? (IOCapability::ReadToHost | IOCapability::ConcurrentReads)
+          : IOCapability::ReadToHost;
       }
     }
 

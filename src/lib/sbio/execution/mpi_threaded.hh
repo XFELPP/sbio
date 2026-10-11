@@ -104,6 +104,33 @@ namespace sbio {
       static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x3 }; // 0b11 - MPI | THREADS
 
+    /**
+     * The requirements are that MPI was not finalized, and MPI_THREAD_MULTIPLE support.
+     */
+    static bool validate_environment_impl(const Config& config, const char*& error) {
+      int finalized { 0 };
+      MPI_Finalized(&finalized);
+      if (finalized) {
+        error = "MPI was finalized already, cannot use MPIThreadedExecution!";
+        return false;
+      }
+
+      int initialized { 0 };
+      MPI_Initialized(&initialized);
+      if (initialized) {
+        int provided { MPI_THREAD_SINGLE };
+        MPI_Query_thread(&provided);
+        if (provided < MPI_THREAD_MULTIPLE) {
+          error =
+            "MPIThreadedExecution requires thread support of MPI_THREAD_MULTIPLE!"
+            " MPI was initialized at a lower support level!";
+          return false;
+        }
+      }
+
+      return true;
+    }
+
     static void configure_impl(const Config& config) {
       int initialized { 0 };
       MPI_Initialized(&initialized);

@@ -1,4 +1,5 @@
 installed_execution_headers = [
+    'cuda.hh',
     'mpi.hh',
     'mpi_threaded.hh',
     'serial.hh',
