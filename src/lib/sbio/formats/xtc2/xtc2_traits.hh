@@ -293,7 +293,7 @@ namespace sbio {
           storage.template acquire<
             roles::Data,
             decltype(P)::value,
-            ncarray::HostTag
+            ViewMemTag
           >(AcquireIntent::CallerMemorySpace);
       };
       visit_ptn<XTC2Traits>(ptn, acquire_ptn_buffer);
