@@ -469,23 +469,41 @@ namespace sbio {
                                                         hd_std::forward<GetCBType>(unit_get_data),
                                                         num_accesses);
       } else {
-        // By default, we will do IO for all units (segments)
-        // Then afterwards we will do data retrieval.
-        IOStatus status = IOStatus::Success;
-        for (hd_std::size_t i = 0; i < num_fetches; ++i) {
-          IOStatus s = unit_fetcher(i);
-          if (s != IOStatus::Success) {
-            status = s;
-            break;
-          }
-        }
-        if (status == IOStatus::Success) {
-          for (hd_std::size_t i = 0; i < num_accesses; ++i) {
-            unit_get_data(i);
-          }
-        }
-        return status;
+        return fetch_then_get<FTraits>(step_idx,
+                                       hd_std::forward<FetchCBType>(unit_fetcher),
+                                       num_fetches,
+                                       hd_std::forward<GetCBType>(unit_get_data),
+                                       num_accesses);
       }
+    }
+
+    /**
+     * Default get_data, fetching for all units, then resolving fetched data.
+     */
+    template <class FTraits, class FetchCBType, class GetCBType>
+    SBIO_HD static IOStatus fetch_then_get(typename FTraits::StepIdxType step_idx,
+                                           FetchCBType&& unit_fetcher,
+                                           hd_std::size_t num_fetches,
+                                           GetCBType&& unit_get_data,
+                                           hd_std::size_t num_accesses) {
+      // By default, we will do IO for all units (segments)
+      // Then afterwards we will do data retrieval.
+      IOStatus status { IOStatus::Success };
+      for (hd_std::size_t i = 0; i < num_fetches; ++i) {
+        IOStatus s = unit_fetcher(i);
+        if (s != IOStatus::Success) {
+          status = s;
+          break;
+        }
+      }
+
+      if (status == IOStatus::Success) {
+        for (hd_std::size_t i = 0; i < num_accesses; ++i) {
+          unit_get_data(i);
+        }
+      }
+
+      return status;
     }
 
     /**
@@ -530,36 +548,52 @@ namespace sbio {
                                                               hd_std::forward<GetCBType>(unit_get_data),
                                                               num_accesses);
       } else {
-        // By default, we will do IO for all units (segments)
-        // Then afterwards we will do data retrieval.
-        IOStatus status = IOStatus::Success;
-        for (hd_std::size_t i = 0; i < num_fetches; ++i) {
-          IOStatus s = unit_fetcher(i);
-          if (s != IOStatus::Success) {
-            status = s;
-            break;
-          }
-        }
-        if (status == IOStatus::Success) {
-          bool passed_step { steps.size() == 3 };
-          typename FTraits::StepIdxType first { *steps.begin() };
-          typename FTraits::StepIdxType last {
-            passed_step ? *(steps.end() - 2) : *(steps.end() - 1)
-          };
-          typename FTraits::StepIdxType count {
-            (last > first) ? static_cast<hd_std::size_t>(last - first) : 1
-          };
-
-          for (hd_std::size_t cnt = 0; cnt < static_cast<hd_std::size_t>(count); ++cnt) {
-            for (hd_std::size_t i = 0; i < num_accesses; ++i) {
-              unit_get_data(i, cnt);
-            }
-          }
-        }
-        return status;
+        return fetch_then_get_steps<FTraits>(steps,
+                                             hd_std::forward<FetchCBType>(unit_fetcher),
+                                             num_fetches,
+                                             hd_std::forward<GetCBType>(unit_get_data),
+                                             num_accesses);
       }
     }
 
+    /**
+     * Default get_data_steps, fetching for all units, then resolving fetched data.
+     */
+    template <class FTraits, class FetchCBType, class GetCBType>
+    SBIO_HD static IOStatus fetch_then_get_steps(const hd_std::initializer_list<typename FTraits::StepIdxType>& steps,
+                                                 FetchCBType&& unit_fetcher,
+                                                 hd_std::size_t num_fetches,
+                                                 GetCBType&& unit_get_data,
+                                                 hd_std::size_t num_accesses) {
+      // By default, we will do IO for all units (segments)
+      // Then afterwards we will do data retrieval.
+      IOStatus status = IOStatus::Success;
+      for (hd_std::size_t i = 0; i < num_fetches; ++i) {
+        IOStatus s = unit_fetcher(i);
+        if (s != IOStatus::Success) {
+          status = s;
+          break;
+        }
+      }
+
+      if (status == IOStatus::Success) {
+        bool passed_step { steps.size() == 3 };
+        typename FTraits::StepIdxType first { *steps.begin() };
+        typename FTraits::StepIdxType last {
+          passed_step ? *(steps.end() - 2) : *(steps.end() - 1)
+        };
+        typename FTraits::StepIdxType count {
+          (last > first) ? static_cast<hd_std::size_t>(last - first) : 1
+        };
+
+        for (hd_std::size_t cnt = 0; cnt < static_cast<hd_std::size_t>(count); ++cnt) {
+          for (hd_std::size_t i = 0; i < num_accesses; ++i) {
+            unit_get_data(i, cnt);
+          }
+        }
+      }
+      return status;
+    }
 
     // --- DataSource level policies --- //
     // --------------------------------- //
