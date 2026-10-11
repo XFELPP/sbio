@@ -81,6 +81,23 @@ namespace sbio {
   };
 
   /**
+   * Indicator of who shares/accesses a buffer.
+   *
+   * For each buffer role, the scope is decided by the execution polic. It can be
+   * determined by the "distribution side" independently of where that memory
+   * actually resides. E.g. a buffer with GPU-memory can be shared just like one
+   * that is based on host-memory.
+   *
+   * @note The Storage::get function is scope-aware and resolves the correct instance
+   *       to use for hte caller.
+   */
+  enum class BufferScope : hd_std::uint8_t {
+    Shared     = 0, ///< One buffer instance for the Storage instance
+    PerUnit    = 1, ///< One buffer instance for each parallel unit
+    NodeShared = 2  ///< One buffer instance for an entire server/node (e.g. MPI Window)
+  };
+
+  /**
    * Operating through StorageView's acquisition model, specify MemorySpace to use.
    *
    * A caller can specify a view of a buffer must be returned in the caller's native
@@ -177,9 +194,26 @@ namespace sbio {
                   "Execution Policy must provide types that satisfy the ValidBuffer concept!");
     /**
      * Compile-time buffer accessor.
+     *
+     * @note This function is scope aware. If a buffer has a per-unit scope, the
+     *       call will resolve to the single unit's instance.
      */
     template <typename RoleOrDescriptor, hd_std::size_t Id = 0>
     SBIO_HD auto& get() {
+      auto& member { get_member<RoleOrDescriptor, Id>() };
+
+      if constexpr (requires { member.local(); }) {
+        return member.local();
+      } else {
+        return member;
+      }
+    }
+
+    /**
+     * Compile-time buffer accessor - non-scope aware version.
+     */
+    template <typename RoleOrDescriptor, hd_std::size_t Id = 0>
+    SBIO_HD auto& get_member() {
       using Descriptor = hd_std::conditional_t<
         IsDescriptor<RoleOrDescriptor>::value,
         RoleOrDescriptor,
@@ -189,6 +223,7 @@ namespace sbio {
       using BufferT = typename Policy::template BufferTypeFor<Descriptor>;
       return static_cast<BufferMember<Descriptor, BufferT>*>(this)->buffer;
     }
+
 
     /**
      * An accessor that will iterate over members of a certain role.
