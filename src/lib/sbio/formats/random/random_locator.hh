@@ -39,6 +39,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/mman.h>
 #endif
 
@@ -103,7 +104,11 @@ namespace sbio {
           stream_cfg.format_params.h_file = h_file;
           randfmt::FileHandle f_handle { h_file };
 #else
-          int fd = memfd_create(name_buf, 0);
+          // NOTE: For GPU testing with cuFile, cannot use the in-memory file
+          //       So, for now just create a real one (and unlink immediately to clean up)
+          // int fd = memfd_create(name_buf, 0);
+          int fd = open(name_buf, O_CREAT | O_RDWR, 0600);
+          unlink(name_buf);
           if (fd < 0) {
             return false;
           }
