@@ -22,8 +22,11 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/result.hh"
 #include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
 #include "sbio/core/types.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/cuda_device.hh"
@@ -37,13 +40,48 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <memory>
 #include <bitset>
 #include <type_traits>
+#include <unordered_map>
 
 namespace sbio {
+  class CudaExecution;
+
+#ifdef __CUDACC__
+  namespace impl {
+    /**
+     * A request that was resolved on the device side (with updated cache offsets)
+     */
+    struct DeviceResolved {
+      DataResult result;
+      PayloadOffsetCache cache;
+    };
+
+    /**
+     * Perform a DataRequest lookup directly on the device.
+     *
+     * This assumes the host-code was not GPU-optimized (synchronous direct lookup)
+     * so it should be run from a single CUDA thread.
+     */
+    template <class FTraits, class StorageT, class InventoryT>
+    __global__ void resolve_in_buffer_kernel(StorageT storage,
+                                             const Inventory* inv,
+                                             typename FTraits::DataRequest req,
+                                             PayloadOffsetCahce cache,
+                                             typename FTraits::DataAccessPtn ptn,
+                                             std::size_t batch_idx,
+                                             DeviceResolved* out) {
+      StorageView<StorageT, CudaExecution> sv(storage);
+      out->result = FTraits::get_data_in_buffer(sv, *inv, req, cache, ptn, batch_idx);
+      out->cache = cache;
+    }
+  } // namespace impl
+#endif // __CUDAC__
+
   /**
    * CudaExecution is a policy for a single process to use one GPU.
    *
@@ -63,8 +101,11 @@ namespace sbio {
    * are ready.
    *
    * For IO policies that support direct-to-GPU reads, CudaExecution will use that path
-   * without the need for the staged IO. The EPolicy still does field/offset lookup
-   * host-side however.
+   * without the need for the staged IO.
+   * - If compiled as device code with nvcc, a single-threaded kernel will do all
+   *   resolution/lookup directly on the device as well.
+   * - Otherwise, the lookup will still be done on the host normally, by staging via the
+   *   host replica buffer.
    *
    * @note Field and offset resolution on device is not currently available in an EPolicy.
    */
@@ -351,6 +392,37 @@ namespace sbio {
       return { first, last };
     }
 
+#ifdef __CUDACC__
+    /**
+     * Resolve a DataRequest directly on the device, where it was read with cuFile.
+     */
+    template <class FTraits, class IO, class StorageT, class InventoryT>
+    requires (reads_to_device<IO>())
+    static DataResult resolve_in_buffer_impl(StorageT& storage,
+                                             const InventoryT& inv,
+                                             const typename FTraits::DataRequest& req,
+                                             PayloadOffsetCache& cache,
+                                             typename FTraits::DataAccessPtn ptn,
+                                             std::size_t batch_idx) {
+      const InventoryT* dev_inv { device_inventory(inv) };
+      impl::DeviceResolved* out { resolved_slot() };
+
+      impl::resolve_in_buffer_kernel<FTraits><<<1, 1, 0, get_stream()>>>(storage,
+                                                                         dev_inv,
+                                                                         req,
+                                                                         cache,
+                                                                         ptn,
+                                                                         batch_idx,
+                                                                         out);
+      check(cudaGetLastError(), "resolve_in_buffer_kernel [launch]");
+      synchronize("cudaStreamSynchronize [resolve_in_buffer]");
+
+      cache = out->cache;
+
+      return out->result;
+    }
+#endif // __CUDACC__
+
     static void synchronize(const char* msg) {
       check(cudaStreamSynchronize(get_stream()), msg);
     }
@@ -364,6 +436,55 @@ namespace sbio {
     }
 
   private:
+#ifdef __CUDACC__
+    /**
+     * A device-side copy of the MetadataInventory.
+     *
+     * @note The copy is updated each time the host-side copy changes. The tracking is
+     *       done using the revision numbers which are globally unique (host-side) for
+     *       all metadata inventories.
+     */
+    template <class InventoryT>
+    static const InventoryT* device_inventory(const InventoryT& inv) {
+      static_assert(std::is_trivially_copyable_v<InventoryT>,
+                    "MetadataInventory must be trivally copyable to use on GPU.");
+
+      struct DeviceCopy {
+        void* ptr { nullptr };
+        std::uint64_t revision { 0 };
+      };
+      static std::unordered_map<const void*, DeviceCopy> copies;
+
+      DeviceCopy& copy { copies[&inv] };
+      if (copy.ptr == nullptr) {
+        check(cudaMemcpyAsync(copy.ptr,
+                              &inv,
+                              sizeof(InventoryT),
+                              cudaMemcpyHostToDevice,
+                              get_stream()),
+              "cudaMemcpyAsync [device_inventory]");
+        copy.revision = inv.revision();
+      }
+
+      return static_cast<const InventoryT*>(copy.ptr);
+    }
+
+    /**
+     * Host memory (pinned) the resolution kernel puts results in.
+     */
+    static impl::DeviceResolved* resolved_slot() {
+      static impl::DeviceResolved* slot { nullptr };
+      if (slot == nullptr) {
+        void* ptr { nullptr };
+        check(cudaMallocHost(&ptr, sizeof(impl::DeviceResolved)),
+              "cudaMallocHost [resolved_slot]");
+        slot = static_cast<impl::DeviceResolved*>(ptr);
+      }
+
+      return slot;
+    }
+#endif // __CUDACC__
+
     static void check(cudaError_t err, const char* what) {
       if (err != cudaSuccess) {
         m_logger->critical("{} failed: {}", what, cudaGetErrorString(err));
