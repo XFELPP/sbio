@@ -4,6 +4,7 @@
 #include "sbio/core/io.hh"
 #include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
 #include "sbio/formats/format_traits.hh"
 
 #ifdef __CUDACC__
@@ -244,6 +245,52 @@ namespace sbio {
         return Derived::template should_process_impl<FTraits>(step_idx);
       } else {
         return true;
+      }
+    }
+
+    /**
+     * Resolve a DataRequest for a StreamBroker into the indicated buffers.
+     *
+     * The StreamBroker can use this routine to offload the DataRequest to an EPolicy
+     * when it may need to resolve differences in MemorySpace between the data location
+     * and the buffers. E.g., a policy can implement handling on GPU.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IO The IO policy used by the StreamBroker.
+     * @tparam StorageT The type of the overall storage of the StreamBroker
+     * @tparam InventoryT The type of the MetadataInventory fo the StreamBroker
+     * @param[in] storage The StreamBroker's storage
+     * @param[in] inv The StreamBroker's MetadataInventory
+     * @param[in] req The DataRequest for retrieval
+     * @param[in/out] cache The cache for holding field offsets
+     * @param[in] ptn The data access pattern for the fetched data (format-dependent)
+     * @param[in] batch_idx The step within a fetched batch.
+     * @returns The resolved data.
+     */
+    template <class FTraits, class IO, class StorageT, class InventoryT>
+    SBIO_HD static DataResult resolve_in_buffer(StorageT& storage,
+                                                const InventoryT& inv,
+                                                const typename FTraits::DataRequest& req,
+                                                PayloadOffsetCache& cache,
+                                                typename FTraits::DataAccessPtn ptn,
+                                                hd_std::size_t batch_idx) {
+      if constexpr (requires {
+          Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                                inv,
+                                                                req,
+                                                                cache,
+                                                                ptn,
+                                                                batch_idx);
+        }) {
+        Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                              inv,
+                                                              req,
+                                                              cache,
+                                                              ptn,
+                                                              batch_idx);
+      } else {
+        StorageView<StorageT, Derived> sv(storage);
+        return FTraits::get_data_in_buffer(sv, inv, req, cache, ptn, batch_idx);
       }
     }
 

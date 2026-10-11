@@ -659,13 +659,12 @@ namespace sbio {
       if constexpr (!std::is_void_v<Derived>) {
         return static_cast<Derived*>(this)->get_data_in_buffer(req, ptn, cursor, batch_idx);
       } else {
-        StorageView<SBStorageType, EPolicy> sv(m_storage);
-        return FTraits::get_data_in_buffer(sv,
-                                           m_metadata_inv,
-                                           req,
-                                           cursor.payload_offsets,
-                                           ptn,
-                                           batch_idx);
+        return EPolicy::template resolve_in_buffer<FTraits, IO>(m_storage,
+                                                                m_metadata_inv,
+                                                                req,
+                                                                cursor.payload_offsets,
+                                                                ptn,
+                                                                batch_idx);
       }
     }
 
