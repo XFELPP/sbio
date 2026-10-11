@@ -90,10 +90,29 @@ namespace sbio {
 
     void set_host_memory(void* host_ptr) { m_host_ptr = host_ptr; }
 
+    /**
+     * The number of bytes from start of buffer that need to be copied to host.
+     *
+     * When the data is written to the GPU buffer directly, the host-side replica
+     * should be marked as stale by indicating the number of new bytes to copy
+     * over.
+     */
+    std::size_t host_stale() const { return m_host_stale; }
+
+    /**
+     * Indicate how many bytes need to be copied into the host replica.
+     *
+     * When the data is written to the GPU buffer directly, the host-side
+     * replica should be marked as stale by indicating the number of new bytes
+     * to copy over.
+     */
+    void set_host_stale(std::size_t nbytes) { m_host_stale = nbytes; }
+
   private:
     void* m_ptr { nullptr };
     void* m_host_ptr { nullptr };
     std::size_t m_size { 0 };
+    std::size_t m_host_stale { 0 };
   };
 } // namespace sbio
 

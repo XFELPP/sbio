@@ -31,6 +31,7 @@ typedef SSIZE_T ssize_t;
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -40,10 +41,43 @@ typedef SSIZE_T ssize_t;
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 
 namespace fs = std::filesystem;
 
 namespace sbio {
+  namespace {
+    // Keep track of how many references to the driver there are for closing
+    std::mutex driver_mutex;
+    std::size_t driver_refs { 0 };
+  } // anonymous namespace
+
+  bool cuFileIO::open_environment(const char*& error) {
+    std::lock_guard<std::mutex> lock(driver_mutex);
+    if (driver_refs == 0 && checkCuFile(cuFileDriverOpen())) {
+      error = "Unable to open cuFile driver!";
+      return false;
+    }
+
+    ++driver_refs;
+    return true;
+  }
+
+  void cuFileIO::close_environment() {
+    std::lock_guard<std::mutex> lock(driver_mutex);
+    if (driver_refs > 0 && --driver_refs == 0) {
+      cuFileDriverClose();
+    }
+  }
+
+  bool cuFileIO::register_buffer(void* ptr, std::size_t size) {
+    return checkCuFile(cuFileBufRegister(ptr, size, 0)) == 0;
+  }
+
+  void cuFileIO::deregister_buffer(void* ptr) {
+    cuFileBufDeregister(ptr);
+  }
+
   cuFileIO::cuFileIO()
     : IOPolicy<cuFileIO>()
 #ifdef _WIN32
@@ -65,19 +99,27 @@ namespace sbio {
       ::CloseHandle(m_file);
     }
 #else
+    if (m_host_fd >= 0 && m_host_fd != m_fd) {
+      ::close(m_host_fd);
+    }
+
     if (m_fd >= 0) {
       ::close(m_fd);
     }
 #endif // _WIN32
 
-    cuFileDriverClose();
+    if (m_holds_driver) {
+      close_environment();
+    }
   }
 
   IOStatus cuFileIO::connect(const char* path) {
-    if (checkCuFile(cuFileDriverOpen())) {
+    const char* error { nullptr };
+    if (!open_environment(error)) {
       std::cerr << "Error opening cuFile driver" << std::endl;
       return IOStatus::OpenFailed;
     }
+    m_holds_driver = true;
 
 #ifdef _WIN32
     // TODO: FILE_FLAG_OVERLAPPED on Windows has restrictions that O_DIRECT
@@ -96,6 +138,12 @@ namespace sbio {
 #else
     m_fd = ::open(path, O_RDONLY | O_DIRECT);
     if (m_fd < 0) {
+      return IOStatus::OpenFailed;
+    }
+
+    // Dont need to enforce O_DIRECT for host only
+    m_host_fd = ::open(path, O_RDONLY);
+    if (m_host_fd < 0) {
       return IOStatus::OpenFailed;
     }
 #endif // _WIN32
@@ -118,7 +166,6 @@ namespace sbio {
       ::close(m_fd);
       m_fd = -1;
 #endif // _WIN32
-      cuFileDriverClose();
       return IOStatus::OpenFailed;
     } else {
       std::cout << "cuFile handle registered" << std::endl;
@@ -129,15 +176,82 @@ namespace sbio {
     return IOStatus::Success;
   }
 
-  ReadResult cuFileIO::read_impl(std::uint64_t offset, std::size_t size, void* dest) const {
-    if (checkCuFile(cuFileBufRegister(dest, size, 0))) {
-      std::cerr << "Unable to register GPU buffer with cuFile." << std::endl;
-      return classify_read(-1, 0);
+#ifndef _WIN32
+  IOStatus cuFileIO::connect(int fd) {
+    const char* error { nullptr };
+    if (!open_environment(error)) {
+      std::cerr << "Error opening cuFile driver" << std::endl;
+      return IOStatus::OpenFailed;
+    }
+    m_holds_driver = true;
+
+    m_fd = fd;
+    m_host_fd = fd;
+
+    m_descr.handle.fd = m_fd;
+    m_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
+    if (checkCuFile(cuFileHandleRegister(&m_handle, &m_descr))) {
+      std::cerr << "Error registering file handle for fd " << m_fd << std::endl;
+      // Since we were passed the fd directly, dont close it here
+      return IOStatus::OpenFailed;
+    }
+
+    struct stat st;
+    if (::fstat(fd, &st) == 0) {
+      m_file_size = st.st_size;
+    }
+
+    return IOStatus::Success;
+  }
+#endif // _WIN32
+
+  ReadResult cuFileIO::read_impl(std::uint64_t offset,
+                                 std::size_t size,
+                                 void* dest) const {
+    cudaPointerAttributes attr {};
+    const bool on_device {
+      cudaPointerGetAttributes(&attr, dest) == cudaSuccess && attr.type == cudaMemoryTypeDevice
+    };
+
+    if (!on_device) {
+      // Apparently depending on version you can get an error for unregistered host memory
+      // so just clear it here so to not confuse later
+      cudaGetLastError();
+      return read_host(offset, size, dest);
     }
 
     ssize_t read_count { cuFileRead(m_handle, dest, size, offset, 0) };
-    cuFileBufDeregister(dest);
 
     return classify_read(read_count, size);
+  }
+
+  ReadResult cuFileIO::read_host(std::uint64_t offset,
+                                 std::size_t size,
+                                 void* dest) const {
+#ifdef _WIN32
+    // No Windows impl yet....
+    (void)offset;
+    (void)size;
+    (void)dest;
+    return { IOStatus::FunctionUnavailable, 0 };
+#else
+    char* out { static_cast<char*>(dest) };
+    std::size_t total { 0 };
+    while (total < size) {
+      const ssize_t got {
+        ::pread(m_host_fd, out + total, size - total, offset + total)
+      };
+
+      if (got < 0) {
+        return classify_read(-1, size);
+      } else if (got == 0) {
+        break;
+      }
+
+      total += static_cast<std::size_t>(got);
+    }
+
+    return classify_read(static_cast<ssize_t>(total), size);
+#endif // _WIN32
   }
 } // namespace sbio

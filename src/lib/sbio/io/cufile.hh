@@ -35,27 +35,63 @@ namespace sbio {
   struct SBIO_API cuFileIO : public IOPolicy<cuFileIO> {
   public:
     /**
-     * Read into registered device memory.
+     * Read into device with cuFile and into host using pread.
      *
-     * @note Reads use O_DIRECT so require aligned sizes and offsets.
+     * @note Device reads use O_DIRECT. cuFile can nhandle unaligned reads, but
+     *       aligned sizes and offsets are faster.
      */
-    static constexpr IOCapability Capabilities { IOCapability::ReadToDevice };
+    static constexpr IOCapability Capabilities {
+      IOCapability::ReadToDevice | IOCapability::ReadToHost | IOCapability::ReadToPinned
+    };
 
     cuFileIO();
     ~cuFileIO();
 
     IOStatus connect(const char* path);
 
+#ifndef _WIN32
+    IOStatus connect(int fd);
+#endif // _WIN32
+
     ReadResult read_impl(std::uint64_t offset, std::size_t size, void* dest) const;
 
+    /**
+     * Hold a reference to the cuFile driver (opened by the first reference).
+     *
+     * A Context holds one for its lifetime, as does every connected cuFileIO.
+     *
+     * @param[out] error If the driver can not be opened, a description of the problem.
+     * @returns `true` if the driver is open.
+     */
+    static bool open_environment(const char*& error);
+
+    /**
+     * Release a reference to the cuFile driver (closed with the last reference).
+     */
+    static void close_environment();
+
+    /**
+     * Register device memory with cuFile, for faster reads into it.
+     *
+     * Registration is optional: unregistered memory is read through cuFile's own
+     * bounce buffers.
+     */
+    static bool register_buffer(void* ptr, std::size_t size);
+
+    static void deregister_buffer(void* ptr);
+
   private:
+    ReadResult read_host(std::uint64_t offset, std::size_t size, void* dest) const;
+
 #ifdef _WIN32
     HANDLE m_file;
 #else
     int m_fd;
+    int m_host_fd { -1 };
 #endif // _WIN32
     CUfileDescr_t m_descr;
-    CUfileHandle_t m_handle;
+    CUfileHandle_t m_handle { nullptr };
+    bool m_holds_driver { false };
   };
 } // namespace sbio
 

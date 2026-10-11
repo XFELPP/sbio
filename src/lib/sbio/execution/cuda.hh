@@ -62,8 +62,11 @@ namespace sbio {
    * `get_data` and friends stream synchronize before returns to guarantee results
    * are ready.
    *
-   * @note This EPolicy doesnt actually support direct reads into GPU memory at the
-   *       moment!
+   * For IO policies that support direct-to-GPU reads, CudaExecution will use that path
+   * without the need for the staged IO. The EPolicy still does field/offset lookup
+   * host-side however.
+   *
+   * @note Field and offset resolution on device is not currently available in an EPolicy.
    */
   class CudaExecution : public Execution<CudaExecution> {
   public:
@@ -89,16 +92,47 @@ namespace sbio {
     static constexpr MemorySpace result_memory_space_impl() { return MemorySpace::Device; }
 
     /**
+     * Check if the IO policy can read into GPU memory.
+     */
+    template <typename IO>
+    static constexpr bool reads_to_device() {
+      return has_capabilities(io_capabilities<IO>(), IOCapability::ReadToDevice);
+    }
+
+    /**
      * IO currently gets staged through a pinned host buffer for this EPolicy.
      */
     template <typename IO>
     static constexpr IOCapability required_io_capabilities_impl() {
-      static_assert(has_capabilities(io_capabilities<IO>(), IOCapability::ReadToPinned),
-                    "CudaExecution reads foirst to pinned host memory.");
-      return IOCapability::ReadToPinned;
+      static_assert(has_capabilities(io_capabilities<IO>(), IOCapability::ReadToDevice) ||
+                    has_capabilities(io_capabilities<IO>(), IOCapability::ReadToPinned),
+                    "CudaExecution reads foirst to pinned host memory or device memory.");
+      if constexpr (reads_to_device<IO>()) {
+        return IOCapability::ReadToDevice | IOCapability::ReadToHost;
+      } else {
+        return IOCapability::ReadToPinned;
+      }
     }
 
-    void configure_impl(const Config& config) {
+    /**
+     * The requirements are available CUDA devices (GPUs), and config selecting one of these.
+     */
+    static bool validate_environment_impl(const Config& config, const char*& error) {
+      int count { 0 };
+      if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
+        error = "No CUDA devices are available!";
+        return false;
+      }
+
+      if (config.device < 0 || config.device >= count) {
+        error = "The requested CUDA device does not exist! Check configuration!";
+        return false;
+      }
+
+      return true;
+    }
+
+    static void configure_impl(const Config& config) {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::CudaExecution");
       if (!logger) {
@@ -136,10 +170,10 @@ namespace sbio {
       }
 
 
-      return allocate_impl_helper(Requirements{}, request);
+      return allocate_impl_helper<IO>(Requirements{}, request);
     }
 
-    template <typename... Descriptors, class FTraits>
+    template <class IO, typename... Descriptors, class FTraits>
     static auto allocate_impl_helper(RequirementsList<Descriptors...>,
                                      const AllocationRequest<FTraits>& request) {
       Storage<RequirementsList<Descriptors...>, CudaExecution> s;
@@ -164,6 +198,13 @@ namespace sbio {
 
           buf.set_memory(dev, sz);
           buf.set_host_memory(host);
+
+          if constexpr (reads_to_device<IO>() && requires { IO::register_buffer(dev, sz); }) {
+            // cuFile works better if you register the buffers first
+            if (!IO::register_buffer(dev, sz)) {
+              m_logger->warn("Could not register the Data buffer with IO policy!");
+            }
+          }
         } else if constexpr (std::is_same_v<BufRole, roles::Table>) {
           void* pinned { nullptr };
           check(cudaMallocHost(&pinned, sz), "cudaMallocHost [Table]");
@@ -185,6 +226,17 @@ namespace sbio {
     template <typename Buffer>
     static void* acquire_broker_view_impl(Buffer& buf) {
       if constexpr (requires { buf.host_ptr(); }) {
+        if (buf.host_stale() > 0) {
+          check(cudaMemcpyAsync(buf.host_ptr(),
+                                buf.ptr(),
+                                buf.host_stale(),
+                                cudaMemcpyDeviceToHost,
+                                get_stream()),
+                "cudaMemcpyAsync [acquire host view]");
+          synchronize("cudaStreamSynchronize [acquire host view]");
+          buf.set_host_stale(0);
+        }
+
         return buf.host_ptr();
       } else {
         // Accidentally called on some host buffer so just return that.
@@ -201,6 +253,10 @@ namespace sbio {
         if (view == buf.host_ptr() && nbytes > 0) {
           check(cudaMemcpyAsync(buf.ptr(), view, nbytes, cudaMemcpyHostToDevice, get_stream()),
                 "cudaMemcpyAsync [publish view]");
+        } else if (view == buf.ptr()) {
+          // The device buffer is current, but the host replica is not so will need
+          // to be copied over
+          buf.set_host_stale(nbytes);
         }
       }
     }
