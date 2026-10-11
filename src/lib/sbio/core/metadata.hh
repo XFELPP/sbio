@@ -25,6 +25,8 @@
 
 #include <ncarray/dtype.hh>
 
+#include <atomic> // The MetadataInventory revisions get counted ONLY on the host
+
 #ifdef __CUDACC__
 
 #include <cuda/std/array>
@@ -94,6 +96,18 @@ namespace sbio {
       }
 
       return vec.begin() + low;
+    }
+
+    /**
+     * The next revision of the MetadataInventory.
+     *
+     * @note Revision numbers are unique across all inventories. They are counted
+     *       only on the host.
+     */
+    inline hd_std::uint64_t next_inventory_revision() {
+      static std::atomic<hd_std::uint64_t> next_rev { 1 };
+
+      return next_rev.fetch_add(1, std::memory_order_relaxed);
     }
 
     /**
@@ -282,6 +296,16 @@ namespace sbio {
       SBIO_HD inline bool operator<(const FieldKey& k) const { return key < k; }
     };
 
+    SBIO_HD void touch() {
+#ifdef __CUDA_ARCH__
+      ++m_revision;
+#else
+      m_revision = impl::next_inventory_revision();
+#endif // __CUDA_ARCH__
+    }
+
+    hd_std::uint64_t m_revision { 0 };
+
 #ifdef __CUDACC__
     hd_std::inplace_vector<GroupEntry, MaxGroups> m_groups;
     hd_std::inplace_vector<FieldEntry, MaxFields> m_fields;
@@ -351,6 +375,7 @@ namespace sbio {
       entry.access_ptn = static_cast<hd_std::uint8_t>(ptn);
       entry.epoch = 0;
       m_groups.push_back(entry);
+      touch();
 
       return id;
     }
@@ -427,6 +452,7 @@ namespace sbio {
       }
 
       m_fields.push_back(entry);
+      touch();
     }
 
     /**
@@ -438,7 +464,20 @@ namespace sbio {
     SBIO_HD void finalize() {
       impl::hd_sort(m_groups);
       impl::hd_sort(m_fields);
+      touch();
     }
+
+    /**
+     * @brief An number for the inventory which changes whenver the inventory does.
+     *
+     * Revision numbers are unique among all the inventories on the host. This applies
+     * to the host ONLY though. As a result, if an inventory is copied to a device (GPU)
+     * it can be verified if the revision matches by checking only the revision number
+     * (and address) against the one on the host.
+     *
+     * @returns The revision number for the MetadataInventory.
+     */
+    SBIO_HD hd_std::uint64_t revision() const { return m_revision; }
 
     /**
      * @brief Return a descriptor for the requested data.
