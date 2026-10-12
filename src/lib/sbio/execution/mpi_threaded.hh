@@ -265,6 +265,34 @@ namespace sbio {
       }
     }
 
+    /**
+     * The ordinal (associated number) for the calling parallel unit on calling node.
+     *
+     * The units are numbered rank-first, and then by the rank's threads in the order
+     * that the threads ask for a number. I.e., the first thread of every rank on a
+     * node comes before the second thread.
+     *
+     * @note If there is no node-communicator, the world rank is used with node size 1.
+     */
+    static constexpr std::size_t unit_ordinal() {
+      thread_local const std::size_t thread_ordinal {
+        m_next_thread_ordinal.fetch_add(1, std::memory_order_relaxed)
+      };
+
+      std::size_t node_rank { 0 };
+      std::size_t node_size { 1 };
+      if (m_shmem_rank >= 0 && m_shmem_size > 0) {
+        node_rank = static_cast<std::size_t>(m_shmem_rank);
+        node_size = static_cast<std::size_t>(m_shmem_size);
+      } else if (m_rank > 0) {
+        node_rank = static_cast<std::size_t>(m_rank);
+      } else {
+        node_rank = 0;
+      }
+
+      return node_rank + node_size * thread_ordinal;
+    }
+
     template <class T>
     struct SegmentState {
       SegmentState()
@@ -1109,6 +1137,7 @@ namespace sbio {
     static inline bool m_main_rank_loops { true };
 
     static inline std::size_t m_num_threads { 0 };
+    static inline std::atomic<std::size_t> m_next_thread_ordinal { 0 }; ///< For unit_ordinal routine
 
     /**
      * Communicator used when generating shareable buffers.

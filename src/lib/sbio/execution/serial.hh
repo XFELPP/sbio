@@ -72,6 +72,11 @@ namespace sbio {
     };
 
     /**
+     * The ordinal (associated number) for the calling parallel unit.
+     */
+    static constexpr std::size_t unit_ordinal() { return 0; }
+
+    /**
      * Setup a spdlog logger.
      */
     static void init_logger() {

@@ -170,6 +170,8 @@ namespace sbio {
         Dist::configure_impl(config);
       }
 
+      connect_managers();
+
       if constexpr (requires { Mem::configure_impl(memory_config(config)); }) {
         Mem::configure_impl(memory_config(config));
       }
@@ -204,6 +206,12 @@ namespace sbio {
       if constexpr (requires { Mem::init_logger(); }) {
         Mem::init_logger();
       }
+
+      if constexpr (requires { Mem::template use_io<IO>(); }) {
+        Mem::template use_io<IO>();
+      }
+
+      connect_managers();
 
       return allocate_helper(Requirements {}, request);
     }
@@ -278,6 +286,10 @@ namespace sbio {
                                                         num_accesses);
       }
 
+      if constexpr (requires { Mem::after_get_data(); }) {
+        Mem::after_get_data();
+      }
+
       return status;
     }
 
@@ -306,6 +318,10 @@ namespace sbio {
                                                               num_fetches,
                                                               std::forward<GetCBType>(unit_get_data),
                                                               num_accesses);
+      }
+
+      if constexpr (requires { Mem::after_get_data(); }) {
+        Mem::after_get_data();
       }
 
       return status;
@@ -421,6 +437,18 @@ namespace sbio {
 
   private:
     using Base = Execution<Composed<Dist, Mem>>;
+
+    /**
+     * Tell MemoryManager which parallel unit is the calling one.
+     *
+     * @note The MemoryManager can use this information to distribute buffers
+     *       effectively. E.g., if buffers need to be placed on devices (GPUs).
+     */
+    static void connect_managers() {
+      if constexpr (requires { Mem::use_unit_ordinal(&Dist::unit_ordinal); }) {
+        Mem::use_unit_ordinal(&Dist::unit_ordinal);
+      }
+    }
 
     static const auto& memory_config(const Config& config) {
       if constexpr (requires { typename Mem::Config; }) {

@@ -163,6 +163,19 @@ namespace sbio {
     };
 
     /**
+     * The ordinal (associated number) for the calling parallel unit.
+     *
+     * The threads are given a number in the order that they ask for one.
+     */
+    static std::size_t unit_ordinal() {
+      thread_local const std::size_t ordinal {
+        m_next_unit_ordinal.fetch_add(1, std::memory_order_relaxed)
+      };
+
+      return ordinal;
+    }
+
+    /**
      * Setup a spdlog logger.
      */
     static void init_logger() {
@@ -442,6 +455,7 @@ namespace sbio {
     }
 
     static inline std::size_t m_num_threads { 0 };
+    static inline std::atomic<std::size_t> m_next_unit_ordinal { 0 }; ///< For unit_ordinal routine
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
