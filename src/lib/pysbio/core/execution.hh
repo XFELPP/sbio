@@ -355,8 +355,8 @@ namespace pysbio {
       // Storage created with <PyExecution>) -- Just move the storage buffers over.
       auto move_base_to_py = [&](auto DescTag) {
         using Descriptor = typename decltype(DescTag)::type;
-        target_storage.template get<Descriptor>() =
-          std::move(base_storage.template get<Descriptor>());
+        target_storage.template get_member<Descriptor>() =
+          std::move(base_storage.template get_member<Descriptor>());
       };
 
       ( (move_base_to_py(std::type_identity<Descriptors>{})), ... );

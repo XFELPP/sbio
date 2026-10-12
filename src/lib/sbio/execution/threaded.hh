@@ -25,6 +25,8 @@
 #include "sbio/core/roles.hh"
 #include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/execution/composed.hh"
+#include "sbio/execution/host_memory.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/thread_local_buffer.hh"
 #include "sbio/formats/format_traits.hh"
@@ -47,22 +49,28 @@ namespace sbio {
   /**
    * ThreadedExecution manages a single-process/multi-thread IO strategy.
    *
-   * This execution policy the necessary index distribution, and data synchronization
-   * when operating brokers in a single process/multi-threaded environment. It is
-   * designed to allow data-buffers (`DataRole`), and broker group buffers (`TableRole`)
-   * to use a ThreadLocalBuffer allowing for true thread-level parallelism. Other buffer
-   * roles are intentionally shared using a simpler HostBuffer which makes them
-   * available process wide.
+   * This distribution manager provides the necessary index distribution, and data
+   * synchronization when operating brokers in a single process/multi-threaded environment.
+   * Its base parallel unit is a thread. Data-buffers (`DataRole`), and broker group
+   * buffers (`TableRole`) use per-thread buffers, allowing for true thread-level
+   * parallelism. Other buffer roles are intentionally shared, and available process
+   * wide.
+   *
+   * The `ThreadedExecution` alias below composes this manager with host-memory.
    */
-  class ThreadedExecution : public Execution<ThreadedExecution> {
+  class ThreadedDistribution {
   public:
     template <typename Descriptor>
-    using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, roles::Data> ||
-      std::is_same_v<typename Descriptor::role, roles::Table>,
-      ThreadLocalBuffer,
-      HostBuffer
-    >;
+    static constexpr BufferScope scope_for() {
+      using BufRole = typename Descriptor::role;
+
+      if constexpr (std::is_same_v<BufRole, roles::Data> ||
+                    std::is_same_v<BufRole, roles::Table>) {
+        return BufferScope::PerUnit;
+      } else {
+        return BufferScope::Shared;
+      }
+    }
 
     struct Config {
       std::size_t num_threads { 0 };
@@ -124,7 +132,7 @@ namespace sbio {
       }
 
     private:
-      friend class ThreadedExecution;
+      friend class ThreadedDistribution;
 
       /**
        * Thread-local index to index to distribute.
@@ -155,20 +163,9 @@ namespace sbio {
     };
 
     /**
-     * Allocate ThreadLocalBuffer storage for Index/DataRole and HostBuffer otherwise.
-     *
-     * Beyond the role-based specialization, this execution policy does not perform
-     * any complex calculation when serving allocation requests. If there is memory
-     * available to serve the request, it will be fulfilled withou modification.
-     *
-     * @tparam Requirements The per-buffer-role requirement specifications.
-     * @tparam FTraits The data-format traits.
-     * @param[in] request The allocation request.
-     * @returns Allocated storage per the request.
+     * Setup a spdlog logger.
      */
-    template <IsRequirementsList Requirements, class IO, class FTraits>
-    requires FormatTraits<FTraits, IO, ThreadedExecution>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+    static void init_logger() {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::ThreadedExecution");
       if (!logger) {
@@ -176,34 +173,6 @@ namespace sbio {
       } else {
         m_logger = logger;
       }
-
-      return allocate_impl_helper(Requirements{}, request);
-    }
-
-    template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
-      Storage<RequirementsList<Descriptors...>, ThreadedExecution> s;
-
-      std::size_t i { 0 };
-
-      auto make_thread_local_data = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-
-        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
-
-        using BufRole = typename Descriptor::role;
-        if constexpr (std::is_same_v<BufRole, roles::Data> ||
-                      std::is_same_v<BufRole, roles::Table>) {
-          buf.set_memory(nullptr, final_sz);
-        } else {
-          buf.set_memory(new char[final_sz], final_sz);
-        }
-      };
-      ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
-
-      return s;
     }
 
     /**
@@ -477,6 +446,10 @@ namespace sbio {
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 
+  /**
+   * A thread-based execution policy using host-memory management.
+   */
+  using ThreadedExecution = Composed<ThreadedDistribution, HostMemory>;
 } // namespace sbio
 
 #endif // SBIO_EXECUTION_THREADED_HH
