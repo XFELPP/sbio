@@ -28,6 +28,9 @@
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/types.hh"
+#include "sbio/execution/composed.hh"
+#include "sbio/execution/serial.hh"
+#include "sbio/execution/threaded.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/cuda_device.hh"
 #include "sbio/storage/host_buffer.hh"
@@ -39,18 +42,18 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <initializer_list>
 #include <memory>
-#include <bitset>
+#include <mutex>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 namespace sbio {
-  class CudaExecution;
-
 #ifdef __CUDACC__
   namespace impl {
     /**
@@ -62,20 +65,70 @@ namespace sbio {
     };
 
     /**
+     * A reference to buffer memory from the device.
+     */
+    template <MemorySpace Space>
+    struct BufferRef {
+      SBIO_HD static constexpr MemorySpace memory_space() { return Space; }
+
+      SBIO_HD void* ptr() const { return m_ptr; }
+
+      SBIO_HD std::size_t size() const { return m_size; }
+
+      SBIO_HD void set_memory(void* ptr, std::size_t size) {
+        m_ptr = ptr;
+        m_size = size;
+      }
+
+      void* m_ptr { nullptr };
+      std::size_t m_size { 0 };
+    };
+
+    template <class Policy>
+    struct DeviceSnapshotPolicy {
+      template <class Descriptor>
+      using BufferTypeFor =
+        BufferRef<Policy::template BufferTypeFor<Descriptor>::memory_space()>;
+    };
+
+    template <class StorageT>
+    struct DeviceSnapshot;
+
+    template <typename... Descriptors, class Policy>
+    struct DeviceSnapshot<Storage<RequirementsList<Descriptors...>, Policy>> {
+      using policy = Policy;
+      using type = Storage<RequirementsList<Descriptors...>, DeviceSnapshotPolicy<Policy>>;
+
+      static type take(Storage<RequirementsList<Descriptors...>, Policy>& storage) {
+        type snapshot {};
+        auto copy_ref = [&](auto DescTag) {
+          using Descriptor = typename decltype(DescTag)::type;
+
+          auto& buf { storage.template get<Descriptor>() };
+          snapshot.template get_member<Descriptor>().set_memory(buf.ptr(), buf.size());
+        };
+
+        ( (copy_ref(std::type_identity<Descriptors> {})), ... );
+
+        return snapshot;
+      }
+    };
+
+    /**
      * Perform a DataRequest lookup directly on the device.
      *
      * This assumes the host-code was not GPU-optimized (synchronous direct lookup)
      * so it should be run from a single CUDA thread.
      */
-    template <class FTraits, class StorageT, class InventoryT>
-    __global__ void resolve_in_buffer_kernel(StorageT storage,
+    template <class FTraits, class Policy, class SnapshotT, class InventoryT>
+    __global__ void resolve_in_buffer_kernel(SnapshotT storage,
                                              const Inventory* inv,
                                              typename FTraits::DataRequest req,
-                                             PayloadOffsetCahce cache,
+                                             PayloadOffsetCache cache,
                                              typename FTraits::DataAccessPtn ptn,
                                              std::size_t batch_idx,
                                              DeviceResolved* out) {
-      StorageView<StorageT, CudaExecution> sv(storage);
+      StorageView<SnapshotT, Policy> sv(storage);
       out->result = FTraits::get_data_in_buffer(sv, *inv, req, cache, ptn, batch_idx);
       out->cache = cache;
     }
@@ -107,12 +160,15 @@ namespace sbio {
    * - Otherwise, the lookup will still be done on the host normally, by staging via the
    *   host replica buffer.
    *
-   * @note Field and offset resolution on device is not currently available in an EPolicy.
+   * @note If the MemoryManger is configured, through `Config::devices`, to use multiple
+   *       GPUs, the parallel units will be spread over them.
    */
-  class CudaExecution : public Execution<CudaExecution> {
+  class CudaMemory {
   public:
+    using UnitOrdinalFn = std::size_t (*)();
+
     template <typename Descriptor>
-    using BufferTypeFor = std::conditional_t<
+    using PlacementFor = std::conditional_t<
       std::is_same_v<typename Descriptor::role, roles::Data>,
       CudaMirroredBuffer,
       std::conditional_t<
@@ -123,7 +179,8 @@ namespace sbio {
     >;
 
     struct Config {
-      int device { 0 }; ///< Which GPU (CUDA device)
+      int device { 0 };            ///< Which GPU (CUDA device), if devices is empty
+      std::vector<int> devices {}; ///< Which GPUs to spread units over
     };
 
     static constexpr std::bitset<
@@ -170,10 +227,20 @@ namespace sbio {
         return false;
       }
 
+      for (int device : config.devices) {
+        if (device < 0 || device >= count) {
+          error = "A requested CUDA device (of devices) does not exist! Check configuration!";
+          return false;
+        }
+      }
+
       return true;
     }
 
-    static void configure_impl(const Config& config) {
+    /**
+     * Setup a spdlog logger.
+     */
+    static void init_logger() {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::CudaExecution");
       if (!logger) {
@@ -181,84 +248,64 @@ namespace sbio {
       } else {
         m_logger = logger;
       }
+    }
 
-      check(cudaSetDevice(config.device), "cudaSetDevice");
+    static void configure_impl(const Config& config) {
+      init_logger();
+
+      m_device.store(config.device, std::memory_order_release);
+      m_devices = config.devices;
+      bind_device();
 
       get_stream();
     }
 
-    class IterationState {
-      friend class CudaExecution;
-
-      std::size_t m_event_idx { 0 };
-    };
-
-    template <class T>
-    struct SegmentState {
-      mutable T value {};
-      T& get() const { return value; }
-    };
-
-    template <IsRequirementsList Requirements, class IO, class FTraits>
-    requires FormatTraits<FTraits, IO, CudaExecution>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
-      spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
-      std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::CudaExecution");
-      if (!logger) {
-        m_logger = spdlog::stdout_color_mt("sbio::CudaExecution");
-      } else {
-        m_logger = logger;
-      }
-
-
-      return allocate_impl_helper<IO>(Requirements{}, request);
+    /**
+     * Use the DistributionManager's numbering parallel units.
+     */
+    static void use_unit_ordinal(UnitOrdinalFn unit_ordinal) {
+      m_unit_ordinal.store(unit_ordinal, std::memory_order_release);
     }
 
-    template <class IO, typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
-      Storage<RequirementsList<Descriptors...>, CudaExecution> s;
-      std::size_t i { 0 };
+    template <class IO>
+    static void use_io() {
+      if constexpr (reads_to_device<IO>() &&
+                    requires (void* ptr, std::size_t size) { IO::register_buffer(ptr, size); }) {
+        m_register_buffer.store(&IO::register_buffer, std::memory_order_release);
+      } else {
+        m_register_buffer.store(nullptr, std::memory_order_release);
+      }
+    }
 
-      auto make_buffer = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
+    template <class Buffer>
+    static void allocate_buffer(Buffer& buf, std::size_t size) {
+      if constexpr (std::is_same_v<Buffer&, CudaMirroredBuffer&>) {
+        bind_device();
 
-        using BufRole = typename Descriptor::role;
-        using BufHint = typename Descriptor::hint;
+        void* dev { nullptr };
+        void* host { nullptr };
 
-        std::size_t sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
+        check(cudaMalloc(&dev, size), "cudaMalloc [Data]");
+        check(cudaMallocHost(&host, size), "cudaMallocHost [Data]");
 
-        void* ptr { nullptr };
+        buf.set_memory(dev, size);
+        buf.set_host_memory(host);
 
-        if constexpr (std::is_same_v<BufRole, roles::Data>) {
-          void* dev { nullptr };
-          void* host { nullptr };
-          check(cudaMalloc(&dev, sz), "cudaMalloc [Data]");
-          check(cudaMallocHost(&host, sz), "cudaMallocHost [Data]");
-
-          buf.set_memory(dev, sz);
-          buf.set_host_memory(host);
-
-          if constexpr (reads_to_device<IO>() && requires { IO::register_buffer(dev, sz); }) {
-            // cuFile works better if you register the buffers first
-            if (!IO::register_buffer(dev, sz)) {
-              m_logger->warn("Could not register the Data buffer with IO policy!");
-            }
+        auto register_buffer { m_register_buffer.load(std::memory_order_acquire) };
+        if (register_buffer) { if (!register_buffer(dev, size)) {
+            m_logger->warn("Could not register the Data buffer with IO policy!");
           }
-        } else if constexpr (std::is_same_v<BufRole, roles::Table>) {
-          void* pinned { nullptr };
-          check(cudaMallocHost(&pinned, sz), "cudaMallocHost [Table]");
-
-          buf.set_memory(pinned, sz);
-        } else {
-          buf.set_memory(new char[sz], sz);
         }
-      };
+      } else if constexpr (std::is_same_v<Buffer&, CudaPinnedBuffer&>) {
+        bind_device();
 
-      ( (make_buffer(std::type_identity<Descriptors>{})), ... );
+        void* pinned { nullptr };
+        check(cudaMallocHost(&pinned, size), "cudaMallocHost [Table]");
 
-      return s;
+        buf.set_memory(pinned, size);
+      } else if constexpr (std::is_same_v<Buffer&, HostBuffer&>) {
+        buf.set_memory(new char[size], size);
+      }
     }
 
     /**
@@ -268,6 +315,7 @@ namespace sbio {
     static void* acquire_broker_view_impl(Buffer& buf) {
       if constexpr (requires { buf.host_ptr(); }) {
         if (buf.host_stale() > 0) {
+          bind_device();
           check(cudaMemcpyAsync(buf.host_ptr(),
                                 buf.ptr(),
                                 buf.host_stale(),
@@ -292,6 +340,7 @@ namespace sbio {
     static void publish_broker_view_impl(Buffer& buf, void* view, std::size_t nbytes) {
       if constexpr (requires { buf.host_ptr(); }) {
         if (view == buf.host_ptr() && nbytes > 0) {
+          bind_device();
           check(cudaMemcpyAsync(buf.ptr(), view, nbytes, cudaMemcpyHostToDevice, get_stream()),
                 "cudaMemcpyAsync [publish view]");
         } else if (view == buf.ptr()) {
@@ -302,94 +351,11 @@ namespace sbio {
       }
     }
 
-    template <class FTraits, class FetchCBType, class GetCBType>
-    static IOStatus get_data_impl(typename FTraits::StepIdxType step_idx,
-                                  FetchCBType&& unit_fetcher,
-                                  std::size_t num_fetches,
-                                  GetCBType&& unit_get_data,
-                                  std::size_t num_accesses) {
-      IOStatus status { IOStatus::Success };
-      for (std::size_t i = 0; i < num_fetches; ++i) {
-        if (auto s = unit_fetcher(i); s != IOStatus::Success) {
-          status = s;
-          break;
-        }
-      }
-
-      if (status == IOStatus::Success) {
-        for (std::size_t i = 0; i < num_accesses; ++i) {
-          unit_get_data(i);
-        }
-      }
-
+    /**
+     * Synchronize the stream so that results are returned only once copy completes.
+     */
+    static void after_get_data() {
       synchronize("cudaStreamSynchronize [get_data]");
-
-      return status;
-    }
-
-    template <class FTraits, class FetchCBType, class GetCBType>
-    static IOStatus get_data_steps_impl(const std::initializer_list<typename FTraits::StepIdxType> steps,
-                                        FetchCBType&& unit_fetcher,
-                                        std::size_t num_fetches,
-                                        GetCBType&& unit_get_data,
-                                        std::size_t num_accesses) {
-      IOStatus status { IOStatus::Success };
-      for (std::size_t i = 0; i < num_fetches; ++i) {
-        if (auto s = unit_fetcher(i); s != IOStatus::Success) {
-          status = s;
-          break;
-        }
-      }
-
-      if (status == IOStatus::Success) {
-        bool passed_step { steps.size() == 3 };
-        typename FTraits::StepIdxType first { *steps.begin() };
-        typename FTraits::StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
-        std::size_t count { (last > first) ? static_cast<std::size_t>(last - first) : 1 };
-        for (std::size_t cnt = 0; cnt < count; ++cnt) {
-          for (std::size_t seg = 0; seg < num_accesses; ++seg) {
-            unit_get_data(seg, cnt);
-          }
-        }
-      }
-
-      synchronize("cudaStreamSynchronize [get_data_steps]");
-      return status;
-    }
-
-    template <class FTraits, class IndexTrigger>
-    static typename FTraits::StepIdxType
-    next_impl(IterationState& state,
-              typename FTraits::StepIdxType& max_capacity,
-              IndexTrigger&& trigger) {
-      if (state.m_event_idx >= max_capacity) {
-        if (!trigger() || state.m_event_idx >= max_capacity) {
-          return FTraits::ExhaustedSentinel;
-        }
-      }
-
-
-      return state.m_event_idx++;
-    }
-
-    template <class FTraits, class IndexTrigger>
-    static StepBatch<typename FTraits::StepIdxType>
-    next_batch_impl(IterationState& state,
-                    std::size_t batch_size,
-                    typename FTraits::StepIdxType& max_capacity,
-                    IndexTrigger&& trigger) {
-      using StepIdx = typename FTraits::StepIdxType;
-
-      const StepIdx first { next_impl<FTraits>(state, max_capacity, trigger) };
-      if (first == FTraits::ExhaustedSentinel) {
-        return { FTraits::ExhaustedSentinel, FTraits::ExhaustedSentinel };
-      }
-
-      const StepIdx want { first + static_cast<StepIdx>(batch_size > 0 ? batch_size : 1) };
-      const StepIdx last { want < max_capacity ? want : max_capacity };
-      state.m_event_idx = last;
-
-      return { first, last };
     }
 
 #ifdef __CUDACC__
@@ -404,16 +370,20 @@ namespace sbio {
                                              PayloadOffsetCache& cache,
                                              typename FTraits::DataAccessPtn ptn,
                                              std::size_t batch_idx) {
-      const InventoryT* dev_inv { device_inventory(inv) };
-      impl::DeviceResolved* out { resolved_slot() };
+      using Snapshot = impl::DeviceSnapshot<StorageT>;
+      using Policy = typename Snapshot::policy;
 
-      impl::resolve_in_buffer_kernel<FTraits><<<1, 1, 0, get_stream()>>>(storage,
-                                                                         dev_inv,
-                                                                         req,
-                                                                         cache,
-                                                                         ptn,
-                                                                         batch_idx,
-                                                                         out);
+      bind_device();
+      const InventoryT* dev_inv { device_inventory<Policy>(inv) };
+      impl::DeviceResolved* out { resolved_slot<Policy>() };
+
+      impl::resolve_in_buffer_kernel<FTraits, Policy><<<1, 1, 0, get_stream()>>>(Snapshot::take(storage),
+                                                                                 dev_inv,
+                                                                                 req,
+                                                                                 cache,
+                                                                                 ptn,
+                                                                                 batch_idx,
+                                                                                 out);
       check(cudaGetLastError(), "resolve_in_buffer_kernel [launch]");
       synchronize("cudaStreamSynchronize [resolve_in_buffer]");
 
@@ -424,15 +394,55 @@ namespace sbio {
 #endif // __CUDACC__
 
     static void synchronize(const char* msg) {
+      bind_device();
       check(cudaStreamSynchronize(get_stream()), msg);
     }
 
     static cudaStream_t get_stream() {
-      if (m_stream == nullptr) {
-        check(cudaStreamCreate(&m_stream), "cudaStreamCreate");
+      static thread_local cudaStream_t stream { nullptr };
+      if (stream == nullptr) {
+        bind_device();
+        check(cudaStreamCreate(&stream), "cudaStreamCreate");
       }
 
-      return m_stream;
+      return stream;
+    }
+
+    /**
+     * The device associated to the calling parallel unit.
+     *
+     * When CudaMemory is configured with `devices` (as opposed to just `device`)
+     * a given parallelunit will be assigned a particular device to use from those
+     * available. Otherwise, every parallel unit just uses `device`.
+     *
+     * @note The calculation is simple: `devices[ordinal % devices.size()]`
+     *       `ordinal` is provided by the DistributionManager for numbering
+     *       each of the parallel units. (E.g., it could be an MPI rank).
+     */
+    static int unit_device() {
+      if (m_devices.empty()) {
+        return m_device.load(std::memory_order_acquire);
+      }
+
+      const UnitOrdinalFn unit_ordinal {
+        m_unit_ordinal.load(std::memory_order_acquire)
+      };
+
+      const std::size_t ordinal { unit_ordinal ? unit_ordinal() : 0 };
+
+      return m_devices[ordinal % m_devices.size()];
+    }
+
+    /**
+     * Make the calling unit's device the current device for the host htread.
+     */
+    static void bind_device() {
+      const int device { unit_device() };
+      thread_local int bound { -1 };
+      if (bound != device) {
+        check(cudaSetDevice(device), "cudaSetDevice");
+        bound = device;
+      }
     }
 
   private:
@@ -443,8 +453,11 @@ namespace sbio {
      * @note The copy is updated each time the host-side copy changes. The tracking is
      *       done using the revision numbers which are globally unique (host-side) for
      *       all metadata inventories.
+     * @note Each parallel unit has its own set of copies. These exist and are updated
+     *       on that units assigned device, using its own stream, so that different
+     *       units dont overwrite copies from each other.
      */
-    template <class InventoryT>
+    template <class Policy, class InventoryT>
     static const InventoryT* device_inventory(const InventoryT& inv) {
       static_assert(std::is_trivially_copyable_v<InventoryT>,
                     "MetadataInventory must be trivally copyable to use on GPU.");
@@ -453,10 +466,16 @@ namespace sbio {
         void* ptr { nullptr };
         std::uint64_t revision { 0 };
       };
-      static std::unordered_map<const void*, DeviceCopy> copies;
+      static typename Policy:: template SegmentState<
+        std::unordered_map<const void*, DeviceCopy>
+      > unit_copies {};
 
-      DeviceCopy& copy { copies[&inv] };
+      DeviceCopy& copy { unit_copies.get()[&inv] };
       if (copy.ptr == nullptr) {
+        check(cudaMalloc(&copy.ptr, sizeof(InventoryT)), "cudaMalloc [device_inventory]");
+      }
+
+      if (copy.revision != inv.revision()) {
         check(cudaMemcpyAsync(copy.ptr,
                               &inv,
                               sizeof(InventoryT),
@@ -472,8 +491,11 @@ namespace sbio {
     /**
      * Host memory (pinned) the resolution kernel puts results in.
      */
+    template <class Policy>
     static impl::DeviceResolved* resolved_slot() {
-      static impl::DeviceResolved* slot { nullptr };
+      static typename Policy::template SegmentState<impl::DeviceResolved*> slots {};
+
+      impl::DeviceResolved*& slot { slots.get() };
       if (slot == nullptr) {
         void* ptr { nullptr };
         check(cudaMallocHost(&ptr, sizeof(impl::DeviceResolved)),
@@ -487,15 +509,25 @@ namespace sbio {
 
     static void check(cudaError_t err, const char* what) {
       if (err != cudaSuccess) {
-        m_logger->critical("{} failed: {}", what, cudaGetErrorString(err));
+        if (m_logger) {
+          m_logger->critical("{} failed: {}", what, cudaGetErrorString(err));
+        }
         std::abort();
       }
     }
 
-    static inline cudaStream_t m_stream { nullptr };
+    using RegisterFn = bool (*)(void*, std::size_t);
+
+    static inline std::atomic<int> m_device { 0 };
+    static inline std::vector<int> m_devices {}; ///< Only written once at configure
+    static inline std::atomic<UnitOrdinalFn> m_unit_ordinal { nullptr };
+    static inline std::atomic<RegisterFn> m_register_buffer { nullptr };
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 
+  using CudaExecution = Composed<SerialDistribution, CudaMemory>;
+
+  using ThreadedCudaExecution = Composed<ThreadedDistribution, CudaMemory>;
 } // namespace sbio
 
 #endif // SBIO_EXECUTION_CUDA_HH
