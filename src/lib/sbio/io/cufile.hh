@@ -41,7 +41,10 @@ namespace sbio {
      *       aligned sizes and offsets are faster.
      */
     static constexpr IOCapability Capabilities {
-      IOCapability::ReadToDevice | IOCapability::ReadToHost | IOCapability::ReadToPinned
+      IOCapability::ReadToDevice    |
+      IOCapability::ReadToHost      |
+      IOCapability::ReadToPinned    |
+      IOCapability::ConcurrentReads
     };
 
     cuFileIO();
