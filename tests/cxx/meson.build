@@ -40,7 +40,7 @@ if build_core_opt and build_tests_opt
         sbiofmt_cuda_sources = [
             'test_cuda_direct.cc',
             'test_cuda_staged.cc',
-        #    'test_cuda_threaded.cc',
+            'test_cuda_threaded.cc',
         ]
         test_sbiofmt_cuda = executable(
             'test_sbiofmt_cuda',
