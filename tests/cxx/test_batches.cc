@@ -236,4 +236,27 @@ namespace {
                                                                      BatchParams { 7, 3 },
                                                                      BatchParams { 7, 10 },
                                                                      BatchParams { 50, 8 }));
+
+  // Check that asking for too large a batch gets capped.
+  TEST(Batches, RequestedSizeIsCappedAtMaxBatchSize) {
+    constexpr std::size_t NumEvents { 40 };
+    constexpr BatchParams Params { 7, 3 };
+
+    SerialRandomDataSource ds;
+    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, NumEvents, Params);
+    auto grp = ds.get_stream_group("det0");
+    ASSERT_GT(grp.num_segments(), 0u);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    for (auto batch : ds.batches(64)) {
+      EXPECT_EQ(batch.first, expected);
+      EXPECT_LE(batch.count(), Params.max_batch_size);
+      bad += count_bad_steps(grp, batch.first, batch.last);
+      expected = batch.last;
+    }
+
+    EXPECT_EQ(expected, NumEvents);
+    EXPECT_EQ(bad, 0u);
+  }
 } // anonymous namespace

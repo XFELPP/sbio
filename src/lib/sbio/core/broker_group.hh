@@ -35,6 +35,7 @@
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
 
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -280,9 +281,9 @@ namespace sbio {
 
       return nullptr;
     }
-    inline std::size_t num_stream_brokers() const { return m_topology.num_stream_brokers; }
+    SBIO_HD inline std::size_t num_stream_brokers() const { return m_topology.num_stream_brokers; }
 
-    inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
+    SBIO_HD inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
       const auto& seg { m_topology.active_segment(step_idx, broker_no) };
       auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
 
@@ -295,18 +296,47 @@ namespace sbio {
       return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
     }
 
-    inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
-                                    std::size_t broker_no) const {
+    /**
+     * Fetch a batch of the group's steps for a StreamBroker `broker_no`.
+     *
+     * @note When using `StepMapping::AlignTo`, a StreamBroker of another access
+     *       pattern fetches the range that must be mapped onto. Then the alignment
+     *       is done.
+     *
+     * @param[in] steps The batch of steps [first, last)
+     * @param[in] broker_no The StreamBroker to fetch for.
+     * @returns The IOStatus for the fetch.
+     */
+    SBIO_HD inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
+                                            std::size_t broker_no) const {
       const auto& seg { m_topology.active_segment(*steps.begin(), broker_no) };
+      if (!is_aligned(seg)) {
+        return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
+      }
 
-      return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
+      // Otherwise we have to do the step mapping/alignment
+      const bool passed_step { steps.size() == 3 };
+      const StepIdxType first { *steps.begin() };
+      const StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+
+      std::size_t first_ordinal { 0 };
+      std::size_t end_ordinal { 0 };
+      const auto status { map_batch(seg, first, last, first_ordinal, end_ordinal) };
+      if (status != IOStatus::Success) {
+        return status;
+      }
+
+      return seg.broker->fetch_steps({ static_cast<StepIdxType>(first_ordinal),
+                                       static_cast<StepIdxType>(end_ordinal) },
+                                     seg.access_ptn,
+                                     seg.cursor.get());
     }
 
     template <class CBType>
-    inline DataResult get_data_for(DataRequest& req,
-                                   std::size_t segment_no,
-                                   CBType&& callback,
-                                   std::size_t batch_idx = 0) const {
+    SBIO_HD inline DataResult get_data_for(DataRequest& req,
+                                           std::size_t segment_no,
+                                           CBType&& callback,
+                                           std::size_t batch_idx = 0) const {
       req.segment_number = m_topology.segment(segment_no).format_segment_id;
 
       auto* stream_broker { m_topology.broker_for_segment(segment_no) };
@@ -323,9 +353,9 @@ namespace sbio {
       return res;
     }
 
-    inline DataResult get_data_for(DataRequest& req,
-                                   std::size_t segment_no,
-                                   std::size_t batch_idx = 0) const {
+    SBIO_HD inline DataResult get_data_for(DataRequest& req,
+                                           std::size_t segment_no,
+                                           std::size_t batch_idx = 0) const {
       req.segment_number = m_topology.segment(segment_no).format_segment_id;
 
       auto* stream_broker { m_topology.broker_for_segment(segment_no) };
@@ -585,8 +615,8 @@ namespace sbio {
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <typename... Args>
-    inline ncarray::SOViewFor<MemTag> resolve_data(const StepIdxType& step_idx,
-                                                   Args&&... args) const {
+    SBIO_HD inline ncarray::SOViewFor<MemTag> resolve_data(const StepIdxType& step_idx,
+                                                           Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
       DataResult ref_res;
@@ -646,9 +676,9 @@ namespace sbio {
      * @param[in] other_no The StreamBroker of the other group.
      * @returns Whether the two fetches are identical.
      */
-    inline bool shares_fetch(std::size_t broker_no,
-                             const BrokerGroup& other,
-                             std::size_t other_no) const {
+    SBIO_HD inline bool shares_fetch(std::size_t broker_no,
+                                     const BrokerGroup& other,
+                                     std::size_t other_no) const {
       if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
         return false; // The fetched StreamBroker depends on the step
       } else {
@@ -677,14 +707,14 @@ namespace sbio {
 
       auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
+      assert(count * this->num_segments() * sizeof(void *) <= ptr_buf.size() &&
+             "A requested batch cannot be larger than configured max_batch_size!");
 
       auto read_cb = [&](std::size_t i, auto&&... opt_step) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           /// TODO: Setup Chronological
         } else {
-          const auto& seg { m_topology.active_segment(*steps.begin(), i) };
-
-          return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
+          return fetch_steps_for(steps, i);
         }
       };
 
@@ -696,7 +726,7 @@ namespace sbio {
           auto res = get_data_for(req,
                                   i,
                                   std::forward<CBType>(callback),
-                                  cnt);
+                                  batch_slot(i, first, cnt));
 
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
@@ -764,14 +794,14 @@ namespace sbio {
 
       auto& ptr_buf = this->m_ptr_storage.template get<roles::Table>();
       const void** ptr_tbl = reinterpret_cast<const void**>(ptr_buf.ptr());
+      assert(count * this->num_segments() * sizeof(void *) <= ptr_buf.size() &&
+             "A requested batch cannot be larger than configured max_batch_size!");
 
       auto read_cb = [&](std::size_t i, auto&&... opt_step) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           // TODO: Setup Chronological
         } else {
-          const auto& seg { m_topology.active_segment(*steps.begin(), i) };
-
-          return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
+          return fetch_steps_for(steps, i);
         }
       };
 
@@ -780,7 +810,7 @@ namespace sbio {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
           // TODO: Setup Chronological
         } else {
-          auto res = get_data_for(req, i, cnt);
+          auto res = get_data_for(req, i, batch_slot(i, first, cnt));
 
           // NOTE: The order of the segments may not be the "physical" order
           // -> Use the segment number from the request to populate m_ptrs
@@ -850,9 +880,9 @@ namespace sbio {
      *          depending on whether MemTag is HostTag or DevTag, respectively.
      */
     template <typename... Args>
-    inline ncarray::SOViewFor<MemTag> resolve_multi_data(const StepIdxType& first,
-                                                         const StepIdxType& last,
-                                                         Args&&... args) const {
+    SBIO_HD inline ncarray::SOViewFor<MemTag> resolve_multi_data(const StepIdxType& first,
+                                                                 const StepIdxType& last,
+                                                                 Args&&... args) const {
       DataRequest req(group_name(), group_type(), std::forward<Args>(args)...);
 
       const std::size_t count { (last > first) ? static_cast<std::size_t>(last - first) : 1 };
@@ -861,12 +891,14 @@ namespace sbio {
 
       auto& ptr_buf { this->m_ptr_storage.template get<roles::Table>() };
       const void** ptr_tbl { reinterpret_cast<const void**>(ptr_buf.ptr()) };
+      assert(count * this->num_segments() * sizeof(void *) <= ptr_buf.size() &&
+             "A requested batch cannot be larger than configured max_batch_size!");
 
       if constexpr (FTraits::PartitioningStrategy != StreamPartitioningStrategy::Chronological) {
         for (std::size_t cnt = 0; cnt < count; ++cnt) {
           for (std::size_t i = 0; i < this->num_segments(); ++i) {
             const auto& seg { m_topology.segment(i) };
-            auto res = get_data_for(req, i, cnt);
+            auto res = get_data_for(req, i, batch_slot(i, first, cnt));
 
             ptr_tbl[cnt * this->num_segments() + seg.logical_slot] = const_cast<void*>(res.data);
             if (i == 0 && cnt == 0) {
@@ -897,6 +929,89 @@ namespace sbio {
 
   private:
     mutable const void* m_ptrs[MaxSegments]; // Final coalesced reads will be left here.
+
+    /**
+     * Whether a particular segment's steps are being aligned to a different access pattern.
+     *
+     * @note This alignment is only available when using the StreamBroker's generic
+     *       indexing routines (or, at least, we can only know if its being done)
+     */
+    SBIO_HD inline bool is_aligned(const DataSegmentRef& seg) const {
+      if constexpr (BrokerType::UsesGenericIndex) {
+        return
+          m_topology.step_mapping == StepMapping::AlignTo &&
+          seg.access_ptn != m_topology.align_ptn;
+      } else {
+        return false;
+      }
+    }
+
+    /**
+     * Remap a segment's steps onto the batch of steps for the access pattern its aligend to.
+     *
+     * This maps [first_ordinal, end_ordinal) onto [first, last) that the segment was
+     * configured to align to.
+     *
+     * @note The mapping is monotonic and runs from the ordinal of `first` to the ordinal
+     *       of `last - 1`.
+     *
+     * @note Several steps may map to the same ordinal. In that case, it will only
+     *       actually be fetched once.
+     *
+     * @note If the segment's steps are more frequent than those of the pattern it's
+     *       being aligned to, the remapped range may end up being longer than the
+     *       configured max batch size. It wouldn't fit into the Data buffer in that
+     *       case and a PayloadTruncatedError would be returned.
+     */
+    SBIO_HD inline IOStatus map_batch(const DataSegmentRef& seg,
+                                      StepIdxType first,
+                                      StepIdxType last,
+                                      std::size_t& first_ordinal,
+                                      std::size_t& end_ordinal) const {
+      const StepIdxType last_step {
+        (last > first) ? static_cast<StepIdxType>(last - 1) : first
+      };
+
+      IOStatus status {
+        m_topology.map_step(seg, m_topology.remap_step_idx(first), first_ordinal)
+      };
+      if (status != IOStatus::Success) {
+        return status;
+      }
+
+      std::size_t last_ordinal { 0 };
+      status =
+        m_topology.map_step(seg, m_topology.remap_step_idx(last_step), last_ordinal);
+      end_ordinal = last_ordinal + 1;
+
+      return status;
+    }
+
+    /**
+     * Determined where a step `first + cnt` is within a fetched batch of steps.
+     *
+     * If there are no step raemapping then its just `cnt`. If AlignTo was configured
+     * though, then the remap must be considered and its the ordinal relative to the
+     * first remapped ordinal.
+     */
+    SBIO_HD inline std::size_t batch_slot(std::size_t segment_no,
+                                          StepIdxType first,
+                                          std::size_t cnt) const {
+      const auto& seg { m_topology.segment(segment_no) };
+      if (!is_aligned(seg)) {
+        return cnt;
+      }
+
+      std::size_t first_ordinal { 0 };
+      std::size_t ordinal { 0 };
+      const StepIdxType step { static_cast<StepIdxType>(first + cnt) };
+      if (m_topology.map_step(seg, m_topology.remap_step_idx(first), first_ordinal) != IOStatus::Success ||
+          m_topology.map_step(seg, m_topology.remap_step_idx(step), ordinal) != IOStatus::Success) {
+        return cnt; // Not fetched (the fetch failed with the same mapping)
+      }
+
+      return ordinal - first_ordinal;
+    }
 
     mutable GroupTopology<BrokerType, MaxSegments> m_topology;
 
