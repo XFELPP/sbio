@@ -16,7 +16,8 @@ if build_core_opt and build_tests_opt
     sbiofmt_test_sources = [
         'test_batches.cc',
         'test_broker_group.cc',
-        # 'test_context.cc',
+        'test_composed.cc',
+        'test_context.cc',
         'test_execution_policies.cc',
         'test_indexing_modes.cc',
         'test_iteration.cc',
@@ -36,7 +37,11 @@ if build_core_opt and build_tests_opt
     test('Running test suite using sbio rndfmt.', test_sbiofmt, verbose: true)
 
     if sbio_has_cuda
-        sbiofmt_cuda_sources = ['test_cuda_direct.cc', 'test_cuda_staged.cc']
+        sbiofmt_cuda_sources = [
+            'test_cuda_direct.cc',
+            'test_cuda_staged.cc',
+        #    'test_cuda_threaded.cc',
+        ]
         test_sbiofmt_cuda = executable(
             'test_sbiofmt_cuda',
             sbiofmt_cuda_sources,
