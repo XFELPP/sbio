@@ -19,6 +19,8 @@
 
 #include "pysbio/formats/pyformat_traits.hh"
 
+#include "pysbio/io/pyio.hh"
+
 #include "sbio/util/string.hh"
 
 #ifdef SBIO_HAS_XTC1
@@ -41,6 +43,8 @@ namespace py = pybind11;
 PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
   ftraits_module.doc() = "sbio Python bindings for the generic data format traits.";
 
+  py::module_::import("sbio.io");
+
   py::native_enum<pysbio::FTraits>(ftraits_module,
                                    "FTraits",
                                    "enum.Enum",
@@ -62,66 +66,7 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .export_values()
     .finalize();
 
-  py::classh<sbio::XTC1Traits::StreamParameters>(ftraits_module, "XTC1StreamParameters")
-    .def(py::init<>())
-    .def_property("smd_path",
-                  [](const sbio::XTC1Traits::StreamParameters& self) -> std::string {
-                    return self.smd_path;
-                  },
-                  [](sbio::XTC1Traits::StreamParameters& self,
-                     const std::string& val) {
-                    sbio::safe_strncpy(self.smd_path,
-                                       val.c_str(),
-                                       sbio::XTC1::MaxNameSize);
-                  })
-    .def_property("xtc_path",
-                  [](const sbio::XTC1Traits::StreamParameters& self) -> std::string {
-                    return self.xtc_path;
-                  },
-                  [](sbio::XTC1Traits::StreamParameters& self, const std::string& val) {
-                    sbio::safe_strncpy(self.xtc_path,
-                                       val.c_str(),
-                                       sbio::XTC1::MaxNameSize);
-                  })
-
-    .def_readwrite("max_dgram_size",
-                   &sbio::XTC1Traits::StreamParameters::max_dgram_size)
-    .def_readwrite("events_per_read",
-                   &sbio::XTC1Traits::StreamParameters::events_per_read);
-
-  py::classh<sbio::XTC1Traits::DiscoveryState>(ftraits_module, "XTC1StreamState")
-    .def(py::init<
-      ssize_t,
-      std::uint64_t,
-      bool,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      sbio::XTC1Traits::DataAccessPtn
-    >())
-    .def_readwrite("last_l1_idx_seen",
-                   &sbio::XTC1Traits::DiscoveryState::last_l1_idx_seen)
-    .def_readwrite("next_bd_offset",
-                   &sbio::XTC1Traits::DiscoveryState::next_bd_offset)
-    .def_readwrite("seen_end_run",
-                   &sbio::XTC1Traits::DiscoveryState::seen_end_run)
-    .def_readwrite("l1_offset_idx",
-                   &sbio::XTC1Traits::DiscoveryState::l1_offset_idx)
-    .def_readwrite("trans_offset_idx",
-                   &sbio::XTC1Traits::DiscoveryState::trans_offset_idx)
-    .def_readwrite("events_per_read",
-                   &sbio::XTC1Traits::DiscoveryState::events_per_read)
-    .def_readwrite("num_transitions",
-                   &sbio::XTC1Traits::DiscoveryState::num_transitions)
-    .def_readwrite("num_events",
-                   &sbio::XTC1Traits::DiscoveryState::num_events)
-    .def_readwrite("curr_smd_offset",
-                   &sbio::XTC1Traits::DiscoveryState::curr_smd_offset)
-    .def_readwrite("last_accessed_ptn",
-                   &sbio::XTC1Traits::DiscoveryState::last_accessed_ptn);
+  pysbio::impl::bind_stream_config<sbio::XTC1Traits>(ftraits_module, "XTC1StreamConfig");
 
   py::classh<sbio::XTC1Traits::DataRequest>(ftraits_module, "XTC1DataRequest")
     .def(py::init<const char*, const char*, const char*, const char*>())
@@ -189,97 +134,39 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .export_values()
     .finalize();
 
-  py::classh<sbio::XTC2Traits::StreamParameters>(ftraits_module, "XTC2StreamParameters")
-    .def(py::init<>())
-    .def_property("smd_path",
-                  [](const sbio::XTC2Traits::StreamParameters& self) -> std::string {
-                    return self.smd_path;
-                  },
-                  [](sbio::XTC2Traits::StreamParameters& self,
-                     const std::string& val) {
-                    sbio::safe_strncpy(self.smd_path,
-                                       val.c_str(),
-                                       sbio::XTC2::MaxNameSize);
-                  })
-    .def_property("xtc_path",
-                  [](const sbio::XTC2Traits::StreamParameters& self) -> std::string {
-                    return self.xtc_path;
-                  },
-                  [](sbio::XTC2Traits::StreamParameters& self, const std::string& val) {
-                    sbio::safe_strncpy(self.xtc_path,
-                                       val.c_str(),
-                                       sbio::XTC2::MaxNameSize);
-                  })
-    .def_readwrite("max_dgram_size",
-                   &sbio::XTC2Traits::StreamParameters::max_dgram_size)
-    .def_readwrite("events_per_read",
-                   &sbio::XTC2Traits::StreamParameters::events_per_read);
-
-  py::classh<sbio::XTC2Traits::DiscoveryState>(ftraits_module, "XTC2StreamState")
-    .def(py::init<
-      ssize_t,
-      std::uint64_t,
-      bool,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      std::size_t,
-      sbio::XTC2Traits::DataAccessPtn
-    >())
-    .def_readwrite("last_l1_idx_seen",
-                   &sbio::XTC2Traits::DiscoveryState::last_l1_idx_seen)
-    .def_readwrite("next_bd_offset",
-                   &sbio::XTC2Traits::DiscoveryState::next_bd_offset)
-    .def_readwrite("seen_end_run",
-                   &sbio::XTC2Traits::DiscoveryState::seen_end_run)
-    .def_readwrite("l1_offset_idx",
-                   &sbio::XTC2Traits::DiscoveryState::l1_offset_idx)
-    .def_readwrite("trans_offset_idx",
-                   &sbio::XTC2Traits::DiscoveryState::trans_offset_idx)
-    .def_readwrite("events_per_read",
-                   &sbio::XTC2Traits::DiscoveryState::events_per_read)
-    .def_readwrite("num_transitions",
-                   &sbio::XTC2Traits::DiscoveryState::num_transitions)
-    .def_readwrite("num_events",
-                   &sbio::XTC2Traits::DiscoveryState::num_events)
-    .def_readwrite("curr_smd_offset",
-                   &sbio::XTC2Traits::DiscoveryState::curr_smd_offset)
-    .def_readwrite("last_accessed_ptn",
-                   &sbio::XTC2Traits::DiscoveryState::last_accessed_ptn);
+  pysbio::impl::bind_stream_config<sbio::XTC2Traits>(ftraits_module, "XTC2StreamConfig");
 
   py::classh<sbio::XTC2Traits::DataRequest>(ftraits_module, "XTC2DataRequest")
     .def(py::init<const char*, const char*, const char*, const char*>())
     .def(py::init<const char*, const char*>())
     .def_property("detector_type",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.detector_type;
+                    return self.group_type;
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.detector_type, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.group_type = val;
                   })
     .def_property("detector_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.detector_name;
+                    return self.group_name;
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.detector_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.group_name = val;
                   })
     .def_readwrite("segment_number", &sbio::XTC2Traits::DataRequest::segment_number)
     .def_property("alg_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.alg_name;
+                    return self["alg"];
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.alg_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.set<"alg">(val.c_str());
                   })
     .def_property("field_name",
                   [](const sbio::XTC2Traits::DataRequest& self) -> std::string {
-                    return self.field_name;
+                    return self["field"];
                   },
                   [](sbio::XTC2Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.field_name, val.c_str(), sbio::XTC2::MaxNameSize);
+                    self.set<"field">(val.c_str());
                   });
 
   py::classh<sbio::XTC2::DataResult>(ftraits_module, "XTC2DataResult")

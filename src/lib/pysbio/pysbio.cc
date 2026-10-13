@@ -23,6 +23,8 @@
 #include "pysbio/pybroker_group.hh"
 #include "pysbio/pydatasource.hh"
 
+#include "sbio/core/types.hh"
+
 #include <ncarray/ncarrays.hh>
 #ifdef SBIO_HAS_MPI
 #include <mpi.h>
@@ -71,7 +73,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::module_::import("sbio.formats.pyxtc2");
 #endif
 
-  py::module_::import("sbio.io");
+  //py::module_::import("sbio.io");
   py::module_::import("sbio.execution");
   py::module_::import("sbio.brokers");
   py::module_::import("sbio.broker_groups");
@@ -82,10 +84,103 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::classh<BrokerGroupWrapper>(pysbio_module, "BrokerGroupWrapper", py::dynamic_attr())
     .def_property_readonly("group_type", &BrokerGroupWrapper::get_detector_type)
     .def_property_readonly("serial_number", &BrokerGroupWrapper::get_serial_number)
-    .def("get_data", &BrokerGroupWrapper::get_data)
-    .def("get_multi_data", &BrokerGroupWrapper::get_multi_data);
+    .def("get_data",
+         &BrokerGroupWrapper::get_data,
+         py::arg("step"),
+         py::arg("alg"),
+         py::arg("field"))
+    .def("get_multi_data",
+         &BrokerGroupWrapper::get_multi_data,
+         py::arg("steps"),
+         py::arg("alg"),
+         py::arg("field"))
+    .def("resolve_data",
+         &BrokerGroupWrapper::resolve_data,
+         py::arg("step"),
+         py::arg("alg"),
+         py::arg("field"))
+    .def("resolve_multi_data",
+         &BrokerGroupWrapper::resolve_multi_data,
+         py::arg("first"),
+         py::arg("last"),
+         py::arg("alg"),
+         py::arg("field"));
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
+
+  using Batch = sbio::StepBatch<std::size_t>;
+  py::classh<Batch>(pysbio_module, "StepBatch", "Contiguous steps [first, last).")
+    .def(py::init<>())
+    .def(py::init([](std::size_t first, std::size_t last) { return Batch { first, last }; }),
+         py::arg("first"),
+         py::arg("last"))
+    .def_readwrite("first", &Batch::first)
+    .def_readwrite("last", &Batch::last)
+    .def("count", &Batch::count)
+    .def("__len__", &Batch::count)
+    .def("__iter__", [](const Batch& self) {
+      return py::module_::import("builtins").attr("range")(self.first, self.last).attr("__iter__")();
+    })
+    .def("__repr__", [](const Batch& self) {
+      return "StepBatch(" + std::to_string(self.first) + ", " + std::to_string(self.last) + ")";
+    });
+
+  py::classh<StepIterator>(pysbio_module,
+                           "StepIterator",
+                           "Iterates the steps (or batches) of a DataSource. Leaving the "
+                           "iteration (exhaustion, close(), a with block, or freeing the "
+                           "iterator after a break) ends it for the calling unit.")
+    .def("__iter__", [](StepIterator& self) -> StepIterator& { return self; })
+    .def("__next__", &StepIterator::next)
+    .def("close", &StepIterator::close)
+    .def("__enter__", [](StepIterator& self) -> StepIterator& { return self; })
+    .def("__exit__", [](StepIterator& self, py::args) { self.close(); });
+
+  py::classh<ZipStep>(pysbio_module, "ZipStep", "A step of a zipped iteration.")
+    .def_readonly("step", &ZipStep::step)
+    .def_readonly("status", &ZipStep::status)
+    .def("__int__", [](const ZipStep& self) { return self.step; })
+    .def("__index__", [](const ZipStep& self) { return self.step; })
+    .def("get",
+         [](const ZipStep& self, BrokerGroupWrapper& group, const char* alg, const char* field) {
+           if (self.status != sbio::IOStatus::Success) {
+             throw std::runtime_error("The step's fetch failed (see `status`).");
+           }
+           return group.resolve_data(self.step, alg, field);
+         },
+         py::arg("group"),
+         py::arg("alg"),
+         py::arg("field"),
+         "The group's data for this step (the group must be one of the zipped groups).");
+
+  py::classh<ZipBatch>(pysbio_module, "ZipBatch", "A batch of a zipped iteration.")
+    .def_readonly("first", &ZipBatch::first)
+    .def_readonly("last", &ZipBatch::last)
+    .def_readonly("status", &ZipBatch::status)
+    .def("count", [](const ZipBatch& self) { return self.last - self.first; })
+    .def("__len__", [](const ZipBatch& self) { return self.last - self.first; })
+    .def("get",
+         [](const ZipBatch& self, BrokerGroupWrapper& group, const char* alg, const char* field) {
+           if (self.status != sbio::IOStatus::Success) {
+             throw std::runtime_error("The batch's fetch failed (see `status`).");
+           }
+           return group.resolve_multi_data(self.first, self.last, alg, field);
+         },
+         py::arg("group"),
+         py::arg("alg"),
+         py::arg("field"),
+         "The group's data for this batch (the group must be one of the zipped groups).");
+
+  py::classh<ZipIterator>(pysbio_module,
+                          "ZipIterator",
+                          "Iterates the steps (or batches) of a DataSource with the fetches "
+                          "for a set of groups zipped. Ends as a StepIterator does.")
+    .def("__iter__", [](ZipIterator& self) -> ZipIterator& { return self; })
+    .def("__next__", &ZipIterator::next)
+    .def("close", &ZipIterator::close)
+    .def_property_readonly("num_fetches", &ZipIterator::num_fetches)
+    .def("__enter__", [](ZipIterator& self) -> ZipIterator& { return self; })
+    .def("__exit__", [](ZipIterator& self, py::args) { self.close(); });
 
   py::classh<PyDataSource>(pysbio_module, "DataSource")
     .def(py::init<
@@ -124,14 +219,48 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     },
       py::keep_alive<0, 1>())
     .def("steps", [](PyDataSource& self) {
-      // This is just another name for the iter function, for API similarity
-      auto iterator_maker = [](auto& ds) {
-        return py::make_iterator(ds.begin(), ds.end());
-      };
-
-      return std::visit(iterator_maker, self.ds());
+      return self.steps(false, 0);
     },
-      py::keep_alive<0, 1>());
+      py::keep_alive<0, 1>())
+    .def("batches", [](PyDataSource& self, std::size_t batch_size) {
+      return self.steps(true, batch_size);
+    },
+      py::arg("batch_size") = 0,
+      py::keep_alive<0, 1>(),
+      "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).")
+    .def("zip", [](PyDataSource& self, py::args groups) {
+      return self.zip(groups.cast<std::vector<py::object>>(), false);
+    },
+      py::keep_alive<0, 1>(),
+      "Iterate the steps, fetching once for all of the given groups (detectors).")
+    .def("zip_batches", [](PyDataSource& self, py::args groups) {
+      return self.zip(groups.cast<std::vector<py::object>>(), true);
+     },
+      py::keep_alive<0, 1>(),
+      "Iterate batches of steps, fetching once for all of the given groups.");
+
+  py::classh<ContextWrapper>(pysbio_module,
+                             "Context",
+                             "Checks that an Execution policy can be used (build and "
+                             "environment), configures it once, and creates DataSources.")
+    .def(py::init<pysbio::ExecutionPolicy, py::dict, pysbio::IOPolicy>(),
+         py::arg("epolicy"),
+         py::arg("exec_cfg") = py::dict(),
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX)
+    .def_property_readonly("ok", &ContextWrapper::ok)
+    .def_property_readonly("error", &ContextWrapper::error)
+    .def_property_readonly("epolicy", &ContextWrapper::policy)
+    .def("env", &ContextWrapper::env, py::arg("key"), py::arg("fallback") = "")
+    .def("has_env", &ContextWrapper::has_env, py::arg("key"))
+    .def("set_env", &ContextWrapper::set_env, py::arg("key"), py::arg("value"))
+    .def("data_source",
+         &ContextWrapper::data_source,
+         py::arg("exp"),
+         py::arg("run"),
+         py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_dgram_size") = 0x4000000, // ~67 MB
+         py::arg("data_fmt") = pysbio::FTraits::XTC2,
+         "Create a DataSource for a run, using this Context (which it keeps alive).");
 
 #ifdef SBIO_HAS_MPI
   auto atexit = py::module_::import("atexit");

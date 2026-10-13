@@ -24,6 +24,8 @@
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/locator.hh"
+#include "sbio/core/metadata.hh"
 #include "sbio/core/result.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/core/stream.hh"
@@ -48,9 +50,18 @@
 #endif
 #endif
 
-namespace fs = std::filesystem;
-
 namespace sbio {
+  template <class... Sources>
+  class SourceSet;
+
+  /**
+   * A tag indicating the EPolicy was configured prior to DataSource construction.
+   *
+   * @note This is used by the DataSource to prevent re-configuration. The configuration
+   *       may have been done by the `Context`, e.g., if using that interface.
+   */
+  struct ExecutionPolicyConfigured {};
+
   /**
    * The highest-level abstraction for defining the set of StreamBrokers that will be used.
    *
@@ -115,23 +126,12 @@ namespace sbio {
      * `stream_config` objects are used to set up each individual Stream so that
      * it can connect and read from its individual data.
      */
-    using StreamConfig = typename FTraits::StreamParameters;
-    /**
-     * The DataSource configuration object type.
-     *
-     * `ds_config` objects are used for initial discovery and connection of the
-     * full set of Streams.
-     */
-    using DSConfig = typename FTraits::DataSourceParameters;
+    using StreamConfig = GenericStreamConfig<FTraits>;
 
-    /**
-     * The type of state tracking object for the data format's Stream.
-     */
-    using StreamState = typename FTraits::DiscoveryState;
     /**
      * The type of the general metadata object for the data format's Stream.
      */
-    using StreamMetadata = typename FTraits::MetadataInventory;
+    using StreamMetadata = MetadataInventory<FTraits>;
 
     /**
      * The type of the enumerator used to specify access patterns used for the format.
@@ -148,8 +148,25 @@ namespace sbio {
      * different data format's may use different underlying types.
      */
     using StepIdxType = typename FTraits::StepIdxType;
+    /**
+     * A SourceSet drives the reindexing of the DataSources it iterates.
+     *
+     * Reindexing is private - it was easiest to let the SourceSet be a friend.
+     */
+    template <class... Sources>
+    friend class SourceSet;
 
     DataSource() = default;
+
+    /**
+     * Construct a DataSource, with the execution policy already configured.
+     *
+     * @note This constructor is used by the `Context`, which manages various
+     *       configuration steps itself.
+     */
+    explicit DataSource(ExecutionPolicyConfigured)
+      : m_epolicy_configured(true)
+    {}
 
     /**
      * Construct a DataSource and initialize the Execution policy.
@@ -184,7 +201,7 @@ namespace sbio {
      * @returns Whether the incorporation of the StreamBroker, and subsequent
      *          configuration was successful.
      */
-    SBIO_HD inline bool add_data_stream(const StreamConfig& cfg) {
+    SBIO_HD inline bool add_data_stream(const GenericStreamConfig<DataFormat>& cfg) {
       if (m_num_data_streams >= MaxDataStreams) {
         return false;
       }
@@ -195,15 +212,22 @@ namespace sbio {
       return true;
     }
 
-    /**
-     * load_run: Scans the standard hutch directory and automatically registers
-     * all streams for a given experiment and run number.
-     */
     template <typename... Args>
-    bool load_run(StreamConfig base_cfg, Args&&... args) {
-      auto ds_params = typename FTraits::DataSourceParameters(std::forward<Args>(args)...);
+    bool load_source(const StreamConfig& cfg, Args&&... args) {
+      using Locator = typename FTraits::DefaultLocator;
+      auto locator_params {
+        typename Locator::template LocatorParameters<DataFormat>(std::forward<Args>(args)...)
+      };
 
-      return FTraits::make_stream_brokers(*this, ds_params, base_cfg);
+      return Locator::find_streams(*this, locator_params, cfg);
+    }
+
+    template <IsLocator<DataSource> Locator, typename... Args>
+    bool load_source_with(const StreamConfig& cfg, Args&&... args) {
+      using LocatorParams = typename Locator::template LocatorParameters<DataFormat>;
+      auto locator_params { LocatorParams(std::forward<Args>(args)...) };
+
+      return Locator::find_streams(*this, locator_params, cfg);
     }
 
     /**
@@ -262,42 +286,39 @@ namespace sbio {
      *          no more data is available.
      */
     SBIO_HD inline typename FTraits::StepIdxType next() const {
-      using StepIdx = typename FTraits::StepIdxType;
-
-      auto trigger_reindexing = [&] () {
-        StepIdx total_capacity { std::numeric_limits<StepIdx>::lowest() };
-        bool failed { false };
-
-        for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
-          IOStatus status = m_data_streams[n_stream].index_stream();
-
-          if (status != IOStatus::Success) {
-            failed = true;
-            continue;
-          }
-
-          StepIdx stream_capacity = m_data_streams[n_stream].capacity();
-
-          if constexpr (FTraits::PartitioningStrategy ==
-                        StreamPartitioningStrategy::Chronological) {
-            total_capacity += stream_capacity;
-          } else {
-            if (stream_capacity > total_capacity) {
-              total_capacity = stream_capacity;
-            }
-          }
-        }
-
-        if (failed) {
-          return total_capacity > 0;
-        }
-
-        m_steps_capacity += total_capacity;
-
-        return total_capacity > 0;
+      auto trigger_reindexing = [&]() {
+        return reindex_trigger();
       };
 
-      return EPolicy::template next<FTraits>(m_steps_capacity, trigger_reindexing);
+      return EPolicy::template next<FTraits>(m_iteration_state,
+                                             m_steps_capacity,
+                                             trigger_reindexing);
+    }
+
+    /**
+     * Request the next contiguous batch of indices for steps to read data for.
+     *
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy.
+     * @note If `batch_size` is left to 0, then the default size will be `max_batch_size`
+     *       used in the initial configuration of the StreamBrokers.
+     * @note The batch_size will never be larger than max_batch_size either.
+     *
+     * @param[in] batch_size The maximum size of the batch of step indices to read.
+     * @returns The next batch of step indices [first, last) to fetch data for. The
+     *          Exhausted batch is returned as first and last equal to ExhaustedSentinel
+     */
+    SBIO_HD inline StepBatch<typename FTraits::StepIdxType>
+    next_batch(std::size_t batch_size = 0) const {
+      if (batch_size == 0 || batch_size > m_data_streams[0].config().max_batch_size) {
+        batch_size = m_data_streams[0].config().max_batch_size;
+      }
+      auto trigger_reindexing = [&]() { return reindex_trigger(); };
+
+      return EPolicy::template next_batch<FTraits>(m_iteration_state,
+                                                   batch_size,
+                                                   m_steps_capacity,
+                                                   trigger_reindexing);
     }
 
     /**
@@ -374,14 +395,14 @@ namespace sbio {
     class IteratorImpl {
     public:
       // Values generated on the fly so reference type is really value type
-      using iterator_category = std::forward_iterator_tag; // One-direction
+      using iterator_category = std::input_iterator_tag; // One-direction
       using difference_type = std::ptrdiff_t;
       using value_type = typename FTraits::StepIdxType;
       // using pointer = value_type*;
       using pointer = void;
       using reference = value_type;
 
-      IteratorImpl(DS& ds, value_type idx)
+      SBIO_HD IteratorImpl(DS& ds, value_type idx)
         : m_ds(ds)
         , m_idx(idx)
       {}
@@ -389,30 +410,30 @@ namespace sbio {
       // We're going to just generate indices and return by value for now.
       // The normal reference/pointer iterator semantics don't match perfectly
       // because there's nothing to "point to" or "reference".
-      reference operator*() const { return m_idx; }
+      SBIO_HD reference operator*() const { return m_idx; }
 
       // pointer operator->() { } // Not immediately sure how to do this
 
       // Incrementing the iterator calls the associated datasource's next function
       // This will trigger stream reindexing and so on.
       // You'll either get a new index. Or the ExhaustedSentinel if done.
-      IteratorImpl& operator++() {
+      SBIO_HD IteratorImpl& operator++() {
         m_idx = m_ds.next();
         return *this;
       }
-      IteratorImpl operator++(int) {
+      SBIO_HD IteratorImpl operator++(int) {
         IteratorImpl tmp = *this;
         ++(*this);
         return tmp;
       }
 
-      friend bool operator==(const IteratorImpl& a, const IteratorImpl& b) {
+      SBIO_HD friend bool operator==(const IteratorImpl& a, const IteratorImpl& b) {
         // Need to figure out best way to compare DataSource
         // For now, just punt and return comparison of indices...
         return (a.m_idx == b.m_idx);
       }
 
-      friend bool operator!=(const IteratorImpl& a, const IteratorImpl& b) {
+      SBIO_HD friend bool operator!=(const IteratorImpl& a, const IteratorImpl& b) {
         return !(a == b);
       }
 
@@ -425,34 +446,267 @@ namespace sbio {
     using ConstIterator = IteratorImpl<const DataSource>;
 
     /**
+     * A range over the steps of a DataSource, for use in a range-based for loop.
+     *
+     * Each parallel executing unit (e.g. a thread or rank, etc.) iterating will setup
+     * its own range-based loop (`for (auto step : ds.steps()) {}`).
+     *
+     * @note Early exit from a loop invokes the EPolicy end iteration implementation.
+     *       This may be a no-op for some policies.
+     *
+     * @tparam DS The DataSource to iterate over (const/non-const...)
+     */
+    template <class DS>
+    class StepRangeImpl {
+    public:
+      using It = IteratorImpl<DS>;
+
+      SBIO_HD explicit StepRangeImpl(DS& ds)
+        : m_ds(ds)
+      {}
+
+      SBIO_HD ~StepRangeImpl() {
+        auto trigger_reindexing = [&]() { return m_ds.reindex_trigger(); };
+
+        EPolicy::template end_iteration<FTraits>(m_ds.m_iteration_state,
+                                                 m_ds.m_steps_capacity,
+                                                 trigger_reindexing);
+      }
+
+      StepRangeImpl(const StepRangeImpl&) = delete;
+      StepRangeImpl& operator=(const StepRangeImpl&) = delete;
+
+      /**
+       * Return an iterator at the first step index.
+       *
+       * @note This will invoke `next` to get the first step *for this unit*
+       *
+       * @returns An iterator at the first step index.
+       */
+      SBIO_HD It begin() const { return It(m_ds, m_ds.next()); }
+
+      /**
+       * Return an iterator pointing to the ExhaustedSentinel.
+       *
+       * @returns An iterator pointing to the ExhaustedSentinel.
+       */
+      SBIO_HD It end() const { return It(m_ds, FTraits::ExhaustedSentinel); }
+
+    private:
+      DS& m_ds;
+    };
+
+    using StepRange = StepRangeImpl<DataSource>;
+    using ConstStepRange = StepRangeImpl<const DataSource>;
+
+    /**
+     * Return a range over the steps of this DataSource for the calling unit.
+     *
+     * @returns A range to iterate over in a range-based for loop.
+     */
+    SBIO_HD StepRange steps() { return StepRange(*this); }
+    SBIO_HD ConstStepRange steps() const { return ConstStepRange(*this); }
+    SBIO_HD ConstStepRange csteps() const { return ConstStepRange(*this); }
+
+    /**
      * Return an iterator at the first step index.
+     *
+     * @note This will invoke `next` to get the first step *for this unit*
+     * @note Using the DataSource directly for iteration doesn't use the EPolicy's
+     *       end iteration implementation for early exits. This must be manually
+     *       managed then, or instead, prefer the range-based loop with `steps()`.
      *
      * @returns An iterator at the first step index.
      */
-    Iterator begin() { return Iterator(*this, 0); }
+    SBIO_HD Iterator begin() { return Iterator(*this, next()); }
+    SBIO_HD ConstIterator begin() const { return ConstIterator(*this, next()); }
     /**
      * Return an iterator pointing to the ExhasutedSentinel.
      *
      * @returns An iterator pointing to the ExhaustedSentinel.
      */
-    Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
+    SBIO_HD Iterator end() { return Iterator(*this, FTraits::ExhaustedSentinel); }
+    SBIO_HD ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
 
-    ConstIterator begin() const { return ConstIterator(*this, 0); }
-    ConstIterator end() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
+    SBIO_HD ConstIterator cbegin() const { return ConstIterator(*this, next()); }
+    SBIO_HD ConstIterator cend() const { return ConstIterator(*this, FTraits::ExhaustedSentinel); }
+
+    /**
+     * An iterator generating batches of steps from the DataSource.
+     *
+     * @tparam DS The DataSource to iterate over (const/non-const...)
+     */
+    template <typename DS>
+    class BatchIteratorImpl {
+    public:
+      // Values generated on the fly so reference type is really value type
+      using iterator_category = std::input_iterator_tag;
+      using difference_type = std::ptrdiff_t;
+      using value_type = StepBatch<typename FTraits::StepIdxType>;
+      // using pointer = value_type*;
+      using pointer = void;
+      using reference = value_type;
+
+      SBIO_HD BatchIteratorImpl(DS& ds, value_type batch, std::size_t batch_size)
+        : m_ds(ds)
+        , m_batch(batch)
+        , m_batch_size(batch_size)
+      {}
+
+      SBIO_HD reference operator*() const { return m_batch; }
+
+      SBIO_HD BatchIteratorImpl& operator++() {
+        m_batch = m_ds.next_batch(m_batch_size);
+        return *this;
+      }
+
+      SBIO_HD friend bool operator==(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
+        // Need to figure out best way to compare DataSource
+        // For now, just punt and return comparison of indices...
+        return a.m_batch.first == b.m_batch.first;
+      }
+
+      SBIO_HD friend bool operator!=(const BatchIteratorImpl& a, const BatchIteratorImpl& b) {
+        return !(a == b);
+      }
+
+    private:
+      DS& m_ds;
+      value_type m_batch;
+      std::size_t m_batch_size;
+    };
+
+    using BatchIterator = BatchIteratorImpl<DataSource>;
+    using ConstBatchIterator = BatchIteratorImpl<const DataSource>;
+
+    /**
+     * A range over contiguous batches of steps, for use in a range-based for
+     * loop.
+     *
+     * Each parallel executing unit (e.g. a thread or rank, etc.) iterating will setup
+     * its own range-based loop (`for (auto step : ds.batches()) {}`).
+     *
+     * @note Early exit from a loop invokes the EPolicy end iteration implementation
+     *       This may be a no-op for some policies.
+     *
+     * @tparam DS The DataSource to iterate over (const/non const...)
+     */
+    template <class DS>
+    class BatchRangeImpl {
+    public:
+      using BatchIt = BatchIteratorImpl<DS>;
+
+      SBIO_HD BatchRangeImpl(DS& ds, std::size_t batch_size)
+        : m_ds(ds)
+        , m_batch_size(batch_size)
+      {}
+
+      SBIO_HD ~BatchRangeImpl() {
+        auto trigger_reindexing = [&]() { return m_ds.reindex_trigger(); };
+
+        EPolicy::template end_iteration<FTraits>(m_ds.m_iteration_state,
+                                                 m_ds.m_steps_capacity,
+                                                 trigger_reindexing);
+      }
+
+      BatchRangeImpl(const BatchRangeImpl&) = delete;
+      BatchRangeImpl& operator=(const BatchRangeImpl&) = delete;
+
+      SBIO_HD BatchIt begin() const {
+        return BatchIt(m_ds, m_ds.next_batch(m_batch_size), m_batch_size);
+      }
+
+      SBIO_HD BatchIt end() const {
+        using StepIdx = typename FTraits::StepIdxType;
+
+        return BatchIt(m_ds,
+                       StepBatch<StepIdx> {
+                         FTraits::ExhaustedSentinel,
+                         FTraits::ExhaustedSentinel
+                       },
+                       m_batch_size);
+      }
+
+    private:
+      DS& m_ds;
+      std::size_t m_batch_size;
+    };
+
+    using BatchRange = BatchRangeImpl<DataSource>;
+    using ConstBatchRange = BatchRangeImpl<const DataSource>;
+
+    /**
+     * Return a range over contiguous batches of steps for the calling unit.
+     *
+     * @param[in] batch_size The maximum number of steps per batch. The default is the
+     *            configured `max_batch_size`.
+     * @returns A range to iterate over in a range-based for loop.
+     */
+    SBIO_HD BatchRange batches(std::size_t batch_size = 0) {
+      return BatchRange(*this, batch_size);
+    }
+    SBIO_HD ConstBatchRange batches(std::size_t batch_size = 0) const {
+      return ConstBatchRange(*this, batch_size);
+    }
+    SBIO_HD ConstBatchRange cbatches(std::size_t batch_size = 0) const {
+      return ConstBatchRange(*this, batch_size);
+    }
 
   private:
+    SBIO_HD inline bool reindex_trigger() const {
+      using StepIdx = typename FTraits::StepIdxType;
+
+      StepIdx total_capacity { std::numeric_limits<StepIdx>::lowest() };
+      bool failed { false };
+
+      for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
+        IOStatus status = m_data_streams[n_stream].index_stream();
+
+        if (status != IOStatus::Success) {
+          failed = true;
+          continue;
+        }
+
+        StepIdx stream_capacity = m_data_streams[n_stream].capacity();
+
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          total_capacity += stream_capacity;
+        } else {
+          if (stream_capacity > total_capacity) {
+            total_capacity = stream_capacity;
+          }
+        }
+      }
+
+      if (failed) {
+        return total_capacity > 0;
+      }
+
+      m_steps_capacity += total_capacity;
+
+      return total_capacity > 0;
+    }
+
     /**
      * The set of StreamBrokers in the DataSource
      */
     mutable BrokerType m_data_streams[MaxDataStreams];
+
     /**
      * The total number of StreamBrokers in the DataSource
      */
     std::size_t m_num_data_streams { 0 };
+
     /**
      * The current steps capacity before reindexing is required.
      */
     mutable std::size_t m_steps_capacity { 0 };
+
+    /**
+     * The EPolicy's state for iterating and distribution steps from this DataSource.
+     */
+    mutable typename EPolicy::IterationState m_iteration_state {};
+
     /**
      * Flag to track whether the Execution policy has been configured.
      *
@@ -460,7 +714,8 @@ namespace sbio {
      * gets called. If its explicitly provided, then that gets used. Otherwise, a
      * default configuration will be invoked before any IO. This allows any global
      * state to be reset if iteratively creating multiple DataSource instantiations
-     * over time.
+     * over time. This only applies to static state (generally, process and environment).
+     * The remaining state is held in the member `m_iteration_state`.
      */
     bool m_epolicy_configured { false };
   };

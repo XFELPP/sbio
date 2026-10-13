@@ -65,6 +65,28 @@ namespace sbio {
     RequestExhausted = 0, ///< All data units from this read request were read
     StreamExhausted = 1   ///< The stream is entirely exhausted (no more data)
   };
+
+  /**
+   * A contiguous batch of steps: [first, last).
+   *
+   * A batch is a pair of step indices indicating a contiguous range that has been
+   * handed out together. Exhaustion is indicated by both first and last equal to
+   * the format's ExhaustedSentinel.
+   *
+   * @tparam StepIdxType The step index type of the data format.
+   */
+  template <typename StepIdxType>
+  struct StepBatch {
+    StepIdxType first; ///< The first step of the batch.
+    StepIdxType last;  ///< One past the last step of the batch.
+
+    /**
+     * The number of steps in the batch.
+     *
+     * @returns The number of steps in the batch.
+     */
+    SBIO_HD constexpr StepIdxType count() const { return last - first; }
+  };
 } // namespace sbio
 
 #endif // SBIO_CORE_TYPES_HH

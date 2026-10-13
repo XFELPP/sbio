@@ -2,7 +2,9 @@
 #define SBIO_CORE_EXECUTION_HH
 
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/core/storage_view.hh"
 #include "sbio/formats/format_traits.hh"
 
 #ifdef __CUDACC__
@@ -125,6 +127,16 @@ namespace sbio {
     struct DefaultConfig {};
 
     /**
+     * The state of an iteration over steps.
+     *
+     * The state should be held by the DataSource. Policies defining their own
+     * distribution strategy must define the IterationState. This state is accessed
+     * in the `next` implementations. It is moved out of the static state to allow
+     * multiple DataSource instances to run simultaneously.
+     */
+    struct IterationState {};
+
+    /**
      * The set of parallelization methods supported by the Execution policy.
      */
     static constexpr hd_std::bitset<
@@ -153,6 +165,29 @@ namespace sbio {
       }
     }
 
+    /**
+     * Verify that the runtime environment supports the EPolicy.
+     *
+     * The verification is run before the actual configuration. E.g., for MPI, it
+     * may be required that a certain thread level be supported by the MPI
+     * implementation.
+     *
+     * @note The function is used by the Context. By default there is nothing to
+     *       validate.
+     *
+     * @param[in] config The configuration to use (if environment is validated).
+     * @param[out] error A description of the problem if validation fails.
+     * @returns true if the config can be used with the EPolicy in this environment.
+     */
+    template <class ConfigT>
+    static bool validate_environment(const ConfigT& config, const char*& error) {
+      if constexpr (requires { Derived::validate_environment_impl(config, error); }) {
+        return Derived::validate_environment_impl(config, error);
+      } else {
+        return true;
+      }
+    }
+
     // --- StreamBroker level policies --- //
     // ----------------------------------- //
 
@@ -170,7 +205,7 @@ namespace sbio {
       return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
     }
 
-    template <IsTypeList Requirements, class IO, class FTraits>
+    template <IsRequirementsList Requirements, class IO, class FTraits>
     requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_storage(AllocationRequest<FTraits>& request) {
       return Derived::template allocate_storage_impl<Requirements, IO, FTraits>(request);
@@ -210,6 +245,52 @@ namespace sbio {
         return Derived::template should_process_impl<FTraits>(step_idx);
       } else {
         return true;
+      }
+    }
+
+    /**
+     * Resolve a DataRequest for a StreamBroker into the indicated buffers.
+     *
+     * The StreamBroker can use this routine to offload the DataRequest to an EPolicy
+     * when it may need to resolve differences in MemorySpace between the data location
+     * and the buffers. E.g., a policy can implement handling on GPU.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IO The IO policy used by the StreamBroker.
+     * @tparam StorageT The type of the overall storage of the StreamBroker
+     * @tparam InventoryT The type of the MetadataInventory fo the StreamBroker
+     * @param[in] storage The StreamBroker's storage
+     * @param[in] inv The StreamBroker's MetadataInventory
+     * @param[in] req The DataRequest for retrieval
+     * @param[in/out] cache The cache for holding field offsets
+     * @param[in] ptn The data access pattern for the fetched data (format-dependent)
+     * @param[in] batch_idx The step within a fetched batch.
+     * @returns The resolved data.
+     */
+    template <class FTraits, class IO, class StorageT, class InventoryT>
+    SBIO_HD static DataResult resolve_in_buffer(StorageT& storage,
+                                                const InventoryT& inv,
+                                                const typename FTraits::DataRequest& req,
+                                                PayloadOffsetCache& cache,
+                                                typename FTraits::DataAccessPtn ptn,
+                                                hd_std::size_t batch_idx) {
+      if constexpr (requires {
+          Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                                inv,
+                                                                req,
+                                                                cache,
+                                                                ptn,
+                                                                batch_idx);
+        }) {
+        return Derived::template resolve_in_buffer_impl<FTraits, IO>(storage,
+                                                                     inv,
+                                                                     req,
+                                                                     cache,
+                                                                     ptn,
+                                                                     batch_idx);
+      } else {
+        StorageView<StorageT, Derived> sv(storage);
+        return FTraits::get_data_in_buffer(sv, inv, req, cache, ptn, batch_idx);
       }
     }
 
@@ -274,14 +355,62 @@ namespace sbio {
       }
     }
 
+    /**
+     * Publish bytes written to a view of a buffer.
+     *
+     * Called after IO has written `nbytes` to the start of `view`, which is a view
+     * acquired from the the buffer `buf`.
+     *
+     * If the current IO policy reads into a staging view (`view`), here they will
+     * be moved to the actual buffer (`buf`).
+     *
+     * @note By default, this is a no-op.
+     *
+     * @param[in] buf The buffer the view is acquired from.
+     * @param[in] view The view used for the IO (e.g. staging).
+     * @param[in] nbytes The number of bytes into the view.
+     */
+    template <typename Buffer>
+    SBIO_HD static void publish_broker_view(Buffer& buf, void* view, hd_std::size_t nbytes) {
+      if constexpr (requires { Derived::publish_broker_view_impl(buf, view, nbytes); }) {
+        Derived::publish_broker_view_impl(buf, view, nbytes);
+      }
+    }
+
+    /**
+     * Query the capabiltiies this EPolicy requires for an IOPolicy to use it with.
+     *
+     * By default, it requires reads to host memory, and concurrent reads if thread
+     * support is provided by the EPolicy.
+     *
+     * @tparam IO The IO policy to use with the EPolicy.
+     * @returns The required set of capabilities.
+     */
+    template <typename IO>
+    static constexpr IOCapability required_io_capabilities() {
+      if constexpr (requires { Derived::template required_io_capabilities_impl<IO>(); }) {
+        return Derived::template required_io_capabilities_impl<IO>();
+      } else {
+        // bitset test is only constexpr from C++23 (C++20 support for lower CUDA toolkit vers.)
+        constexpr bool threaded {
+          Derived::ParallelSupport[static_cast<hd_std::size_t>(ParallelizationMethods::THREADS)]
+        };
+
+        return
+          threaded
+          ? (IOCapability::ReadToHost | IOCapability::ConcurrentReads)
+          : IOCapability::ReadToHost;
+      }
+    }
+
     // --- BrokerGroup level policies --- //
     // ---------------------------------- //
     template <class IO, class FTraits>
     requires FormatTraits<FTraits, IO, Derived>
     SBIO_HD static auto allocate_group_storage(hd_std::size_t num_segments,
                                                hd_std::size_t max_batch_count = 1) {
-      using PtrTableRequirements = TypeList<
-        BufferDescriptor<TableRole, 0, sizeof(void*)>
+      using PtrTableRequirements = RequirementsList<
+        BufferDescriptor<roles::Table, 0, sizeof(void*)>
       >;
 
       if constexpr (requires {
@@ -340,23 +469,41 @@ namespace sbio {
                                                         hd_std::forward<GetCBType>(unit_get_data),
                                                         num_accesses);
       } else {
-        // By default, we will do IO for all units (segments)
-        // Then afterwards we will do data retrieval.
-        IOStatus status = IOStatus::Success;
-        for (hd_std::size_t i = 0; i < num_fetches; ++i) {
-          IOStatus s = unit_fetcher(i);
-          if (s != IOStatus::Success) {
-            status = s;
-            break;
-          }
-        }
-        if (status == IOStatus::Success) {
-          for (hd_std::size_t i = 0; i < num_accesses; ++i) {
-            unit_get_data(i);
-          }
-        }
-        return status;
+        return fetch_then_get<FTraits>(step_idx,
+                                       hd_std::forward<FetchCBType>(unit_fetcher),
+                                       num_fetches,
+                                       hd_std::forward<GetCBType>(unit_get_data),
+                                       num_accesses);
       }
+    }
+
+    /**
+     * Default get_data, fetching for all units, then resolving fetched data.
+     */
+    template <class FTraits, class FetchCBType, class GetCBType>
+    SBIO_HD static IOStatus fetch_then_get(typename FTraits::StepIdxType step_idx,
+                                           FetchCBType&& unit_fetcher,
+                                           hd_std::size_t num_fetches,
+                                           GetCBType&& unit_get_data,
+                                           hd_std::size_t num_accesses) {
+      // By default, we will do IO for all units (segments)
+      // Then afterwards we will do data retrieval.
+      IOStatus status { IOStatus::Success };
+      for (hd_std::size_t i = 0; i < num_fetches; ++i) {
+        IOStatus s = unit_fetcher(i);
+        if (s != IOStatus::Success) {
+          status = s;
+          break;
+        }
+      }
+
+      if (status == IOStatus::Success) {
+        for (hd_std::size_t i = 0; i < num_accesses; ++i) {
+          unit_get_data(i);
+        }
+      }
+
+      return status;
     }
 
     /**
@@ -401,36 +548,52 @@ namespace sbio {
                                                               hd_std::forward<GetCBType>(unit_get_data),
                                                               num_accesses);
       } else {
-        // By default, we will do IO for all units (segments)
-        // Then afterwards we will do data retrieval.
-        IOStatus status = IOStatus::Success;
-        for (hd_std::size_t i = 0; i < num_fetches; ++i) {
-          IOStatus s = unit_fetcher(i);
-          if (s != IOStatus::Success) {
-            status = s;
-            break;
-          }
-        }
-        if (status == IOStatus::Success) {
-          bool passed_step { steps.size() == 3 };
-          typename FTraits::StepIdxType first { *steps.begin() };
-          typename FTraits::StepIdxType last {
-            passed_step ? *(steps.end() - 2) : *(steps.end() - 1)
-          };
-          typename FTraits::StepIdxType count {
-            (last > first) ? static_cast<hd_std::size_t>(last - first) : 1
-          };
-
-          for (hd_std::size_t cnt = 0; cnt < static_cast<hd_std::size_t>(count); ++cnt) {
-            for (hd_std::size_t i = 0; i < num_accesses; ++i) {
-              unit_get_data(i, cnt);
-            }
-          }
-        }
-        return status;
+        return fetch_then_get_steps<FTraits>(steps,
+                                             hd_std::forward<FetchCBType>(unit_fetcher),
+                                             num_fetches,
+                                             hd_std::forward<GetCBType>(unit_get_data),
+                                             num_accesses);
       }
     }
 
+    /**
+     * Default get_data_steps, fetching for all units, then resolving fetched data.
+     */
+    template <class FTraits, class FetchCBType, class GetCBType>
+    SBIO_HD static IOStatus fetch_then_get_steps(const hd_std::initializer_list<typename FTraits::StepIdxType>& steps,
+                                                 FetchCBType&& unit_fetcher,
+                                                 hd_std::size_t num_fetches,
+                                                 GetCBType&& unit_get_data,
+                                                 hd_std::size_t num_accesses) {
+      // By default, we will do IO for all units (segments)
+      // Then afterwards we will do data retrieval.
+      IOStatus status = IOStatus::Success;
+      for (hd_std::size_t i = 0; i < num_fetches; ++i) {
+        IOStatus s = unit_fetcher(i);
+        if (s != IOStatus::Success) {
+          status = s;
+          break;
+        }
+      }
+
+      if (status == IOStatus::Success) {
+        bool passed_step { steps.size() == 3 };
+        typename FTraits::StepIdxType first { *steps.begin() };
+        typename FTraits::StepIdxType last {
+          passed_step ? *(steps.end() - 2) : *(steps.end() - 1)
+        };
+        typename FTraits::StepIdxType count {
+          (last > first) ? static_cast<hd_std::size_t>(last - first) : 1
+        };
+
+        for (hd_std::size_t cnt = 0; cnt < static_cast<hd_std::size_t>(count); ++cnt) {
+          for (hd_std::size_t i = 0; i < num_accesses; ++i) {
+            unit_get_data(i, cnt);
+          }
+        }
+      }
+      return status;
+    }
 
     // --- DataSource level policies --- //
     // --------------------------------- //
@@ -438,8 +601,10 @@ namespace sbio {
      * Request the next step index to read data for.
      *
      * @tparam FTraits The data format type.
+     * @tparam IterState The EPolicy's IterationState type.
      * @tparam IndexTrigger The type of the callback to be run on reaching the
      *         current maximum capacity.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity that the StreamBroker has
      *            before reindexing is required. For data formats that do not
      *            support indexing, the max capacity will always be 1, and the
@@ -448,16 +613,101 @@ namespace sbio {
      *            if applicable.
      * @returns The index of the next step to read data for.
      */
-    template <class FTraits, class IndexTrigger>
+    template <class FTraits, class IterState, class IndexTrigger>
     SBIO_HD static typename FTraits::StepIdxType
-    next(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
+    next(IterState& state,
+         typename FTraits::StepIdxType& max_capacity,
+         IndexTrigger&& trigger) {
+      static_assert(requires {
+          Derived::template next_impl<FTraits>(state,
+                                               max_capacity,
+                                               hd_std::forward<IndexTrigger>(trigger));
+        }, "This EPolicy does not implement a next routine!");
+
+      return Derived::template next_impl<FTraits>(state,
+                                                  max_capacity,
+                                                  hd_std::forward<IndexTrigger>(trigger));
+    }
+
+    /**
+     * Request the next contiguous batch of step indices to read data for.
+     *
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy. This is because the
+     *       batch cannot go over a reindexing trigger which by definition must be
+     *       colelctive.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IterState The EPolicy's IterationState type.
+     * @tparam IndexTrigger The type of the callback to be run on reaching the
+     *         current maximum capacity.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The maximum number of steps in the batch.
+     * @param[in] max_capacity The current max capacity that the StreamBroker
+     *            has before reindexing is required. For data formats that do not
+     *            support indexing, the max capacity will always be 1, and the
+     *            reindexing callback may be a noop.
+     * @param[in] trigger The callback to run to reindex upon reaching max_capacity.
+     * @returns The next batch of steps, or an exhausted batch if no steps remain.
+     */
+    template <class FTraits, class IterState, class IndexTrigger>
+    SBIO_HD static StepBatch<typename FTraits::StepIdxType>
+    next_batch(IterState& state,
+               hd_std::size_t batch_size,
+               typename FTraits::StepIdxType& max_capacity,
+               IndexTrigger&& trigger) {
+      static_assert(requires {
+          Derived::template next_batch_impl<FTraits>(state,
+                                                     batch_size,
+                                                     max_capacity,
+                                                     hd_std::forward<IndexTrigger>(trigger));
+        }, "This Execution policy does not support batches of steps.");
+
+      return Derived::template next_batch_impl<FTraits>(state,
+                                                        batch_size,
+                                                        max_capacity,
+                                                        hd_std::forward<IndexTrigger>(trigger));
+    }
+
+    /**
+     * Exit the iteration with `state`, releasing any held steps.
+     *
+     * A specific EPolicy should provide an implementation of this API if their model
+     * requires a parallely executing unit to hold in various locations, most often
+     * for reindexing, until other outsstanding steps are released. In the absence
+     * of this API, an early exit from an iteration will cause hangs. E.g., useful
+     * in thread-based policies.
+     *
+     * The capacity and reindex trigger are passed like with the next API. A Policy
+     * may require that an executing unit continue to participate in reindexing even
+     * after the unit itself has exhausted its step indices. However, this is policy
+     * dependent, so it may implement a simpler API using only the state.
+     *
+     * @note An EPolicy may implment `end_iteration_impl<FTraits>(state, max_cap, trigger)`
+     *       OR, alternatively, `end_iteration_impl<FTraits>(state)`, if it implements
+     *       the API at all.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IterState The EPolicy's IterationState type.
+     * @tparam IndexTrigger The type of the reindex callbakc trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] max_capacity The current max capacity.
+     * @param[in] trigger The reindex callback to run.
+     */
+    template <class FTraits, class IterState, class IndexTrigger>
+    SBIO_HD static void end_iteration(IterState& state,
+                                      typename FTraits::StepIdxType& max_capacity,
+                                      IndexTrigger&& trigger) {
       if constexpr (requires {
-          Derived::template next_impl<FTraits>(max_capacity,
-                                               hd_std::forward<IndexTrigger>(trigger));
+          Derived::template end_iteration_impl<FTraits>(state,
+                                                        max_capacity,
+                                                        hd_std::forward<IndexTrigger>(trigger));
         }) {
-        return
-          Derived::template next_impl<FTraits>(max_capacity,
-                                               hd_std::forward<IndexTrigger>(trigger));
+        Derived::template end_iteration_impl<FTraits>(state,
+                                                      max_capacity,
+                                                      hd_std::forward<IndexTrigger>(trigger));
+      } else if constexpr (requires { Derived::end_iteration_impl(state); }) {
+        Derived::end_iteration_impl(state);
       }
     }
   };

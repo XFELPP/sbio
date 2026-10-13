@@ -22,7 +22,11 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/execution/composed.hh"
+#include "sbio/execution/host_memory.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/mpi_shared.hh"
@@ -61,23 +65,32 @@ namespace sbio {
    * - Allocations for the types of `DataRole` and `TableRole` use ThreadLocalBuffer
    *   to allow a single rank to parallelize data across multiple threads.
    */
-  class MPIThreadedExecution : public Execution<MPIThreadedExecution> {
+  class MPIThreadedDistribution {
   public:
     static constexpr std::size_t MaxInactiveRanks { 1024 };
 
+    /**
+     * Index and Shareable buffers are shared by all ranks on a node with MPI Windows.
+     * Data and Table buffers are per-thread, and any other buffers are per-process.
+     */
     template <typename Descriptor>
-    using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, IndexRole> ||
-      std::is_same_v<typename Descriptor::role, GroupRole> ||
-      std::is_same_v<typename Descriptor::hint, Shareable>,
-      MPISharedBuffer,
-      std::conditional_t<
-        std::is_same_v<typename Descriptor::role, DataRole> ||
-        std::is_same_v<typename Descriptor::role, TableRole>,
-        ThreadLocalBuffer,
-        HostBuffer
-      >
-    >;
+    static constexpr BufferScope scope_for() {
+      using BufRole = typename Descriptor::role;
+      using BufHint = typename Descriptor::hint;
+
+      if constexpr (std::is_same_v<BufRole, roles::Index> ||
+                    std::is_same_v<BufHint, Shareable>) {
+        return BufferScope::NodeShared;
+      } else if constexpr (std::is_same_v<BufRole, roles::Data> ||
+                           std::is_same_v<BufRole, roles::Table>) {
+        return BufferScope::PerUnit;
+      } else {
+        return BufferScope::Shared;
+      }
+    }
+
+    template <typename Descriptor>
+    using NodeSharedBuffer = MPISharedBuffer;
 
     struct Config {
       MPI_Comm communicator { MPI_COMM_WORLD };
@@ -87,11 +100,48 @@ namespace sbio {
 
       std::size_t num_threads { 0 };
       std::vector<int> cpu_affinities {};
+
+      /**
+       * Number of (active) ranks per node, mainly for testing.
+       *
+       * 0 (the default) detects the nodes with `MPI_COMM_TYPE_SHARED`. A
+       * positive value splits the active ranks into consecutive groups of this
+       * size instead, which must still be able to share memory (e.g. to emulate
+       * several nodes on one host).
+       */
+      int ranks_per_node { 0 };
     };
 
     static constexpr std::bitset<
       static_cast<std::size_t>(ParallelizationMethods::NUM_METHODS)
     > ParallelSupport { 0x3 }; // 0b11 - MPI | THREADS
+
+    /**
+     * The requirements are that MPI was not finalized, and MPI_THREAD_MULTIPLE support.
+     */
+    static bool validate_environment_impl(const Config& config, const char*& error) {
+      int finalized { 0 };
+      MPI_Finalized(&finalized);
+      if (finalized) {
+        error = "MPI was finalized already, cannot use MPIThreadedExecution!";
+        return false;
+      }
+
+      int initialized { 0 };
+      MPI_Initialized(&initialized);
+      if (initialized) {
+        int provided { MPI_THREAD_SINGLE };
+        MPI_Query_thread(&provided);
+        if (provided < MPI_THREAD_MULTIPLE) {
+          error =
+            "MPIThreadedExecution requires thread support of MPI_THREAD_MULTIPLE!"
+            " MPI was initialized at a lower support level!";
+          return false;
+        }
+      }
+
+      return true;
+    }
 
     static void configure_impl(const Config& config) {
       int initialized { 0 };
@@ -169,29 +219,223 @@ namespace sbio {
         MPI_Comm_dup(m_world_comm, &m_active_comm);
       }
 
+      m_main_rank = config.main_rank;
+      m_main_rank_loops = config.main_rank_loops;
+
+      m_shmem_rank = -1;
+      m_shmem_size = 0;
+
+      m_node_indexer = -1;
+      m_node_iterates.clear();
+
       if (m_active_comm != MPI_COMM_NULL) {
         MPI_Comm_rank(m_active_comm, &m_active_rank);
         MPI_Comm_size(m_active_comm, &m_active_size);
 
-        MPI_Comm_split_type(m_active_comm,
-                            MPI_COMM_TYPE_SHARED,
-                            0,
-                            MPI_INFO_NULL,
-                            &m_shmem_comm);
+        if (config.ranks_per_node > 0) {
+          MPI_Comm_split(m_active_comm,
+                         m_active_rank / config.ranks_per_node,
+                         m_active_rank,
+                         &m_shmem_comm);
+        } else {
+          MPI_Comm_split_type(m_active_comm,
+                              MPI_COMM_TYPE_SHARED,
+                              0,
+                              MPI_INFO_NULL,
+                              &m_shmem_comm);
+        }
+
+        MPI_Comm_rank(m_shmem_comm, &m_shmem_rank);
+        MPI_Comm_size(m_shmem_comm, &m_shmem_size);
+
+        // Determine and setup which ranks on the node iterate (distribute step indices with next)
+        // The `indexing rank` is the first rank of the node - it must reindex (even
+        // if it exits) as long as anybody is still iterating
+        int iterates { rank_iterates() ? 1 : 0 };
+        m_node_iterates.assign(static_cast<std::size_t>(m_shmem_size), 0);
+        MPI_Allgather(&iterates, 1, MPI_INT, m_node_iterates.data(), 1, MPI_INT, m_shmem_comm);
+
+        m_node_indexer = 0; // Even if no rank on the node iterates, index for discovery
+        for (int rank = 0; rank < m_shmem_size; ++rank) {
+          if (m_node_iterates[static_cast<std::size_t>(rank)]) {
+            m_node_indexer = rank;
+            break;
+          }
+        }
       }
-
-      m_main_rank = config.main_rank;
-      m_main_rank_loops = config.main_rank_loops;
-
-      // Reset collective state
-      m_shared_capacity.store(0, std::memory_order_release);
-      m_local_idx.store(0, std::memory_order_release);
-      m_exhausted.store(false, std::memory_order_release);
     }
 
-    template <IsTypeList Requirements, class IO, class FTraits>
-    requires FormatTraits<FTraits, IO, MPIThreadedExecution>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+    /**
+     * The ordinal (associated number) for the calling parallel unit on calling node.
+     *
+     * The units are numbered rank-first, and then by the rank's threads in the order
+     * that the threads ask for a number. I.e., the first thread of every rank on a
+     * node comes before the second thread.
+     *
+     * @note If there is no node-communicator, the world rank is used with node size 1.
+     */
+    //static constexpr std::size_t unit_ordinal() { // C++23 needed for thread_local, but C++20 used for CUDA
+    static std::size_t unit_ordinal() {
+      thread_local const std::size_t thread_ordinal {
+        m_next_thread_ordinal.fetch_add(1, std::memory_order_relaxed)
+      };
+
+      std::size_t node_rank { 0 };
+      std::size_t node_size { 1 };
+      if (m_shmem_rank >= 0 && m_shmem_size > 0) {
+        node_rank = static_cast<std::size_t>(m_shmem_rank);
+        node_size = static_cast<std::size_t>(m_shmem_size);
+      } else if (m_rank > 0) {
+        node_rank = static_cast<std::size_t>(m_rank);
+      } else {
+        node_rank = 0;
+      }
+
+      return node_rank + node_size * thread_ordinal;
+    }
+
+    template <class T>
+    struct SegmentState {
+      SegmentState()
+        : id(next_id.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      T& get() const {
+        thread_local std::vector<std::pair<std::uint64_t, T>> registry;
+        for (auto& [key, v] : registry) {
+          if (key == id) {
+            return v;
+          }
+        }
+
+        return registry.emplace_back(id, T{}).second;
+      }
+
+      std::uint64_t id;
+      static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
+    class IterationState {
+    public:
+      IterationState()
+        : m_tag(next_tag.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      // Make move for Python bindings, handling atomics
+      IterationState(IterationState&& other) noexcept
+        : m_shared_capacity(other.m_shared_capacity.load())
+        , m_exhausted(other.m_exhausted.load())
+        , m_in_flight(other.m_in_flight.load())
+        , m_holding_step(other.m_holding_step)
+        , m_batch_round(other.m_batch_round.load())
+        , m_batch_round_base(other.m_batch_round_base.load())
+        , m_batch_window_start(other.m_batch_window_start.load())
+        , m_batch_blocks_before(other.m_batch_blocks_before.load())
+        , m_window_version(other.m_window_version.load())
+        , m_active_units(other.m_active_units.load())
+        , m_participating(other.m_participating)
+        , m_departed(other.m_departed.load())
+        , m_node_departed(other.m_node_departed)
+        , m_tag(other.m_tag)
+      {}
+
+      IterationState& operator=(IterationState&& other) noexcept {
+        if (this != &other) {
+          m_shared_capacity.store(other.m_shared_capacity.load());
+          m_exhausted.store(other.m_exhausted.load());
+          m_in_flight.store(other.m_in_flight.load());
+          m_holding_step = other.m_holding_step;
+          m_batch_round.store(other.m_batch_round.load());
+          m_batch_round_base.store(other.m_batch_round_base.load());
+          m_batch_window_start.store(other.m_batch_window_start.load());
+          m_batch_blocks_before.store(other.m_batch_blocks_before.load());
+          m_window_version.store(other.m_window_version.load());
+          m_active_units.store(other.m_active_units.load());
+          m_participating = other.m_participating;
+          m_departed.store(other.m_departed.load());
+          m_node_departed = other.m_node_departed;
+          m_tag = other.m_tag;
+        }
+
+        return *this;
+      }
+
+    private:
+      friend class MPIThreadedDistribution;
+
+      /**
+       * Intra-rank capacity store for inter-thread synchronization of indices.
+       */
+      std::atomic<std::size_t> m_shared_capacity { 0 };
+      /**
+       * Latch for if the rank has exhausted all indices.
+       */
+      std::atomic<bool> m_exhausted { false };
+
+      /**
+       * The number of steps handed out by next() and not yet finished processing.
+       *
+       * A thread returns a step at the start of each next() call.
+       */
+      std::atomic<std::size_t> m_in_flight { 0 };
+
+      /**
+       * Mutex for thread synchronization on reindexing
+       */
+      std::mutex m_trigger_mutex;
+
+      SegmentState<bool> m_holding_step; ///< Whether this thread is holding a step.
+
+      /**
+       * The round counter for the rank.
+       */
+      std::atomic<std::size_t> m_batch_round { 0 };
+      /**
+       * The round when the capacity window started (was refilled).
+       */
+      std::atomic<std::size_t> m_batch_round_base { 0 };
+      /**
+       * The first step of the window.
+       */
+      std::atomic<std::size_t> m_batch_window_start { 0 };
+      /**
+       * The number dealt in the window before the current one.
+       */
+      std::atomic<std::size_t> m_batch_blocks_before { 0 };
+      /**
+       * Odd while a thread changes the window above (with m_shared_capacity).
+       */
+      std::atomic<std::size_t> m_window_version { 0 };
+
+      /**
+       * The number of this rank's threads currently iterating with this state.
+       */
+      std::atomic<std::size_t> m_active_units { 0 };
+      SegmentState<bool> m_participating; ///< Whether this thread is iterating.
+
+      /**
+       * Latch for if this rank left the iteration early (all its threads left).
+       */
+      std::atomic<bool> m_departed { false };
+
+      /**
+       * Which node ranks left the iteration early.
+       *
+       * @note For the node's indexing rank only
+       */
+      std::vector<char> m_node_departed {};
+
+      /**
+       * Message tag of this iteration (in the order states are created on each rank).
+       */
+      int m_tag { 0 };
+      static inline std::atomic<int> next_tag { 0 };
+    };
+
+    /**
+     * Setup a spdlog logger.
+     */
+    static void init_logger() {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::MPIThreadedExecution");
       if (!logger) {
@@ -199,51 +443,40 @@ namespace sbio {
       } else {
         m_logger = logger;
       }
-
-      return allocate_impl_helper(Requirements{}, request);
     }
 
-    template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
+    /**
+     * Setup a node-wide shared buffer.
+     *
+     * For the MPIThreaded distribution strategy, an MPI Window is used for sharing.
+     * Within the window an area is reserved by the distribution manager (a "catalog")
+     * for distributing state among the participant ranks. If a rank is inactive, it
+     * instead will have a private buffer in lieu of the window.
+     */
+    static void allocate_node_shared(MPISharedBuffer& buf, std::size_t sz) {
       static std::atomic<int> next_win_tag(100); // Tag each MPI window to distinguish them
-      Storage<TypeList<Descriptors...>, MPIThreadedExecution> s;
-      std::size_t i { 0 };
 
       if (m_active_comm == MPI_COMM_NULL) {
         // Configuration was forgotten - force a default config now or will seg fault
         Config def_cfg {};
-        configure(def_cfg);
+        configure_impl(def_cfg);
       }
 
-      auto make_window_or_local = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-        std::size_t sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
+      int tag { next_win_tag.fetch_add(1) };
 
-        using BufRole = typename Descriptor::role;
-        using BufHint = typename Descriptor::hint;
-
-        if constexpr (std::is_same_v<BufRole, IndexRole> ||
-                      std::is_same_v<BufRole, GroupRole> ||
-                      std::is_same_v<BufHint, Shareable>) {
-          int tag { next_win_tag.fetch_add(1) };
-
-          buf.allocate(m_shmem_comm, sz);
-          buf.set_tag(tag);
-          if (buf.window() != MPI_WIN_NULL) {
-            MPI_Win_lock_all(0, buf.window());
-          }
-        } else if constexpr (std::is_same_v<BufRole, DataRole> ||
-                             std::is_same_v<BufRole, TableRole>) {
-          buf.set_memory(nullptr, sz);
-        } else {
-          buf.set_memory(new char[sz], sz);
+      if (m_shmem_comm == MPI_COMM_NULL) {
+        // Inactive rank, so no node to share with
+        buf.set_memory(new char[sz], sz);
+      } else {
+        // Reserve the catalog area after the buffer (see `catalog_area`)
+        buf.allocate(m_shmem_comm, catalog_offset(sz) + CatalogBytes);
+        buf.set_memory(buf.ptr(), sz);
+        if (buf.window() != MPI_WIN_NULL) {
+          MPI_Win_lock_all(MPI_MODE_NOCHECK, buf.window());
         }
-      };
+      }
 
-      ( (make_window_or_local(std::type_identity<Descriptors>{})), ... );
-      return s;
+      buf.set_tag(tag);
     }
 
     /**
@@ -266,9 +499,12 @@ namespace sbio {
 
       // NOTE: This policy only implements synchronization on Index/Shareable.
       //       DataRole updates (per-step hot path) do NOT synchronize.
-      if constexpr (std::is_same_v<Role, IndexRole> ||
-                    std::is_same_v<Role, GroupRole> ||
+      if constexpr (std::is_same_v<Role, roles::Index> ||
                     std::is_same_v<Hint, Shareable>) {
+        if (m_shmem_comm == MPI_COMM_NULL) {
+          return;
+        }
+
         auto fence_win = [](auto& buf) {
           if constexpr (requires { buf.window(); }) {
             if (buf.window() != MPI_WIN_NULL) {
@@ -283,13 +519,21 @@ namespace sbio {
     /**
      * Check on if indexing should be done by the Broker.
      *
-     * File indexing is performed only by rank 0. This execution policy provides a
-     * shared memory buffer for the index storage - synchronization of that buffer
-     * ensures that other ranks will see any data rank 0 puts into it.
+     * File indexing is performed by one rank on each individual node (machine/server).
+     * The first rank of the node (rank 0, or lowest, of a node-wide communicator)
+     * fills the indexing role.
      *
-     * @returns `true` for rank 0, else `false`.
+     * The EPolicy provides a shared-memory buffer for the index storage, so the other
+     * ranks can read what the indexer puts into it.
+     *
+     * @note A rank without their own node-index, still then create and own a
+     *       private storage buffer for the offsets.
+     *
+     * @returns `true` for the node's indexing rank (or an inactive rank), else `false`.
      */
-    static bool should_index_impl() { return m_rank == m_main_rank; }
+    static bool should_index_impl() {
+      return (m_shmem_comm == MPI_COMM_NULL) || is_node_indexer();
+    }
 
     /**
      * After updates, synchronize shared resources.
@@ -297,7 +541,11 @@ namespace sbio {
      * Paired with the pre_update hook, the post_update ensures the synchronization
      * of `IndexRole` storage is completed.
      *
-     * Any remaining `sync_vars` are synchronized via a simple MPI_Bcast.
+     * Remaining `sync_vars` (including index catalog) get shared through the window
+     * as well, via a special catalog area. The catalog area is setup by the indexer
+     * for the node, and then it publishes a new sequence number. The other ranks can
+     * read back after this. (No additional messages are passed, so communication
+     * cannot end up causing a stall if a rank leaves early.)
      *
      * @tparam Role The role of the storage being looked at
      * @tparam StorageT The kind of the storage being looked (type of buffer)
@@ -314,84 +562,49 @@ namespace sbio {
 
       // NOTE: This policy only implements synchronization on Index/Shareable.
       //       DataRole updates (per-step hot path) do NOT synchronize.
-      int tag { 0 };
-      int seq { 0 };
-      if constexpr (std::is_same_v<Role, IndexRole> ||
-                    std::is_same_v<Role, GroupRole> ||
+      if constexpr (std::is_same_v<Role, roles::Index> ||
                     std::is_same_v<Hint, Shareable>) {
+        if (m_shmem_comm == MPI_COMM_NULL) {
+          return;
+        }
+
         auto& buf = storage.template get<Role>();
-        tag = buf.tag();
-        seq = buf.fetch_next_seq();
+        const std::uint64_t published { static_cast<std::uint64_t>(buf.fetch_next_seq()) + 1 };
+        auto* area { catalog_area(buf) };
+        std::atomic_ref<std::uint64_t> seq { *reinterpret_cast<std::uint64_t*>(area) };
+        char* bytes { area + CatalogHeaderBytes };
 
-        auto fence_win = [](auto& buf) {
-          if constexpr (requires { buf.window(); }) {
-            if (buf.window() != MPI_WIN_NULL) {
-              MPI_Win_sync(buf.window());
+        if (is_node_indexer()) {
+          // Indexer updates the catalog
+          std::size_t pos { 0 };
+          auto copy_into_window = [&](auto& var) {
+            if (pos + sizeof(var) > CatalogBytes - CatalogHeaderBytes) {
+              m_logger->error("Catalog does not fit the reserved window area ({} bytes)",
+                              CatalogBytes);
+              MPI_Abort(m_world_comm, 1);
             }
+            std::memcpy(bytes + pos, &var, sizeof(var));
+            pos += sizeof(var);
+          };
+          sync_vars.for_each(copy_into_window);
+
+          MPI_Win_sync(buf.window());
+          seq.store(published, std::memory_order_release);
+          MPI_Win_sync(buf.window());
+        } else {
+          MPI_Win_sync(buf.window());
+          while (seq.load(std::memory_order_acquire) < published) {
+            std::this_thread::yield();
+            MPI_Win_sync(buf.window());
           }
-        };
-        storage.template for_each_role<Role>(fence_win);
 
-        // This requires point-to-point Send/Recv, but we recreate a binomial tree
-        // distribution pattern like you would get from using a Bcast
-        // NOTE: We include a chunk identifier as well as a buffer tag to prevent
-        //       desynch and mismatched collectives if ranks move at different rates
-        int tree_idx { 0 };
-        auto broadcast_all_ranks = [tag, seq, &tree_idx](auto& var) {
-          using VarT = decltype(var);
-
-          auto mpi_type { mpi::type_for<VarT>() };
-
-          int ub { mpi::tag_upper_bound() };
-          int msg_tag { ((tag * 100 + (seq % 100)) * 10 + tree_idx) % ub };
-          tree_idx++;
-
-          if (m_rank == 0) {
-            std::vector<MPI_Request> reqs(m_size - 1);
-            for (int peer = 1; peer < m_size; ++peer) {
-              m_logger->trace("[Rank {} - thread {}] About to send sync vars to {}."
-                              "(tag = {}, seq = {}, msg_tag = {})",
-                              m_rank,
-                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              peer,
-                              tag,
-                              seq,
-                              msg_tag);
-              MPI_Isend(&var, 1, mpi_type, peer, msg_tag, m_active_comm, &reqs[peer - 1]);
-            }
-
-            if (!reqs.empty()) {
-              MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
-              m_logger->trace("[Rank {} - thread {}] Sync vars sent to all peers!"
-                              "(tag = {}, seq = {}, msg_tag = {})",
-                              m_rank,
-                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              tag,
-                              seq,
-                              msg_tag);
-            }
-          } else {
-            MPI_Request req;
-            m_logger->trace("[Rank {} - thread {}] Waiting to receive sync vars from rank 0."
-                            "(tag = {}, seq = {}, msg_tag = {})",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            tag,
-                            seq,
-                            msg_tag);
-            MPI_Irecv(&var, 1, mpi_type, 0, msg_tag, m_active_comm, &req);
-            MPI_Wait(&req, MPI_STATUS_IGNORE);
-            m_logger->trace("[Rank {} - thread {}] Received sync vars from rank 0."
-                            "(tag = {}, seq = {}, msg_tag = {})",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            tag,
-                            seq,
-                            msg_tag);
-          }
-        };
-
-        sync_vars.for_each(broadcast_all_ranks);
+          std::size_t pos { 0 };
+          auto copy_from_window = [&](auto& var) {
+            std::memcpy(&var, bytes + pos, sizeof(var));
+            pos += sizeof(var);
+          };
+          sync_vars.for_each(copy_from_window);
+        }
       }
     }
 
@@ -434,7 +647,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -478,7 +690,6 @@ namespace sbio {
       }
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -531,125 +742,389 @@ namespace sbio {
      *
      * @tparam FTraits The data-format traits.
      * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity (currently available indices).
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      if ((!m_main_rank_loops && m_rank == m_main_rank) || is_current_rank_inactive()) {
-        return FTraits::ExhaustedSentinel;
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
+      // A single step is just a batch of 1 - steps are round-robined within the
+      // capacity window
+      return next_batch_impl<FTraits>(state,
+                                      1,
+                                      max_capacity,
+                                      std::forward<IndexTrigger>(trigger)).first;
+    }
+
+    /**
+     * The MPIThreadedExecution policy generates contiguous batches of step indices.
+     *
+     * Each capacity window [window start, capacity) is cut into blocks of `batch_size`
+     * steps, which are dealt round-robin over the iterating ranks. The dealing continues
+     * across windows: the `g`-th block overall goes to the worker `g % worker_count`.
+     * The threads of a rank share a round counter, and round `j` of the window gives
+     * the rank its `j`-th block of the window. The final block of a window may be
+     * shorter.
+     *
+     * Reindexing follows `next_impl`, under the trigger mutex, after the rank's
+     * handed out batches are returned and the node released the window.
+     *
+     * @tparam FTraits The data-format traits.
+     * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The maximum size of a batch.
+     * @param[in] max_capacity The current max capacity (currently available indices).
+     * @param[in] trigger The reindex callback routine.
+     * @returns The next batch [first, last), or the Exhausted batch.
+     */
+    template <class FTraits, class IndexTrigger>
+    static StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      using StepIdx = typename FTraits::StepIdxType;
+      constexpr StepBatch<StepIdx> Exhausted {
+        FTraits::ExhaustedSentinel,
+        FTraits::ExhaustedSentinel
+      };
+
+      if (!rank_iterates() || !join_iteration(state)) {
+        return Exhausted;
       }
 
-      int worker_count { m_main_rank_loops ? m_active_size : m_active_size - 1 };
-      int worker_rank;
+      release_step(state);
+
+      const std::size_t size { batch_size > 0 ? batch_size : 1 };
+      const std::size_t worker_count {
+        static_cast<std::size_t>(m_main_rank_loops ? m_active_size : m_active_size - 1)
+      };
+      std::size_t worker_rank;
       if (m_main_rank_loops || m_active_rank <= m_main_rank) {
-        worker_rank = m_active_rank;
+        worker_rank = static_cast<std::size_t>(m_active_rank);
       } else {
-        worker_rank = m_active_rank - 1;
+        worker_rank = static_cast<std::size_t>(m_active_rank - 1);
       }
+
+      // The rank's first step for `round`, from a consistent view of the window.
+      // Returns false if the window is being changed (retry).
+      auto block_first = [&](std::size_t round, std::size_t& first, std::size_t& cap) -> bool {
+        const std::size_t version { state.m_window_version.load(std::memory_order_acquire) };
+        if (version & 1) {
+          return false;
+        }
+        cap = state.m_shared_capacity.load(std::memory_order_relaxed);
+        const std::size_t start { state.m_batch_window_start.load(std::memory_order_relaxed) };
+        const std::size_t base { state.m_batch_round_base.load(std::memory_order_relaxed) };
+        const std::size_t before { state.m_batch_blocks_before.load(std::memory_order_relaxed) };
+
+        std::atomic_thread_fence(std::memory_order_acquire);
+
+        if (state.m_window_version.load(std::memory_order_relaxed) != version ||
+            round < base) {
+          return false;
+        }
+
+        // The rank's first block in the window, then one block per round
+        const std::size_t offset {
+          (worker_rank + worker_count - before % worker_count) % worker_count
+        };
+
+        first = start + ((round - base) * worker_count + offset) * size;
+
+        return true;
+      };
 
       while (true) {
-        if (m_exhausted.load(std::memory_order_acquire)) {
-          m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
-                          "shared_cap = {}, max_cap = {}, m_local_idx = {}",
-                          m_rank,
-                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          m_shared_capacity.load(),
-                          max_capacity,
-                          m_local_idx.load());
-
-          return FTraits::ExhaustedSentinel;
+        if (state.m_exhausted.load(std::memory_order_acquire)) {
+          return Exhausted;
         }
 
-        typename FTraits::StepIdxType idx { m_local_idx.load(std::memory_order_acquire) };
-        typename FTraits::StepIdxType base_step { idx * worker_count };
-        typename FTraits::StepIdxType step { base_step + worker_rank };
-        typename FTraits::StepIdxType current_cap =
-          m_shared_capacity.load(std::memory_order_acquire);
+        std::size_t round { state.m_batch_round.load(std::memory_order_acquire) };
+        std::size_t first;
+        std::size_t current_cap;
+        if (!block_first(round, first, current_cap)) {
+          std::this_thread::yield();
+          continue;
+        }
 
-        if (base_step >= current_cap) {
-          std::lock_guard<std::mutex> lock(m_trigger_mutex);
+        if (first >= current_cap) {
+          std::lock_guard<std::mutex> lock(state.m_trigger_mutex);
 
-          if (m_exhausted.load(std::memory_order_acquire)) {
-            m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted on separate thread: "
-                            "shared_cap = {}, max_cap = {}, m_local_idx = {}",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            m_shared_capacity.load(),
-                            max_capacity,
-                            m_local_idx.load());
-
-            return FTraits::ExhaustedSentinel;
+          if (state.m_exhausted.load(std::memory_order_acquire)) {
+            return Exhausted;
           }
 
-          if (m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
+          if (state.m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            // Capacity indexed before the iteration started: same window, larger
+            // Capacity was indexed before the iteration started - so same window, but larger.
+            auto update_capacity = [&]() {
+              state.m_shared_capacity.store(max_capacity, std::memory_order_relaxed);
+            };
+            publish_window(state, update_capacity);
           }
 
-          idx = m_local_idx.load(std::memory_order_acquire);
-          base_step = idx * worker_count;
-          step = base_step + worker_rank;
-          current_cap = m_shared_capacity.load(std::memory_order_relaxed);
+          round = state.m_batch_round.load(std::memory_order_acquire);
+          if (block_first(round, first, current_cap) && first >= current_cap) {
+            while (state.m_in_flight.load(std::memory_order_acquire) != 0) {
+              std::this_thread::yield(); // Wait for all handed out batches to be returned
+            }
 
-          if (base_step >= current_cap) {
-            m_logger->debug("[Rank {} - thread {}] Entering trigger: "
-                            "shared_cap = {}, max_cap = {}, m_local_idx = {}",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            m_shared_capacity.load(),
-                            max_capacity,
-                            m_local_idx.load());
+            // The node may only rewrite the window once all its ranks are done with it
+            release_window(state);
+
             if (!trigger()) {
-              m_exhausted.store(true, std::memory_order_release);
+              state.m_exhausted.store(true, std::memory_order_release);
               m_logger->debug("[Rank {} - thread {}] Trigger returned exhausted: "
-                              "shared_cap = {}, max_cap = {}, m_local_idx = {}",
+                              "max_cap = {}, round = {}",
                               m_rank,
                               std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              m_shared_capacity.load(),
                               max_capacity,
-                              m_local_idx.load());
-
-              return FTraits::ExhaustedSentinel;
+                              round);
+              return Exhausted;
             }
 
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
-            current_cap = max_capacity;
+            // Starting a new window over [current_cap, max_cap) at this round
+            auto new_window_for_round = [&]() {
+              const std::size_t start { state.m_batch_window_start.load(std::memory_order_relaxed) };
+              const std::size_t blocks { (current_cap - start + size - 1) / size };
+              state.m_batch_blocks_before.fetch_add(blocks, std::memory_order_relaxed);
+              state.m_batch_window_start.store(current_cap, std::memory_order_relaxed);
+              state.m_batch_round_base.store(round, std::memory_order_relaxed);
+              state.m_shared_capacity.store(max_capacity, std::memory_order_relaxed);
+            };
+            publish_window(state, new_window_for_round);
           }
+
+          continue;
         }
 
-        while (base_step < current_cap) {
-          if (step >= current_cap) {
-            if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
-              break;
-            }
-          } else {
-            if (m_local_idx.compare_exchange_weak(idx, idx + 1, std::memory_order_acq_rel)) {
-              return step;
-            }
-          }
+        // Claim before actually taking the batch, so triggers aren't missed
+        state.m_in_flight.fetch_add(1);
+        if (state.m_batch_round.compare_exchange_strong(round, round + 1,
+                                                        std::memory_order_acq_rel)) {
+          state.m_holding_step.get() = true;
+          const std::size_t last { std::min(first + size, current_cap) };
+          return { static_cast<StepIdx>(first), static_cast<StepIdx>(last) };
+        }
+        state.m_in_flight.fetch_sub(1); // Didn't get a batch
+      }
+    }
 
-          base_step = idx * worker_count;
-          step = base_step + worker_rank;
-          current_cap = m_shared_capacity.load(std::memory_order_acquire);
+    /**
+     * Exit the iteration with `state`, releasing any held steps.
+     *
+     * When the last iterating thread of the rank leaves, before data is exhuasted,
+     * the rank is marked as departed and no longer iterates. Any calls on `next`
+     * will just return exhausted - so the node doesn't wait for it during reindexing.
+     * However, a node *INDEXER* will keep reindexing while any other rank on the node
+     * is around, or until the data is fully exhausted.
+     *
+     * @tparam FTraits The data format type.
+     * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] max_capacity The current max capacity (of step indices).
+     * @param[in] trigger The reindex callback trigger.
+     */
+    template <class FTraits, class IndexTrigger>
+    static void end_iteration_impl(IterationState& state,
+                                   typename FTraits::StepIdxType& max_capacity,
+                                   IndexTrigger&& trigger) {
+      (void)max_capacity;
+      release_step(state);
 
-          if (m_exhausted.load(std::memory_order_acquire)) {
-            m_logger->debug("[Rank {} - thread {}] Returned exhausted after current cap check: "
-                            "base_step = {}, step = {}, max_cap = {}, current_cap = {}",
-                            m_rank,
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            base_step,
-                            step,
-                            max_capacity,
-                            current_cap);
-            return FTraits::ExhaustedSentinel;
-          }
+      bool& participating { state.m_participating.get() };
+      if (!participating) {
+        return;
+      }
+      participating = false;
+
+      // Proceeds under a mutex so that a thread cannot join while the rank departs
+      // --> See join_iteration
+      std::lock_guard<std::mutex> lock(state.m_trigger_mutex);
+      if (--state.m_active_units != 0) {
+        return; // Other threads of this rank are still iterating
+      }
+
+      if (state.m_exhausted.load(std::memory_order_acquire) ||
+          state.m_departed.load(std::memory_order_acquire)) {
+        return;
+      }
+      state.m_departed.store(true, std::memory_order_release);
+
+      if (m_shmem_comm == MPI_COMM_NULL || m_shmem_size < 2) {
+        return;
+      }
+
+      if (!is_node_indexer()) {
+        int msg { NodeDeparted };
+        MPI_Send(&msg, 1, MPI_INT, m_node_indexer, node_tag(state), m_shmem_comm);
+        return;
+      }
+
+      // While others on the node are around, keep reindexing for them
+      while (others_iterating(state)) {
+        release_window(state);
+        if (!others_iterating(state)) {
+          break;
+        }
+        if (!trigger()) {
+          state.m_exhausted.store(true, std::memory_order_release);
+          break;
         }
       }
     }
 
   private:
+    static constexpr std::size_t CatalogBytes { 4096 };     ///< Window area for sync_vars.
+    static constexpr std::size_t CatalogHeaderBytes { 64 }; ///< Sequence number slot.
+
+    /**
+     * Offset of the catalog area after a shared buffer of `size` bytes.
+     */
+    static constexpr std::size_t catalog_offset(std::size_t size) {
+      return (size + 63) & ~static_cast<std::size_t>(63);
+    }
+
+    /**
+     * The catalog used by the processing ranks (inset into the rest of the buffer).
+     */
+    template <class BufT>
+    static char* catalog_area(BufT& buf) {
+      return static_cast<char*>(buf.ptr()) + catalog_offset(buf.size());
+    }
+
+    /**
+     * Whether this rank takes steps (calls `next`) at all.
+     */
+    static bool rank_iterates() {
+      return !is_current_rank_inactive() && !(!m_main_rank_loops && m_rank == m_main_rank);
+    }
+
+    /**
+     * Change the capacity window of `state` (under the trigger mutex).
+     *
+     * Threads reading the window see either the old or the new one, never a mix.
+     */
+    template <class Update>
+    static void publish_window(IterationState& state, Update&& update) {
+      const std::size_t version { state.m_window_version.load(std::memory_order_relaxed) };
+      state.m_window_version.store(version + 1, std::memory_order_relaxed);
+
+      std::atomic_thread_fence(std::memory_order_release);
+
+      update();
+      state.m_window_version.store(version + 2, std::memory_order_release);
+    }
+
+    static bool is_node_indexer() {
+      return m_shmem_rank == m_node_indexer;
+    }
+
+    static constexpr int NodeRelease { 1 };  ///< Done with the window - may be rewritten.
+    static constexpr int NodeDeparted { 2 }; ///< Left the iteration early.
+
+    /**
+     * Message tag of the node messages of an iteration.
+     *
+     * @note Iteration states are expected to be created in the same order on each rank.
+     */
+    static int node_tag(const IterationState& state) {
+      return 1000 + state.m_tag % 30000;
+    }
+
+    /**
+     * Release the current index window of the node before it is rewritten.
+     *
+     * The other ranks of the node tell the node's indexer that they are done with
+     * the window (or left the iteration entirely). The indexer waits for all of them.
+     * Called after the rank drained its handed out steps.
+     */
+    static void release_window(IterationState& state) {
+      if (m_shmem_comm == MPI_COMM_NULL || m_shmem_size < 2) {
+        return;
+      }
+
+      const int tag { node_tag(state) };
+      if (!is_node_indexer()) {
+        int msg { NodeRelease };
+        MPI_Send(&msg, 1, MPI_INT, m_node_indexer, tag, m_shmem_comm);
+        return;
+      }
+
+      if (state.m_node_departed.size() != static_cast<std::size_t>(m_shmem_size)) {
+        state.m_node_departed.assign(static_cast<std::size_t>(m_shmem_size), 0);
+      }
+
+      for (int rank = 0; rank < m_shmem_size; ++rank) {
+        const auto u_rank { static_cast<std::size_t>(rank) };
+        if (rank == m_shmem_rank || !m_node_iterates[u_rank] || state.m_node_departed[u_rank]) {
+          continue;
+        }
+
+        int msg { 0 };
+        MPI_Recv(&msg, 1, MPI_INT, rank, tag, m_shmem_comm, MPI_STATUS_IGNORE);
+        if (msg == NodeDeparted) {
+          state.m_node_departed[u_rank] = 1;
+        }
+      }
+    }
+
+    /**
+     * Whether other ranks of the node still iterate.
+     *
+     * @note Used by the node's indexer rank only.
+     */
+    static bool others_iterating(const IterationState& state) {
+      for (int rank = 0; rank < m_shmem_size; ++rank) {
+        const auto u_rank { static_cast<std::size_t>(rank) };
+        if (rank == m_shmem_rank || !m_node_iterates[u_rank]) {
+          continue;
+        }
+
+        if (u_rank >= state.m_node_departed.size() || !state.m_node_departed[u_rank]) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    /**
+     * Count this thread as iterating with `state` (once per iteration).
+     *
+     * @note A thread starting after all others of its rank left finds the rank departed.
+     * @returns `false` if the rank departed the iteration.
+     */
+    static bool join_iteration(IterationState& state) {
+      bool& participating { state.m_participating.get() };
+      if (participating) {
+        return true;
+      }
+
+      std::lock_guard<std::mutex> lock(state.m_trigger_mutex);
+      if (state.m_departed.load(std::memory_order_acquire)) {
+        return false;
+      }
+
+      participating = true;
+      ++state.m_active_units;
+
+      return true;
+    }
+
+    static void release_step(IterationState& state) {
+      bool& holding { state.m_holding_step.get() };
+      if (holding) {
+        holding = false;
+        state.m_in_flight.fetch_sub(1);
+      }
+    }
+
     /**
      * Communicator for synchronizing across the whole MPI world.
      */
@@ -663,36 +1138,31 @@ namespace sbio {
     static inline bool m_main_rank_loops { true };
 
     static inline std::size_t m_num_threads { 0 };
+    static inline std::atomic<std::size_t> m_next_thread_ordinal { 0 }; ///< For unit_ordinal routine
 
     /**
      * Communicator used when generating shareable buffers.
      */
     static inline MPI_Comm m_shmem_comm { MPI_COMM_NULL };
-    static inline int m_rank { -1 };     ///< This processes rank in the MPI world.
-    static inline int m_size { -1 };     ///< The size of the MPI world.
+    static inline int m_shmem_rank { -1 };   ///< This rank within its node (m_shmem_comm).
+    static inline int m_shmem_size { 0 };    ///< The number of (active) ranks on this node.
+    static inline int m_node_indexer { -1 }; ///< The node rank which indexes for the node.
     /**
-     * Set of mutexes to allow different brokers of a group from different threads
-     * to fetch in parallel.
+     * For each rank on the node, whether it iterates (calls `next`).
+     *
+     * @note This indicates whether the rank participates in collective reindexing.
      */
-    static inline std::mutex m_broker_mutexes[2048];
-    /**
-     * Mutex for thread synchronization on reindexing
-     */
-    static inline std::mutex m_trigger_mutex;
-    /**
-     * Thread-local index within the rank's set of indices to distribute.
-     */
-    static inline std::atomic<std::size_t> m_local_idx { 0 };
-    /**
-     * Intra-rank capacity store for inter-thread synchronization of indices.
-     */
-    static inline std::atomic<std::size_t> m_shared_capacity { 0 };
-    /**
-     * Latch for if the rank has exhausted all indices.
-     */
-    static inline std::atomic<bool> m_exhausted { false };
+    static inline std::vector<int> m_node_iterates {};
+    static inline int m_rank { -1 }; ///< This processes rank in the MPI world.
+    static inline int m_size { -1 }; ///< The size of the MPI world.
+
     static inline std::shared_ptr<spdlog::logger> m_logger; ///< Execution policy logger
   };
+
+  /**
+   * A hybrid thread/MPI execution policy using host-memory management.
+   */
+  using MPIThreadedExecution = Composed<MPIThreadedDistribution, HostMemory>;
 } // namespace sbio
 
 #endif // SBIO_EXECUTION_MPI_THREADED_HH

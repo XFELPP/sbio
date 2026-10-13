@@ -18,9 +18,13 @@
  */
 
 #include "sbio/core/datasource.hh"
+#include "sbio/core/stream.hh"
 #include "sbio/execution/serial.hh"
+#include "sbio/formats/random/randfmt.hh"
+#include "sbio/formats/random/random_locator.hh"
 #include "sbio/formats/random/random_traits.hh"
 #include "sbio/io/posix.hh"
+#include "sbio/locators/custom_lambda.hh"
 
 #include <gtest/gtest.h>
 #include <ncarray/ncarrays.hh>
@@ -48,15 +52,15 @@ protected:
                         std::uint8_t pattern_type,
                         std::size_t num_events = 20,
                         std::uint32_t seed = 42) {
-    sbio::RandomTraits::DataSourceParameters ds_params;
-    ds_params.num_detectors = 1;
-    snprintf(ds_params.detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
-    snprintf(ds_params.detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det");
+    sbio::randfmt::DetectorSpec detectors[10];
+    std::uint8_t num_detectors { 1 };
+    snprintf(detectors[0].name, sbio::RandomTraits::MaxNameSize, "det0");
+    snprintf(detectors[0].type, sbio::RandomTraits::MaxNameSize, "test_det");
 
-    ds_params.detectors[0].rank = 2;
-    ds_params.detectors[0].shape[0] = 64;
-    ds_params.detectors[0].shape[1] = 64;
-    ds_params.detectors[0].dtype = ncarray::DType::uint16;
+    detectors[0].rank = 2;
+    detectors[0].shape[0] = 64;
+    detectors[0].shape[1] = 64;
+    detectors[0].dtype = ncarray::DType::uint16;
 
     sbio::RandomTraits::StreamParameters base_cfg;
     base_cfg.num_events = num_events;
@@ -65,7 +69,10 @@ protected:
     base_cfg.enable_subblock_offsets = true;
     base_cfg.indexing_mode = sbio::RandomTraits::IndexingMode::IndexAll;
 
-    ASSERT_TRUE(ds.load_run(base_cfg, ds_params));
+    sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
+    cfg.format_params = base_cfg;
+
+    ASSERT_TRUE(ds.load_source_with<sbio::CustomLambdaLocator>(cfg, detectors, num_detectors));
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);
   }
 };
@@ -102,7 +109,7 @@ TEST_F(RandomPatternTest, FixedPatternFill) {
                                    ncarray::DType::uint8,
                                    0,
                                    false);
-    std::size_t total_bytes { bytes_arr.nbytes() };
+    std::size_t total_bytes { static_cast<std::size_t>(bytes_arr.nbytes()) };
 
     for (std::size_t i = 0; i < total_bytes; ++i) {
       std::uint8_t& val { bytes_arr[{0, i}] };
@@ -143,7 +150,7 @@ TEST_F(RandomPatternTest, SequentialPatternFill) {
                                    ncarray::DType::uint8,
                                    0,
                                    false);
-    std::size_t total_bytes { bytes_arr.nbytes() };
+    std::size_t total_bytes { static_cast<std::size_t>(bytes_arr.nbytes()) };
 
     for (std::size_t i = 0; i < total_bytes; ++i) {
       std::uint8_t expected { static_cast<std::uint8_t>((step + i) & 0xFF) };
@@ -187,7 +194,7 @@ TEST_F(RandomPatternTest, PRNGPatternFillDeterminism) {
                                    ncarray::DType::uint8,
                                    0,
                                    false);
-    std::size_t total_bytes { bytes_arr.nbytes() };
+    std::size_t total_bytes { static_cast<std::size_t>(bytes_arr.nbytes()) };
 
     // Verify LCG output formula: state = state * 1664525 + 1013904223
     std::uint32_t state { seed ^ static_cast<std::uint32_t>(step * 0x9E3779B9u + 1) };

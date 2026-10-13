@@ -90,7 +90,7 @@ namespace sbio {
     SBIO_HD StorageViewType view() {
 #ifndef NDEBUG
       m_view_count.fetch_add(1, hd_std::memory_order_relaxed);
-      return StorageViewType(m_storage, &m_view_count);
+      return StorageViewType(m_storage, m_view_count);
 #else
       return StorageViewType(m_storage);
 #endif

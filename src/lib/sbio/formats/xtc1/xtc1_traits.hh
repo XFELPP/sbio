@@ -20,6 +20,7 @@
 #ifndef SBIO_FORMATS_XTC1_XTC1_TRAITS_HH
 #define SBIO_FORMATS_XTC1_XTC1_TRAITS_HH
 
+#include "sbio/core/roles.hh"
 #include "sbio/core/storage.hh"
 #include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
@@ -99,18 +100,17 @@ namespace sbio {
      * The execution policy will determine how to fulfill allocation and synchronization
      * of these requested buffers.
      */
-    using BrokerBufferRequirements = TypeList <
-      BufferDescriptor<MetadataRole, 0, sizeof(XTC1::Dgram)>,   /* Buffer for transition */
-      BufferDescriptor<MetadataRole, 1, sizeof(XTC1::Dgram)>,   /* Scratch buffer for SMD */
-      BufferDescriptor<DataRole, 0, sizeof(XTC1::Dgram)>,       /* Buffer for events */
-      BufferDescriptor<IndexRole, 0, sizeof(EventOffset)>,      /* EventOffsets buffer */
-      BufferDescriptor<IndexRole, 1, sizeof(TransitionOffset)>, /* TransitionOffsets buffer */
-      BufferDescriptor<MetadataRole, 2, sizeof(XTC1::Dgram)>    /* Config buffer */
+    using BrokerBufferRequirements = RequirementsList<
+      BufferDescriptor<roles::Metadata, 0, sizeof(XTC1::Dgram)>,   /* Buffer for transition */
+      BufferDescriptor<roles::Metadata, 1, sizeof(XTC1::Dgram)>,   /* Scratch buffer for SMD */
+      BufferDescriptor<roles::Data, 0, sizeof(XTC1::Dgram)>,       /* Buffer for events */
+      BufferDescriptor<roles::Index, 0, sizeof(EventOffset)>,      /* EventOffsets buffer */
+      BufferDescriptor<roles::Index, 1, sizeof(TransitionOffset)>, /* TransitionOffsets buffer */
+      BufferDescriptor<roles::Metadata, 2, sizeof(XTC1::Dgram)>    /* Config buffer */
     >;
 
     using GroupBufferRequirements = TypeList<
-      BufferDescriptor<TableRole, 0, sizeof(void*), Shareable>,      /* Buffer of pointers to segments */
-      BufferDescriptor<GroupRole, 0, sizeof(XTC1::Dgram), Shareable> /* Buffer for constants */
+      BufferDescriptor<roles::Table, 0, sizeof(void*), Shareable>,      /* Buffer of pointers to segments */
     >;
 
     /**

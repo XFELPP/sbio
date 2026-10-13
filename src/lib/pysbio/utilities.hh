@@ -20,6 +20,8 @@
 #ifndef PYSBIO_UTILITIES_HH
 #define PYSBIO_UTILITIES_HH
 
+#include "pysbio/policies.hh"
+
 #include "sbio/core/broker.hh"
 #include "sbio/execution/serial.hh"
 #ifdef SBIO_HAS_MPI
@@ -48,118 +50,9 @@
 namespace py = pybind11;
 
 namespace pysbio {
-#ifdef SBIO_HAS_XTC1
-  using SerialBroker1 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::SerialExecution,
-    sbio::XTC1Traits
-  >;
 
-  using ThreadedBroker1 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::ThreadedExecution,
-    sbio::XTC1Traits
-  >;
-#ifdef SBIO_HAS_MPI
-  using MPIBroker1 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::MPIExecution,
-    sbio::XTC1Traits
-  >;
-
-  using ThreadedMPIBroker1 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::MPIThreadedExecution,
-    sbio::XTC1Traits
-  >;
-#endif
-#endif
-
-#ifdef SBIO_HAS_XTC2
-  using SerialBroker2 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::SerialExecution,
-    sbio::XTC2Traits
-  >;
-
-  using ThreadedBroker2 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::ThreadedExecution,
-    sbio::XTC2Traits
-  >;
-#ifdef SBIO_HAS_MPI
-  using MPIBroker2 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::MPIExecution,
-    sbio::XTC2Traits
-  >;
-
-  using ThreadedMPIBroker2 = sbio::StreamBroker<
-    sbio::SyncPOSIXIO,
-    sbio::MPIThreadedExecution,
-    sbio::XTC2Traits
-  >;
-#endif
-#endif
-
-#if defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
-#ifdef SBIO_HAS_MPI
-  using BrokerV = std::variant<
-    SerialBroker1,
-    SerialBroker2,
-    ThreadedBroker1,
-    ThreadedBroker2,
-    MPIBroker1,
-    MPIBroker2,
-    ThreadedMPIBroker1,
-    ThreadedMPIBroker2
-  >;
-  using BrokerPtrV = std::variant<
-    SerialBroker1**,
-    SerialBroker2**,
-    ThreadedBroker1**,
-    ThreadedBroker2**,
-    MPIBroker1**,
-    MPIBroker2**,
-    ThreadedMPIBroker1**,
-    ThreadedMPIBroker2**
-  >;
-
-#else
-  using BrokerV =
-    std::variant<SerialBroker1, SerialBroker2, ThreadedBroker1, ThreadedBroker2>;
-  using BrokerPtrV =
-    std::variant<SerialBroker1**, SerialBroker2**, ThreadedBroker1**, ThreadedBroker2**>;
-
-#endif
-
-#elif defined(SBIO_HAS_XTC1)
-#ifdef SBIO_HAS_MPI
-  using BrokerV =
-    std::variant<SerialBroker1, ThreadedBroker1, MPIBroker1, ThreadedMPIBroker1>;
-  using BrokerPtrV =
-    std::variant<SerialBroker1**, ThreadedBroker1**, MPIBroker1**, ThreadedMPIBroker1**>;
-
-#else
-  using BrokerV = std::variant<SerialBroker1, ThreadedBroker1>;
-  using BrokerPtrV = std::variant<SerialBroker1**, ThreadedBroker1**>;
-
-#endif
-
-#elif defined(SBIO_HAS_XTC2)
-#ifdef SBIO_HAS_MPI
-  using BrokerV =
-    std::variant<SerialBroker2, ThreadedBroker2, MPIBroker2, ThreadedMPIBroker2>;
-  using BrokerPtrV =
-    std::variant<SerialBroker2**, ThreadedBroker2**, MPIBroker2**, ThreadedMPIBroker2**>;
-
-#else
-  using BrokerV = std::variant<SerialBroker2, ThreadedBroker2>;
-  using BrokerPtrV = std::variant<SerialBroker2**, ThreadedBroker2**>;
-
-#endif
-
-#endif
+  using BrokerV = VariantOver<BrokerFor>;
+  using BrokerPtrV = VariantOver<BrokerPtrFor>;
 
   /**
    * Process the metadata from various StreamBrokers for a detector of the given name.

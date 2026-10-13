@@ -43,6 +43,8 @@ namespace sbio {
       MPI_Finalized(&finalized);
 
       if (initialized && !finalized && win && *win != MPI_WIN_NULL) {
+        // The EPolicy uses a lock_all epcoh - otherwise get a synchronization error
+        MPI_Win_unlock_all(*win);
         MPI_Win_free(win);
       }
     }
@@ -110,6 +112,7 @@ namespace sbio {
       , m_size(other.m_size)
       , m_window(other.m_window)
       , m_tag(other.m_tag)
+      , m_seq(other.m_seq)
     {}
 
     /**
@@ -124,6 +127,7 @@ namespace sbio {
         m_size = other.m_size;
         m_window = other.m_window;
         m_tag = other.m_tag;
+        m_seq = other.m_seq;
       }
 
       return *this;
@@ -140,6 +144,7 @@ namespace sbio {
       , m_size(other.m_size)
       , m_window(std::move(other.m_window))
       , m_tag(other.m_tag)
+      , m_seq(other.m_seq)
     {
       other.m_ptr = nullptr;
       other.m_size = 0;
@@ -158,6 +163,7 @@ namespace sbio {
         m_size = other.m_size;
         m_window = std::move(other.m_window);
         m_tag = other.m_tag;
+        m_seq = other.m_seq;
 
         other.m_ptr = nullptr;
         other.m_size = 0;

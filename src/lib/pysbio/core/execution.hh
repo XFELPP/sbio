@@ -22,6 +22,8 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
 
 #include "sbio/execution/serial.hh"
@@ -42,8 +44,7 @@ namespace pysbio {
     Metadata = 1,
     Data     = 2,
     Index    = 3,
-    Group    = 4,
-    Table    = 5
+    Table    = 4
   };
 
   enum class StorageHint : std::uint16_t {
@@ -67,7 +68,13 @@ namespace pysbio {
   class PyExecution : public sbio::Execution<PyExecution<BasePolicy>> {
   public:
     using Config = typename BasePolicy::Config;
+
+    using IterationState = typename BasePolicy::IterationState;
+
     static constexpr auto ParallelSupport = BasePolicy::ParallelSupport;
+
+    template <class T>
+    using SegmentState = typename BasePolicy::template SegmentState<T>;
 
     template <typename Descriptor>
     using BufferTypeFor = typename BasePolicy::template BufferTypeFor<Descriptor>;
@@ -83,7 +90,7 @@ namespace pysbio {
     static void set_active_instance(PyExecution<BasePolicy>* inst) { s_active_instance = inst; }
     static PyExecution<BasePolicy>* get_active_instance() { return s_active_instance; }
 
-    template <sbio::IsTypeList Requirements, class IO, class FTraits>
+    template <sbio::IsRequirementsList Requirements, class IO, class FTraits>
     requires sbio::FormatTraits<FTraits, IO, PyExecution<BasePolicy>>
     static auto allocate_storage_impl(sbio::AllocationRequest<FTraits>& request) {
       if constexpr (requires {
@@ -101,6 +108,45 @@ namespace pysbio {
     static void configure_impl(const ConfigT& config) {
       BasePolicy::configure(config);
     }
+
+    template <class ConfigT>
+    static bool validate_environment_impl(const ConfigT& config, const char*& error) {
+      return BasePolicy::validate_environment(config, error);
+    }
+
+    /// --- Memory Management --- ///
+
+    template <class Buffer>
+    static void allocate_buffer(Buffer& buf, std::size_t size) {
+      BasePolicy::allocate_buffer(buf, size);
+    }
+
+    template <class Buffer>
+    requires requires (Buffer& buf) { BasePolicy::release_buffer(buf); }
+    static void release_buffer(Buffer& buf) {
+      BasePolicy::release_buffer(buf);
+    }
+
+    static constexpr sbio::MemorySpace result_memory_space_impl() {
+      return BasePolicy::result_memory_space();
+    }
+
+    template <typename IO>
+    static constexpr sbio::IOCapability required_io_capabilities_impl() {
+      return BasePolicy::template required_io_capabilities<IO>();
+    }
+
+    template <typename Buffer>
+    static void* acquire_broker_view_impl(Buffer& buf) {
+      return BasePolicy::acquire_broker_view(buf);
+    }
+
+    template <typename Buffer>
+    static void publish_broker_view_impl(Buffer& buf, void* view, std::size_t nbytes) {
+      BasePolicy::publish_broker_view(buf, view, nbytes);
+    }
+
+    /// --- Distribution and Processing --- ///
 
     static bool should_index_impl() {
       py::gil_scoped_acquire acquire;
@@ -198,7 +244,8 @@ namespace pysbio {
     }
 
     template <class FTraits, class IndexTrigger>
-    static typename FTraits::StepIdxType next_impl(typename FTraits::StepIdxType& max_capacity,
+    static typename FTraits::StepIdxType next_impl(IterationState& state,
+                                                   typename FTraits::StepIdxType& max_capacity,
                                                    IndexTrigger&& trigger) {
       {
         py::gil_scoped_acquire acquire;
@@ -213,7 +260,30 @@ namespace pysbio {
         }
       }
 
-      return BasePolicy::template next<FTraits>(max_capacity, std::forward<IndexTrigger>(trigger));
+      return BasePolicy::template next<FTraits>(state,
+                                                max_capacity,
+                                                std::forward<IndexTrigger>(trigger));
+    }
+
+    template <class FTraits, class IndexTrigger>
+    static sbio::StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      return BasePolicy::template next_batch<FTraits>(state,
+                                                      batch_size,
+                                                      max_capacity,
+                                                      std::forward<IndexTrigger>(trigger));
+    }
+
+    template <class FTraits, class IndexTrigger>
+    static void end_iteration_impl(IterationState& state,
+                                   typename FTraits::StepIdxType& max_capacity,
+                                   IndexTrigger&& trigger) {
+      BasePolicy::template end_iteration<FTraits>(state,
+                                                  max_capacity,
+                                                  std::forward<IndexTrigger>(trigger));
     }
 
     template <class FTraits, class FetchCBType, class GetCBType>
@@ -288,15 +358,13 @@ namespace pysbio {
   private:
     template <typename Role>
     static StorageRole get_storage_role() {
-      if constexpr (std::is_same_v<Role, sbio::MetadataRole>) {
+      if constexpr (std::is_same_v<Role, sbio::roles::Metadata>) {
         return StorageRole::Metadata;
-      } else if constexpr (std::is_same_v<Role, sbio::DataRole>) {
+      } else if constexpr (std::is_same_v<Role, sbio::roles::Data>) {
         return StorageRole::Data;
-      } else if constexpr (std::is_same_v<Role, sbio::IndexRole>) {
+      } else if constexpr (std::is_same_v<Role, sbio::roles::Index>) {
         return StorageRole::Index;
-      } else if constexpr (std::is_same_v<Role, sbio::GroupRole>) {
-        return StorageRole::Group;
-      } else if constexpr (std::is_same_v<Role, sbio::TableRole>) {
+      } else if constexpr (std::is_same_v<Role, sbio::roles::Table>) {
         return StorageRole::Table;
       } else {
         return StorageRole::UNKNOWN;
@@ -317,20 +385,28 @@ namespace pysbio {
     }
 
     template <typename... Descriptors, typename BaseStorageT>
-    static auto convert_storage(sbio::TypeList<Descriptors...>,
+    static auto convert_storage(sbio::RequirementsList<Descriptors...>,
                                 BaseStorageT&& base_storage) {
-      sbio::Storage<sbio::TypeList<Descriptors...>, PyExecution<BasePolicy>> target_storage;
+      sbio::Storage<sbio::RequirementsList<Descriptors...>, PyExecution<BasePolicy>> target_storage;
 
       // We offload the allocation of Storage to BasePolicy, but this results in a
       // template mismatch (Storage was created with <BasePolicy> but we need to return
       // Storage created with <PyExecution>) -- Just move the storage buffers over.
       auto move_base_to_py = [&](auto DescTag) {
         using Descriptor = typename decltype(DescTag)::type;
-        target_storage.template get<Descriptor>() =
-          std::move(base_storage.template get<Descriptor>());
+        target_storage.template get_member<Descriptor>() =
+          std::move(base_storage.template get_member<Descriptor>());
       };
 
       ( (move_base_to_py(std::type_identity<Descriptors>{})), ... );
+
+      // Because the buffer memory is owned by the undelrying Storage Owner,
+      // the converted one via PyExecution must use the same release semantics
+      if constexpr (requires { base_storage.owner(); }) {
+        static_assert(requires { target_storage.set_owner(base_storage.owner()); },
+                      "PyExecution has to release memory like the BasePolicy!");
+        target_storage.set_owner(base_storage.owner());
+      }
 
       return target_storage;
     }

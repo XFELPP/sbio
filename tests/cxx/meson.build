@@ -9,23 +9,47 @@ if build_core_opt and build_tests_opt
     endif
 
     deps_for_tests = [sbio_dep, sbiofmt_dep, ncarray_dep, gtest_dep]
-    # if sbio_has_cuda
-    #     deps_for_tests += cuda_dep
-    # endif
+    if sbio_has_cuda
+        deps_for_tests += cuda_dep
+    endif
 
     sbiofmt_test_sources = [
-        'test_random_patterns.cc',
-        'test_indexing_modes.cc',
+        'test_batches.cc',
         'test_broker_group.cc',
+        'test_composed.cc',
+        'test_context.cc',
         'test_execution_policies.cc',
+        'test_indexing_modes.cc',
+        'test_iteration.cc',
+        'test_random_patterns.cc',
+        'test_source_set.cc',
+        'test_two_ds.cc',
+        'test_zip.cc',
     ]
     test_sbiofmt = executable(
         'test_sbiofmt',
         sbiofmt_test_sources,
         dependencies: deps_for_tests,
         install: true,
+        install_rpath: py_to_lib_install_rpath,
         include_directories: sbio_headers,
     )
     test('Running test suite using sbio rndfmt.', test_sbiofmt, verbose: true)
 
+    if sbio_has_cuda
+        sbiofmt_cuda_sources = [
+            'test_cuda_direct.cc',
+            'test_cuda_staged.cc',
+            'test_cuda_threaded.cc',
+        ]
+        test_sbiofmt_cuda = executable(
+            'test_sbiofmt_cuda',
+            sbiofmt_cuda_sources,
+            dependencies: deps_for_tests,
+            install: true,
+            install_rpath: py_to_lib_install_rpath,
+            include_directories: sbio_headers,
+        )
+        test('Running CUDA test suite using sbio rndfmt.', test_sbiofmt_cuda, verbose: true)
+    endif
 endif # build_core_opt and build_tests_opt

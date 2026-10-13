@@ -1,5 +1,9 @@
 installed_execution_headers = [
+    'composed.hh',
+    'cuda.hh',
+    'host_memory.hh',
     'mpi.hh',
+    'mpi_cuda.hh',
     'mpi_threaded.hh',
     'serial.hh',
     'threaded.hh',

@@ -52,8 +52,20 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
+  /**
+   * Indicator for the MemorySpace that the StorageView looks at.
+   *
+   * If compiled as device code, set to DevTag. Using this tag allows the caller
+   * to specify its memory space for operations where that is needed.
+   */
+#ifdef __CUDA_ARCH__
+  using ViewMemTag = ncarray::DevTag;
+#else
+  using ViewMemTag = ncarray::HostTag;
+#endif // __CUDA_ARCH__
+
   template <class MemTag>
-  bool is_locality_match(MemorySpace memory_space) {
+  SBIO_HD bool is_locality_match(MemorySpace memory_space) {
     if (memory_space == MemorySpace::Device) {
       if constexpr (hd_std::is_same_v<MemTag, ncarray::DevTag>) {
         return true;
@@ -81,7 +93,7 @@ namespace sbio {
 
 #ifndef NDEBUG
     SBIO_HD StorageView(StorageT& storage, hd_std::atomic<hd_std::size_t>& num_views)
-      : StorageView(storage)
+      : m_storage(storage)
       , m_num_views(&num_views)
     {}
 #endif
@@ -95,6 +107,9 @@ namespace sbio {
 
     template <class Role, hd_std::size_t Index = 0, class CallerMemTag>
     SBIO_HD inline auto acquire(AcquireIntent intent = AcquireIntent::BufferMemorySpace) {
+#ifndef NDEBUG
+      m_acquired_count.fetch_add(1, hd_std::memory_order_relaxed);
+#endif
       auto& buf { m_storage.template get<Role, Index>() };
 
       if (intent == AcquireIntent::BufferMemorySpace ||
@@ -108,10 +123,28 @@ namespace sbio {
     template <class Role, hd_std::size_t Index, class ViewT>
     SBIO_HD inline void release(ViewT view) {
 #ifndef NDEBUG
-      if (m_num_views != nullptr) {
-        m_num_views->fetch_sub(1, hd_std::memory_order_acq_rel);
+      if (m_num_views != nullptr && m_acquired_count.load(hd_std::memory_order_acquire) > 0) {
+        if (m_acquired_count.fetch_sub(1, hd_std::memory_order_acq_rel) == 1) {
+          m_num_views->fetch_sub(1, hd_std::memory_order_acq_rel);
+        }
       }
 #endif
+    }
+
+    /**
+     * Release a view after writing bytes to the start of it.
+     *
+     * The EPolicy publishes the written bytes (moves from view to buffer) and then
+     * the view is released.
+     *
+     * @note This is no-op unls a staging copy is in play.
+     */
+    template <class Role, hd_std::size_t Index, class ViewT>
+    SBIO_HD inline void release_written(ViewT view, hd_std::size_t nbytes) {
+      auto& buf { m_storage.template get<Role, Index>() };
+      EPolicy::publish_broker_view(buf, static_cast<void*>(view), nbytes);
+
+      release<Role, Index>(view);
     }
 
     template <class Role, hd_std::size_t Index, class ViewT, typename PtrT>
@@ -130,8 +163,10 @@ namespace sbio {
       }
 
 #ifndef NDEBUG
-      if (m_num_views != nullptr) {
-        m_num_views->fetch_sub(1, hd_std::memory_order_acq_rel);
+      if (m_num_views != nullptr && m_acquired_count.load(hd_std::memory_order_acquire) > 0) {
+        if (m_acquired_count.fetch_sub(1, hd_std::memory_order_acq_rel) == 1) {
+          m_num_views->fetch_sub(1, hd_std::memory_order_acq_rel);
+        }
       }
 #endif
 
@@ -143,6 +178,7 @@ namespace sbio {
 
 #ifndef NDEBUG
     hd_std::atomic<hd_std::size_t>* m_num_views { nullptr };
+    hd_std::atomic<hd_std::size_t> m_acquired_count { 0 };
 #endif
   };
 } // namespace sbio

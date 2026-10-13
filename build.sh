@@ -29,6 +29,10 @@ $(basename "$0"):
           Display this message.
 
     Options that apply on subsequent runs of the build script:
+        -d|--debug
+          Create a debugoptimized build.
+        --examples
+          Build example programs.
         -e|--entry_points
           Re-run the pip install command. This is only needed if pyproject.toml is
           modified.
@@ -36,6 +40,8 @@ $(basename "$0"):
           Re-run the meson setup. This is only required if meson.build files have been
           modified, or meson options/the install prefix have changed since the last
           time it was run.
+        -t|--tests
+          Build tests.
 EOF
 }
 
@@ -50,12 +56,24 @@ do
         NEED_CLEANUP=1
         shift
         ;;
+    -d|--debug)
+        DEBUG=1
+        shift
+        ;;
+    --examples)
+        BUILD_EXAMPLES=1
+        shift
+        ;;
     -e|--entry_points)
         NEED_ENTRYPOINTS=1
         shift
         ;;
     -r|--reconfigure)
         NEED_RECONFIG=1
+        shift
+        ;;
+    -t|--tests)
+        RUN_TESTS=1
         shift
         ;;
     -h|--help)
@@ -174,30 +192,38 @@ fi
 
 export PKG_CONFIG_PATH="$(nca-pkg-config --pkg-config-path):${PKG_CONFIG_PATH}"
 
+RELTYPE="release"
+if [[ ${DEBUG} ]]; then
+    RELTYPE="debugoptimized"
+fi
+
+SETUP_KWARGS="-Dbuild_core=true -Dsbio_as_wheel=true -Dbuild_python=false -Dbuildtype=${RELTYPE}"
+
+if [[ ${RUN_TESTS} ]]; then
+    SETUP_KWARGS="${SETUP_KWARGS} -Dbuild_tests=true"
+fi
+
+if [[ ${BUILD_EXAMPLES} ]]; then
+    SETUP_KWARGS="${SETUP_KWARGS} -Dbuild_examples=true"
+fi
+
+LINES=("Selected configuration: ${SETUP_KWARGS}")
+print_banner "${LINES[@]}"
+
 # Run meson configure/setup if it hasn't be done yet or it has been requested
 # It generally only needs to rerun if install prefix has changed, or meson.build
 # files have been modified.
 if [ ! -d "${BUILD_DIR}" ]; then
     LINES=("Running meson setup for build configuration")
     print_banner "${LINES[@]}"
-    meson setup "${BUILD_DIR}"      \
-          --prefix="${INSTALL_DIR}" \
-          -Dbuild_core=true         \
-          -Dsbio_as_wheel=true      \
-          -Dbuildtype=release       \
-          -Dbuild_examples=true     \
-          -Dbuild_python=false
+    # NOTE: SETUP_KWARGS is intentionally unquoted here to not interpret all args as 1 string
+    meson setup --prefix="${INSTALL_DIR}" "${BUILD_DIR}" ${SETUP_KWARGS}
 elif [[ ${FIRST_BUILD} || ${NEED_RECONFIG} ]]; then
     LINES=("Running meson setup reconfiguration")
     print_banner "${LINES[@]}"
     # Reconfigure in case prefix or options changed, but keep cache
-    meson setup "${BUILD_DIR}"      \
-          --reconfigure             \
-          --prefix="${INSTALL_DIR}" \
-          -Dsbio_as_wheel=true      \
-          -Dbuildtype=release       \
-          -Dbuild_examples=true     \
-          -Dbuild_python=false
+    # NOTE: SETUP_KWARGS is intentionally unquoted here to not interpret all args as 1 string
+    meson setup --prefix="${INSTALL_DIR}" "${BUILD_DIR}" --reconfigure ${SETUP_KWARGS}
 else
     LINES=(
         "!!!!! Skipping meson setup reconfiguration !!!!!"

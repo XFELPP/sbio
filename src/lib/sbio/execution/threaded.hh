@@ -22,7 +22,11 @@
 
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
+#include "sbio/core/roles.hh"
+#include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/execution/composed.hh"
+#include "sbio/execution/host_memory.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/thread_local_buffer.hh"
 #include "sbio/formats/format_traits.hh"
@@ -45,22 +49,28 @@ namespace sbio {
   /**
    * ThreadedExecution manages a single-process/multi-thread IO strategy.
    *
-   * This execution policy the necessary index distribution, and data synchronization
-   * when operating brokers in a single process/multi-threaded environment. It is
-   * designed to allow data-buffers (`DataRole`), and broker group buffers (`TableRole`)
-   * to use a ThreadLocalBuffer allowing for true thread-level parallelism. Other buffer
-   * roles are intentionally shared using a simpler HostBuffer which makes them
-   * available process wide.
+   * This distribution manager provides the necessary index distribution, and data
+   * synchronization when operating brokers in a single process/multi-threaded environment.
+   * Its base parallel unit is a thread. Data-buffers (`DataRole`), and broker group
+   * buffers (`TableRole`) use per-thread buffers, allowing for true thread-level
+   * parallelism. Other buffer roles are intentionally shared, and available process
+   * wide.
+   *
+   * The `ThreadedExecution` alias below composes this manager with host-memory.
    */
-  class ThreadedExecution : public Execution<ThreadedExecution> {
+  class ThreadedDistribution {
   public:
     template <typename Descriptor>
-    using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, DataRole> ||
-      std::is_same_v<typename Descriptor::role, TableRole>,
-      ThreadLocalBuffer,
-      HostBuffer
-    >;
+    static constexpr BufferScope scope_for() {
+      using BufRole = typename Descriptor::role;
+
+      if constexpr (std::is_same_v<BufRole, roles::Data> ||
+                    std::is_same_v<BufRole, roles::Table>) {
+        return BufferScope::PerUnit;
+      } else {
+        return BufferScope::Shared;
+      }
+    }
 
     struct Config {
       std::size_t num_threads { 0 };
@@ -73,28 +83,102 @@ namespace sbio {
 
     static void configure_impl(const Config& config) {
       m_num_threads = config.num_threads;
+    }
 
-      // Reset collective state
-      m_shared_capacity.store(0, std::memory_order_release);
-      m_event_idx.store(0, std::memory_order_release);
-      m_exhausted.store(false, std::memory_order_release);
+    template <class T>
+    struct SegmentState {
+      SegmentState()
+        : id(next_id.fetch_add(1, std::memory_order_relaxed))
+      {}
+
+      T& get() const {
+        thread_local std::vector<std::pair<std::uint64_t, T>> registry;
+        for (auto& [key, v] : registry) {
+          if (key == id) {
+            return v;
+          }
+        }
+
+        return registry.emplace_back(id, T {}).second;
+      }
+
+      std::uint64_t id;
+      static inline std::atomic<std::uint64_t> next_id { 1 };
+    };
+
+    class IterationState {
+    public:
+      IterationState() = default;
+
+      // Make move for Python bindings, handling atomics
+      IterationState(IterationState&& other) noexcept
+        : m_event_idx(other.m_event_idx.load())
+        , m_shared_capacity(other.m_shared_capacity.load())
+        , m_exhausted(other.m_exhausted.load())
+        , m_in_flight(other.m_in_flight.load())
+        , m_holding_step(other.m_holding_step)
+      {}
+
+      IterationState& operator=(IterationState&& other) noexcept {
+        if (this != &other) {
+          m_event_idx.store(other.m_event_idx.load());
+          m_shared_capacity.store(other.m_shared_capacity.load());
+          m_exhausted.store(other.m_exhausted.load());
+          m_in_flight.store(other.m_in_flight.load());
+          m_holding_step = other.m_holding_step;
+        }
+
+        return *this;
+      }
+
+    private:
+      friend class ThreadedDistribution;
+
+      /**
+       * Thread-local index to index to distribute.
+       */
+      std::atomic<std::size_t> m_event_idx { 0 };
+      /**
+       * Capacity store for inter-thread synchronization of indices.
+       */
+      std::atomic<std::size_t> m_shared_capacity { 0 };
+      /**
+       * Latch for if exhausted all indices.
+       */
+      std::atomic<bool> m_exhausted { false };
+
+      /**
+       * The number of steps handed out by next() and not yet finished processing.
+       *
+       * A thread returns a step at the start of each next() call.
+       */
+      std::atomic<std::size_t> m_in_flight { 0 };
+
+      /**
+       * Mutex for thread synchronization on reindexing
+       */
+      std::mutex m_trigger_mutex;
+
+      SegmentState<bool> m_holding_step; ///< Whether this thread is holding a step.
+    };
+
+    /**
+     * The ordinal (associated number) for the calling parallel unit.
+     *
+     * The threads are given a number in the order that they ask for one.
+     */
+    static std::size_t unit_ordinal() {
+      thread_local const std::size_t ordinal {
+        m_next_unit_ordinal.fetch_add(1, std::memory_order_relaxed)
+      };
+
+      return ordinal;
     }
 
     /**
-     * Allocate ThreadLocalBuffer storage for Index/DataRole and HostBuffer otherwise.
-     *
-     * Beyond the role-based specialization, this execution policy does not perform
-     * any complex calculation when serving allocation requests. If there is memory
-     * available to serve the request, it will be fulfilled withou modification.
-     *
-     * @tparam Requirements The per-buffer-role requirement specifications.
-     * @tparam FTraits The data-format traits.
-     * @param[in] request The allocation request.
-     * @returns Allocated storage per the request.
+     * Setup a spdlog logger.
      */
-    template <IsTypeList Requirements, class IO, class FTraits>
-    requires FormatTraits<FTraits, IO, ThreadedExecution>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+    static void init_logger() {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::ThreadedExecution");
       if (!logger) {
@@ -102,34 +186,6 @@ namespace sbio {
       } else {
         m_logger = logger;
       }
-
-      return allocate_impl_helper(Requirements{}, request);
-    }
-
-    template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(TypeList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
-      Storage<TypeList<Descriptors...>, ThreadedExecution> s;
-
-      std::size_t i { 0 };
-
-      auto make_thread_local_data = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-
-        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
-
-        using BufRole = typename Descriptor::role;
-        if constexpr (std::is_same_v<BufRole, DataRole> ||
-                      std::is_same_v<BufRole, TableRole>) {
-          buf.set_memory(nullptr, final_sz);
-        } else {
-          buf.set_memory(new char[final_sz], final_sz);
-        }
-      };
-      ( (make_thread_local_data(std::type_identity<Descriptors> {})), ... );
-
-      return s;
     }
 
     /**
@@ -171,7 +227,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -216,7 +271,6 @@ namespace sbio {
 
       IOStatus status { IOStatus::Success };
       for (std::size_t i = 0; i < num_fetches; ++i) {
-        std::lock_guard<std::mutex> lock(m_broker_mutexes[i % 2048]);
         if (auto fetch_status = unit_fetcher(i); fetch_status != IOStatus::Success) {
           status = fetch_status;
           break;
@@ -253,101 +307,163 @@ namespace sbio {
      * must then be designed in a way to terminate the generation of indices
      * in some fashion, or it will continue forever.
      *
+     * @note A batch is provided with a maximum size - it may be smaller, as it will
+     *       not extend beyond the current maximum capactiy.
+     *
      * @tparam FTraits The data-format traits.
      * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     * @param[in] batch_size The *maximum* number of steps in a batch.
+     * @param[in] max_capacity The current max capacity (currently available indices).
+     * @param[in] trigger The reindex callback routine.
+     * @returns The next step_idx.
+     */
+    template <class FTraits, class IndexTrigger>
+    static StepBatch<typename FTraits::StepIdxType>
+    next_batch_impl(IterationState& state,
+                    std::size_t batch_size,
+                    typename FTraits::StepIdxType& max_capacity,
+                    IndexTrigger&& trigger) {
+      using StepIdx = typename FTraits::StepIdxType;
+      constexpr StepBatch<StepIdx> Exhausted {
+        FTraits::ExhaustedSentinel,
+        FTraits::ExhaustedSentinel
+      };
+
+      const StepIdx max_count { static_cast<StepIdx>(batch_size > 0 ? batch_size : 1) };
+
+      release_step(state);
+
+      typename FTraits::StepIdxType current { state.m_event_idx.load(std::memory_order_acquire) };
+
+      while (true) {
+        if (state.m_exhausted.load(std::memory_order_acquire)) {
+          m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
+                          "shared_cap = {}, max_cap = {}, event_idx = {}",
+                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                          state.m_shared_capacity.load(),
+                          max_capacity,
+                          state.m_event_idx.load());
+          return Exhausted;
+        }
+
+        typename FTraits::StepIdxType current_cap =
+          state.m_shared_capacity.load(std::memory_order_acquire);
+
+        if (current >= current_cap) {
+          std::lock_guard<std::mutex> lock(state.m_trigger_mutex);
+
+          if (state.m_exhausted.load(std::memory_order_acquire)) {
+            m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
+                            "shared_cap = {}, max_cap = {}, event_idx = {}",
+                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                            state.m_shared_capacity.load(),
+                            max_capacity,
+                            state.m_event_idx.load());
+            return Exhausted;
+          }
+
+          if (state.m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
+            state.m_shared_capacity.store(max_capacity, std::memory_order_release);
+          }
+
+          current = state.m_event_idx.load(std::memory_order_acquire);
+          current_cap = state.m_shared_capacity.load(std::memory_order_relaxed);
+
+          if (current >= current_cap) {
+            while (state.m_in_flight.load(std::memory_order_acquire) != 0) {
+              std::this_thread::yield(); // Wait for all handed out steps to be returned
+            }
+
+            if (!trigger()) {
+              state.m_exhausted.store(true, std::memory_order_release);
+              m_logger->debug("[Thread {}] Trigger returned exhausted: "
+                              "shared_cap = {}, max_cap = {}, event_idx = {}",
+                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                              state.m_shared_capacity.load(),
+                              max_capacity,
+                              state.m_event_idx.load());
+              return Exhausted;
+            }
+
+            state.m_shared_capacity.store(max_capacity, std::memory_order_release);
+            current_cap = max_capacity;
+          }
+        }
+
+        // Make sure to stake claim before taking a step to ensure no missed triggers
+        state.m_in_flight.fetch_add(1);
+        while (current < current_cap) {
+          const StepIdx remaining { current_cap - current };
+          const StepIdx count { max_count < remaining ? max_count : remaining };
+          if (state.m_event_idx.compare_exchange_weak(current, current + count,
+                                                      std::memory_order_acq_rel)) {
+            state.m_holding_step.get() = true;
+            return { current, current + count };
+          }
+
+          current_cap = state.m_shared_capacity.load(std::memory_order_acquire);
+        }
+
+        // Do NOT return exhausted here. The trigger must be entered in a coordinated
+        // fashion
+        state.m_in_flight.fetch_sub(1); // Didn't get a step
+      }
+    }
+
+    /**
+     * The ThreadedExecution policy generates step indices in monotonically.
+     *
+     * @note The ThreadedExecution policy uses the batch implementation with a
+     *       batch size of 1.
+     *
+     * @tparam FTraits The data-format traits.
+     * @tparam IndexTrigger The type of the reindex callback trigger.
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
      * @param[in] max_capacity The current max capacity (currently available indices).
      * @param[in] trigger The reindex callback routine.
      * @returns The next step_idx.
      */
     template <class FTraits, class IndexTrigger>
     static typename FTraits::StepIdxType
-    next_impl(typename FTraits::StepIdxType& max_capacity, IndexTrigger&& trigger) {
-      typename FTraits::StepIdxType current { m_event_idx.load(std::memory_order_acquire) };
+    next_impl(IterationState& state,
+              typename FTraits::StepIdxType& max_capacity,
+              IndexTrigger&& trigger) {
+      // Since this API expects a single step index, return just the first of the pair
+      return next_batch_impl<FTraits>(state,
+                                      1,
+                                      max_capacity,
+                                      std::forward<IndexTrigger>(trigger)).first;
+    }
 
-      while (true) {
-        if (m_exhausted.load(std::memory_order_acquire)) {
-          m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
-                          "shared_cap = {}, max_cap = {}, event_idx = {}",
-                          std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                          m_shared_capacity.load(),
-                          max_capacity,
-                          m_event_idx.load());
-          return FTraits::ExhaustedSentinel;
-        }
-
-        typename FTraits::StepIdxType current_cap =
-          m_shared_capacity.load(std::memory_order_acquire);
-
-        if (current >= current_cap) {
-          std::lock_guard<std::mutex> lock(m_trigger_mutex);
-
-          if (m_exhausted.load(std::memory_order_acquire)) {
-            m_logger->debug("[Thread {}] Trigger returned exhausted on separate thread: "
-                            "shared_cap = {}, max_cap = {}, event_idx = {}",
-                            std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                            m_shared_capacity.load(),
-                            max_capacity,
-                            m_event_idx.load());
-            return FTraits::ExhaustedSentinel;
-          }
-
-          if (m_shared_capacity.load(std::memory_order_relaxed) != max_capacity) {
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
-          }
-
-          current = m_event_idx.load(std::memory_order_acquire);
-          current_cap = m_shared_capacity.load(std::memory_order_relaxed);
-
-          if (current >= current_cap) {
-            if (!trigger()) {
-              m_exhausted.store(true, std::memory_order_release);
-              m_logger->debug("[Thread {}] Trigger returned exhausted: "
-                              "shared_cap = {}, max_cap = {}, event_idx = {}",
-                              std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                              m_shared_capacity.load(),
-                              max_capacity,
-                              m_event_idx.load());
-              return FTraits::ExhaustedSentinel;
-            }
-
-            m_shared_capacity.store(max_capacity, std::memory_order_release);
-            current_cap = max_capacity;
-          }
-        }
-
-        while (current < current_cap) {
-          if (m_event_idx.compare_exchange_weak(current, current + 1, std::memory_order_acq_rel)) {
-            return current;
-          }
-
-          current_cap = m_shared_capacity.load(std::memory_order_acquire);
-        }
-
-        // Do NOT return exhausted here. The trigger must be entered in a coordinated
-        // fashion
-      }
+    /**
+     * Exit the iteration with `state`, releasing any held steps.
+     *
+     * @param[in/out] state The iteration state held by the caller (i.e. DataSource)
+     */
+    static void end_iteration_impl(IterationState& state) {
+      release_step(state);
     }
 
   private:
+    static void release_step(IterationState& state) {
+      bool& holding { state.m_holding_step.get() };
+      if (holding) {
+        holding = false;
+        state.m_in_flight.fetch_sub(1);
+      }
+    }
+
     static inline std::size_t m_num_threads { 0 };
-
-    static inline std::atomic<std::size_t> m_event_idx { 0 };
-
-    static inline std::mutex m_trigger_mutex;
-
-    static inline std::atomic<std::size_t> m_shared_capacity { 0 };
-
-    static inline std::atomic<bool> m_exhausted { false };
-
-    /**
-     * Set of mutexes to allow different brokers of a group from different threads
-     * to fetch in parallel.
-     */
-    static inline std::mutex m_broker_mutexes[2048];
+    static inline std::atomic<std::size_t> m_next_unit_ordinal { 0 }; ///< For unit_ordinal routine
 
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 
+  /**
+   * A thread-based execution policy using host-memory management.
+   */
+  using ThreadedExecution = Composed<ThreadedDistribution, HostMemory>;
 } // namespace sbio
 
 #endif // SBIO_EXECUTION_THREADED_HH

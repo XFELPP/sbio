@@ -1,6 +1,8 @@
 installed_storage_headers = [
+    'cuda_device.hh',
     'host_buffer.hh',
     'mpi_shared.hh',
+    'per_unit_buffer.hh',
     'thread_local_buffer.hh',
 ]
 

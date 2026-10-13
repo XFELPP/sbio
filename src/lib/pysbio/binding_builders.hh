@@ -25,9 +25,11 @@
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
 #ifdef SBIO_HAS_XTC1
+#include "sbio/formats/xtc1/xtc1_locator.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
 #ifdef SBIO_HAS_XTC2
+#include "sbio/formats/xtc2/xtc2_locator.hh"
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
@@ -61,15 +63,18 @@ namespace pysbio::impl {
       .def("fetch_step",
            &BrokerT::fetch_step,
            py::arg("step_idx"),
-           py::arg("access_ptn"))
+           py::arg("access_ptn"),
+           py::arg("cursor"))
       .def("fetch_steps",
            &BrokerT::fetch_steps,
            py::arg("steps"),
-           py::arg("access_ptn"))
+           py::arg("access_ptn"),
+           py::arg("cursor"))
       .def("get_data_in_buffer",
            &BrokerT::get_data_in_buffer,
            py::arg("data_req"),
            py::arg("access_ptn"),
+           py::arg("cursor"),
            py::arg("batch_idx"));
   }
 
@@ -224,7 +229,7 @@ namespace pysbio::impl {
       .def("configure_execution_policy",
            &DataSourceT::configure_execution_policy,
            py::arg("epolicy_cfg"))
-      .def("load_run",
+      .def("load_source",
            [](DataSourceT& self,
               typename DataSourceT::StreamConfig base_cfg,
               py::args args) {
@@ -237,9 +242,9 @@ namespace pysbio::impl {
                auto exp = args[0].cast<std::string>();
                auto run_num = args[1].cast<unsigned>();
 
-               return self.load_run(base_cfg, exp, run_num);
+               return self.load_source(base_cfg, exp, run_num);
              } else {
-               throw std::runtime_error("Unsupported number of arguments to load_run: " +
+               throw std::runtime_error("Unsupported number of arguments to load_source: " +
                                         std::to_string(args.size()));
              }
       })
@@ -253,10 +258,12 @@ namespace pysbio::impl {
       // Get brokers
       // .def("data_streams", &DataSourceT::data_streams)
       // .def("data_streams", &DataSourceT::data_streams)
-      .def("get_stream_broker", [](const DataSourceT& self, std::size_t b_num) {
+      // StreamBrokers own the streams, so return references, not copies
+      .def("get_stream_broker", [](const DataSourceT& self, std::size_t b_num) -> const auto& {
         return self.data_stream(b_num);
       },
-        py::arg("broker_num"));
+        py::arg("broker_num"),
+        py::return_value_policy::reference_internal);
   }
 
   /**
@@ -268,6 +275,15 @@ namespace pysbio::impl {
    */
   template <typename Exec, typename PyExec>
   void bind_epolicy_functions(PyExec& exec_cls) {
+    // When using Composed, the IterationState is that of the Manager underneath
+    using IterationState = typename Exec::IterationState;
+    if (py::detail::get_type_info(typeid(IterationState)) == nullptr) {
+      py::classh<typename Exec::IterationState>(exec_cls, "IterationState")
+        .def(py::init<>());
+    } else {
+      exec_cls.attr("IterationState") = py::type::of<IterationState>();
+    }
+
     exec_cls.def(py::init<>())
       .def_static("configure", [](const typename Exec::Config& cfg) {
         Exec::configure(cfg);
@@ -296,7 +312,8 @@ namespace pysbio::impl {
                   py::arg("step_idx"),
                   py::arg("ftraits"))
       .def_static("next",
-                  [](std::size_t& capacity,
+                  [](typename Exec::IterationState& state,
+                     std::size_t& capacity,
                      py::function py_trigger,
                      pysbio::FTraits ftraits) {
                     auto trigger = [&]() -> bool {
@@ -307,13 +324,13 @@ namespace pysbio::impl {
 
                     if (ftraits == pysbio::FTraits::XTC1) {
 #ifdef SBIO_HAS_XTC1
-                      return Exec::template next<sbio::XTC1Traits>(capacity, trigger);
+                      return Exec::template next<sbio::XTC1Traits>(state, capacity, trigger);
 #else
                       throw std::runtime_error("XTC1 requested, but sbio was built without XTC1 support!");
 #endif
                     } else if (ftraits == pysbio::FTraits::XTC2) {
 #ifdef SBIO_HAS_XTC2
-                      return Exec::template next<sbio::XTC2Traits>(capacity, trigger);
+                      return Exec::template next<sbio::XTC2Traits>(state, capacity, trigger);
 #else
                       throw std::runtime_error("XTC2 requested, but sbio was built without XTC2 support!");
 #endif
@@ -321,6 +338,7 @@ namespace pysbio::impl {
                       throw std::runtime_error("Unrecognized data format selector provided!");
                     }
                   },
+                  py::arg("state"),
                   py::arg("max_capacity"),
                   py::arg("reindex_trigger_callback"),
                   py::arg("ftraits"))
