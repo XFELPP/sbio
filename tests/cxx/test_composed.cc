@@ -21,9 +21,12 @@
 #include "sbio/core/storage.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
+#include "sbio/formats/random/random_traits.hh"
+#include "sbio/io/posix.hh"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <set>
 #include <thread>
 #include <type_traits>
@@ -103,4 +106,74 @@ TEST(Composed, SerialBuffersAreShared) {
 
   EXPECT_NE(s.template get<sbio::roles::Data>().ptr(), nullptr);
   EXPECT_EQ(s.template get<sbio::roles::Data>().size(), 64u);
+}
+
+namespace {
+  /**
+   * A memory manager counting its live buffers.
+   */
+  struct CountingMemory {
+    template <typename Descriptor>
+    using PlacementFor = sbio::HostBuffer;
+
+    static void allocate_buffer(sbio::HostBuffer& buf, std::size_t size) {
+      buf.set_memory(new char[size], size);
+      live++;
+    }
+
+    static void release_buffer(sbio::HostBuffer& buf) {
+      delete[] static_cast<char*>(buf.ptr());
+      buf.set_memory(nullptr, 0);
+      live--;
+    }
+
+    static inline std::atomic<int> live { 0 };
+  };
+
+  using CountingSerial = sbio::Composed<sbio::SerialDistribution, CountingMemory>;
+  using CountingThreaded = sbio::Composed<sbio::ThreadedDistribution, CountingMemory>;
+
+  template <class Policy>
+  auto allocate() {
+    sbio::AllocationRequest<sbio::RandomTraits> request;
+    return Policy::template allocate_storage<Reqs, sbio::SyncPOSIXIO, sbio::RandomTraits>(request);
+  }
+} // anonymous namespace
+
+TEST(Composed, SharedBuffersReleasedWithTheLastCopy) {
+  CountingMemory::live = 0;
+  {
+    auto storage { allocate<CountingSerial>() };
+    EXPECT_EQ(CountingMemory::live.load(), 3);
+    {
+      auto copy { storage };
+      EXPECT_EQ(copy.template get<sbio::roles::Data>().ptr(),
+                storage.template get<sbio::roles::Data>().ptr());
+    }
+    EXPECT_EQ(CountingMemory::live.load(), 3); // The original still uses the buffers
+  }
+  EXPECT_EQ(CountingMemory::live.load(), 0);
+}
+
+TEST(Composed, PerUnitBuffersReleasedWithTheStorage) {
+  CountingMemory::live = 0;
+  constexpr int NumThreads { 4 };
+  {
+    auto storage { allocate<CountingThreaded>() };
+    EXPECT_EQ(CountingMemory::live.load(), 1); // Only the shared Index so far
+
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < NumThreads; ++thread) {
+      threads.emplace_back([&]() {
+        static_cast<void>(storage.template get<sbio::roles::Data>().ptr());
+        static_cast<void>(storage.template get<sbio::roles::Table>().ptr());
+      });
+    }
+    for (auto& thread : threads) {
+      thread.join();
+    }
+
+    EXPECT_EQ(CountingMemory::live.load(), 1 + 2 * NumThreads);
+  }
+  EXPECT_EQ(CountingMemory::live.load(), 0);
 }

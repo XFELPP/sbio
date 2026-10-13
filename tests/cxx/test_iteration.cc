@@ -176,4 +176,36 @@ namespace {
   }
 
   INSTANTIATE_TEST_SUITE_P(BatchSizes, ThreadedBreakEarly, ::testing::Values(2, 3, 7, 50));
+
+  // Test that a moved DataSource doesn't close moved files
+  TEST(StepIteration, MovedDataSourceReadsEveryStep) {
+    constexpr std::size_t NumEvents { 40 };
+
+    std::optional<SerialRandomDataSource> moved;
+    {
+      SerialRandomDataSource ds;
+      setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, NumEvents, 7);
+      moved.emplace(std::move(ds));
+    }
+
+    auto grp = moved->get_stream_group("det0");
+    ASSERT_GT(grp.num_segments(), 0u);
+
+    std::size_t expected { 0 };
+    std::size_t bad { 0 };
+    for (auto step : moved->steps()) {
+      auto arr = grp.get_data(step);
+      const auto* bytes {
+        static_cast<const std::uint8_t*>(reinterpret_cast<const void* const*>(arr.data())[0])
+      };
+      bad += bytes == nullptr ||
+             bytes[0] != static_cast<std::uint8_t>(step & 0xFF) ||
+             bytes[1] != static_cast<std::uint8_t>((step + 1) & 0xFF);
+      EXPECT_EQ(step, expected);
+      ++expected;
+    }
+
+    EXPECT_EQ(expected, NumEvents) << "every step after the move (reindexing included)";
+    EXPECT_EQ(bad, 0u);
+  }
 } // anonymous namespace
