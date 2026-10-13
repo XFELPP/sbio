@@ -9,6 +9,13 @@ if build_core_opt
     endif
 
     if sbio_build_xtc2
+        # TODO: Should NOT need this cuda_dep here...
+        #       Need to fix this whole setup
+        xtc2slim_deps = [ncarray_dep]
+        if sbio_has_cuda
+            xtc2slim_deps += [cuda_dep]
+        endif # sbio_has_cuda
+
         libxtc2slim = shared_library(
             'xtc2slim',
             [
@@ -17,7 +24,7 @@ if build_core_opt
             ],
             cpp_args: ['-DSBIO_BUILD_API'],
             include_directories: sbio_headers,
-            dependencies: [ncarray_dep],
+            dependencies: xtc2slim_deps,
             install: true,
             install_dir: libsbio_install_dir,
             install_rpath: lib_install_rpath,
