@@ -23,7 +23,9 @@
 #include "pysbio/execution/pyexecution.hh"
 #include "pysbio/formats/pyformat_traits.hh"
 #include "pysbio/io/pyio.hh"
+#include "pysbio/policies.hh"
 
+#include "sbio/core/context.hh"
 #include "sbio/core/datasource.hh"
 #include "sbio/execution/serial.hh"
 #ifdef SBIO_HAS_MPI
@@ -40,110 +42,88 @@
 #endif
 
 #include <ncarray/ncarrays.hh>
-#include <mpi.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <cstdlib>
+#include <functional>
+#include <memory>
 #include <string>
 #include <variant>
 
 namespace py = pybind11;
 
 namespace pysbio {
-#ifdef SBIO_HAS_XTC1
-  using SerialDataSource1 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::SerialExecution,
-    sbio::XTC1Traits
-  >;
+  /**
+   * The DataSource for any supported data format/execution policy (see policies.hh)
+   */
+  using DataSourceV = VariantOver<DataSourceFor>;
 
-  using ThreadedDataSource1 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::ThreadedExecution,
-    sbio::XTC1Traits
-  >;
+  struct BrokerGroupWrapper;
+  class ContextWrapper;
 
-  #ifdef SBIO_HAS_MPI
-  using MPIDataSource1 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::MPIExecution,
-    sbio::XTC1Traits
-  >;
-  using ThreadedMPIDataSource1 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::MPIThreadedExecution,
-    sbio::XTC1Traits
-  >;
-#endif
-#endif
+  class StepIterator {
+  public:
+    template <class DS>
+    StepIterator(DS& ds, bool batched, std::size_t batch_size);
 
-#ifdef SBIO_HAS_XTC2
-  using SerialDataSource2 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::SerialExecution,
-    sbio::XTC2Traits
-  >;
+    // No copy
+    StepIterator(const StepIterator&) = delete;
+    StepIterator& operator=(const StepIterator&) = delete;
 
-  using ThreadedDataSource2 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::ThreadedExecution,
-    sbio::XTC2Traits
-  >;
-#ifdef SBIO_HAS_MPI
-  using MPIDataSource2 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::MPIExecution,
-    sbio::XTC2Traits
-  >;
+    ~StepIterator() { close(); }
 
-  using ThreadedMPIDataSource2 = sbio::DataSource<
-    sbio::SyncPOSIXIO,
-    sbio::MPIThreadedExecution,
-    sbio::XTC2Traits
-  >;
-#endif
-#endif
+    py::object next();
 
-#if defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
-#ifdef SBIO_HAS_MPI
-  using DataSourceV = std::variant<
-    SerialDataSource1,
-    ThreadedDataSource1,
-    MPIDataSource1,
-    ThreadedMPIDataSource1,
-    SerialDataSource2,
-    ThreadedDataSource2,
-    MPIDataSource2,
-    ThreadedMPIDataSource2
-  >;
-#else
-  using DataSourceV = std::variant<
-    SerialDataSource1,
-    ThreadedDataSource1,
-    SerialDataSource2,
-    ThreadedDataSource2
-  >;
-#endif
+    void close();
 
-#elif defined(SBIO_HAS_XTC1)
-#ifdef SBIO_HAS_MPI
-  using DataSourceV =
-    std::variant<SerialDataSource1, ThreadedDataSource1, MPIDataSource1, ThreadedMPIDataSource1>;
-#else
-  using DataSourceV = std::variant<SerialDataSource1, ThreadedDataSource1>;
-#endif
+  private:
+    std::function<py::object()> m_next {};
+    std::shared_ptr<void> m_range {};
+  };
 
-#elif defined(SBIO_HAS_XTC2)
-#ifdef SBIO_HAS_MPI
-  using DataSourceV =
-    std::variant<SerialDataSource2, ThreadedDataSource2, MPIDataSource2, ThreadedMPIDataSource2>;
-#else
-  using DataSourceV = std::variant<SerialDataSource2, ThreadedDataSource2>;
-#endif
+  struct ZipStep {
+    std::size_t step;
+    sbio::IOStatus status;
+  };
 
-#endif
+  struct ZipBatch {
+    std::size_t first;
+    std::size_t last;
+    sbio::IOStatus status;
+  };
+
+  class ZipIterator {
+  public:
+    static constexpr std::size_t MaxGroups { 4 };
+
+    ZipIterator(std::function<py::object()> next,
+                std::shared_ptr<void> range,
+                std::size_t num_fetches,
+                std::vector<py::object> keep_alive)
+      : m_next(std::move(next))
+      , m_range(std::move(range))
+      , m_num_fetches(num_fetches)
+      , m_keep_alive(std::move(keep_alive))
+    {}
+
+    ZipIterator(const ZipIterator&) = delete;
+    ZipIterator& operator=(const ZipIterator&) = delete;
+
+    ~ZipIterator() { close(); }
+
+    py::object next();
+    void close();
+
+    std::size_t num_fetches() const { return m_num_fetches; }
+
+  private:
+    std::function<py::object()> m_next {};
+    std::shared_ptr<void> m_range {};
+    std::size_t m_num_fetches { 0 };
+    std::vector<py::object> m_keep_alive {}; ///< The zipped groups
+  };
 
   class PyDataSource {
   public:
@@ -156,9 +136,19 @@ namespace pysbio {
                  py::dict exec_cfg = py::dict(),
                  pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
+    PyDataSource(DataSourceV ds,
+                 std::string exp,
+                 unsigned run,
+                 std::shared_ptr<ContextWrapper> context);
+
     py::object group(py::module& m, const char* name);
 
     std::size_t next();
+
+    std::unique_ptr<StepIterator> steps(bool batched, std::size_t batch_size);
+
+    std::unique_ptr<ZipIterator> zip(const std::vector<py::object>& groups,
+                                     bool batched);
 
     // TODO: Switch to making this const after the ConstIterator works when
     //       DataSource::next is properly restructured to support it.
@@ -169,8 +159,85 @@ namespace pysbio {
 
     std::string m_exp;
     unsigned m_run;
+
+    std::shared_ptr<ContextWrapper> m_context {};
   };
 
+  class ContextWrapper {
+  public:
+    ContextWrapper(pysbio::ExecutionPolicy epolicy,
+              py::dict exec_cfg = py::dict(),
+              pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
+
+    bool ok() const;
+    std::string error() const;
+
+    std::string env(const std::string& key, const std::string& fallback) const;
+
+    bool has_env(const std::string& key) const;
+
+    void set_env(const std::string& key, const std::string& value);
+
+    pysbio::ExecutionPolicy policy() const { return m_epolicy; }
+
+    static PyDataSource data_source(const std::shared_ptr<ContextWrapper>& self,
+                                    std::string exp,
+                                    unsigned run,
+                                    int evt_per_read,
+                                    int dgram_size,
+                                    pysbio::FTraits data_fmt);
+
+  private:
+    template <class EPolicy>
+    using ContextPtr = std::unique_ptr<sbio::Context<sbio::SyncPOSIXIO, EPolicy>>;
+
+    template <class Policies>
+    struct ContextVariant;
+
+    template <class... Ps>
+    struct ContextVariant<TypeList<Ps...>> {
+      using type = std::variant<ContextPtr<Ps>...>;
+    };
+
+    typename ContextVariant<ExecutionPolicies>::type m_context;
+    pysbio::ExecutionPolicy m_epolicy;
+   };
+
+  template <class DS>
+  StepIterator::StepIterator(DS& ds, bool batched, std::size_t batch_size) {
+    using StepIdx = typename DS::StepIdxType;
+    constexpr StepIdx Exhausted { DS::DataFormat::ExhaustedSentinel };
+
+    if (batched) {
+      m_range = std::make_shared<typename DS::BatchRange>(ds, batch_size);
+      m_next = [&ds, batch_size]() -> py::object {
+        sbio::StepBatch<StepIdx> batch {};
+        {
+          py::gil_scoped_release release;
+          batch = ds.next_batch(batch_size);
+        }
+
+        if (batch.first == Exhausted) {
+          return py::none();
+        }
+        return py::cast(sbio::StepBatch<std::size_t> { batch.first, batch.last });
+      };
+    } else {
+      m_range = std::make_shared<typename DS::StepRange>(ds);
+      m_next = [&ds]() -> py::object {
+        StepIdx step {};
+        {
+          py::gil_scoped_release release;
+          step = ds.next();
+        }
+
+        if (step == Exhausted) {
+          return py::none();
+        }
+        return py::int_(static_cast<std::size_t>(step));
+      };
+    }
+  }
 } // namespace pysbio
 
 #endif // PYSBIO_PYDATASOURCE_HH

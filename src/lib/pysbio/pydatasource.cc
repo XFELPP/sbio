@@ -22,8 +22,10 @@
 #include "pysbio/execution/pyexecution.hh"
 #include "pysbio/formats/pyformat_traits.hh"
 #include "pysbio/io/pyio.hh"
+#include "pysbio/policies.hh"
 #include "pysbio/pybroker_group.hh"
 
+#include "sbio/core/iteration.hh"
 #include "sbio/core/stream.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_locator.hh"
@@ -52,60 +54,92 @@ namespace {
   // Simple Execution policy configuration
   // The more technically inclined can use the full bindings via pysbio/execution
 
-  sbio::ThreadedExecution::Config parse_threaded_config(const py::dict& d) {
-    sbio::ThreadedExecution::Config cfg;
-    if (d.contains("num_threads")) {
-      cfg.num_threads = d["num_threads"].cast<std::size_t>();
-    }
-    if (d.contains("cpu_affinities")) {
-      cfg.cpu_affinities = d["cpu_affinities"].cast<std::vector<int>>();
-    }
+  template <class DS>
+  void load_run(DS& ds,
+                const std::string& exp,
+                unsigned run,
+                int evt_per_read,
+                int dgram_size) {
+    typename DS::StreamConfig cfg;
+    cfg.index_batch_size = evt_per_read;
+    cfg.max_buffer_size = dgram_size;
 
-    return cfg;
+    ds.load_source(cfg, exp, run);
+    ds.discover_metadata();
   }
 
-#ifdef SBIO_HAS_MPI
-  sbio::MPIExecution::Config parse_mpi_config(const py::dict& d) {
-    sbio::MPIExecution::Config cfg;
-    if (d.contains("active_ranks")) {
-      cfg.active_ranks = d["active_ranks"].cast<std::vector<int>>();
+  template <class T, std::size_t>
+  using Repeat = T;
+
+  template <class Range>
+  struct ZipState {
+    template <class DS, class... Groups>
+    ZipState(DS& ds, const Groups&... groups)
+      : range(ds, groups...)
+    {}
+
+    Range range;
+    std::optional<typename Range::ConstIterator> it {};
+    std::optional<typename Range::ConstIterator> end {};
+  };
+
+  template <class DS, class Group, std::size_t... Is>
+  std::unique_ptr<pysbio::ZipIterator> make_zip(DS& ds,
+                                                const std::vector<const Group*>& groups,
+                                                bool batched,
+                                                std::vector<py::object> keep_alive,
+                                                std::index_sequence<Is...>) {
+    auto make = [&](auto RangeTag) {
+      using Range = typename decltype(RangeTag)::type;
+      using State = ZipState<Range>;
+
+      auto state { std::make_shared<State>(ds, *groups[Is]...) };
+
+      auto next = [state, batched]() -> py::object {
+        {
+          // Fetching happens as the iterator moves
+          py::gil_scoped_release release;
+          if (!state->it) {
+            state->it.emplace(state->range.begin());
+            state->end.emplace(state->range.end());
+          } else {
+            ++(*state->it);
+          }
+        }
+
+        if (*state->it == *state->end) {
+          return py::none();
+        }
+
+        auto handle { **state->it };
+        if constexpr (requires { handle.batch(); }) {
+          return py::cast(pysbio::ZipBatch {
+            static_cast<std::size_t>(handle.first()),
+            static_cast<std::size_t>(handle.last()),
+            handle.status()
+          });
+        } else {
+          return
+            py::cast(pysbio::ZipStep {
+                static_cast<std::size_t>(handle.step()),
+                handle.status()
+              });
+        }
+      };
+
+      const std::size_t num_fetches { state->range.num_fetches() };
+      return std::make_unique<pysbio::ZipIterator>(std::move(next),
+                                                   std::move(state),
+                                                   num_fetches,
+                                                   std::move(keep_alive));
+    };
+
+    if (batched) {
+      return make(std::type_identity<sbio::ZippedBatchRange<DS, Repeat<Group, Is>...>> {});
     }
 
-    if (d.contains("main_rank")) {
-      cfg.main_rank = d["main_rank"].cast<int>();
-    }
-
-    if (d.contains("main_rank_loops")) {
-      cfg.main_rank_loops = d["main_rank_loops"].cast<bool>();
-    }
-    return cfg;
+    return make(std::type_identity<sbio::ZippedGroupRange<DS, Repeat<Group, Is>...>> {});
   }
-
-  sbio::MPIThreadedExecution::Config parse_mpi_threaded_config(const py::dict& d) {
-    sbio::MPIThreadedExecution::Config cfg;
-    if (d.contains("num_threads")) {
-      cfg.num_threads = d["num_threads"].cast<std::size_t>();
-    }
-
-    if (d.contains("cpu_affinities")) {
-      cfg.cpu_affinities = d["cpu_affinities"].cast<std::vector<int>>();
-    }
-
-    if (d.contains("active_ranks")) {
-      cfg.active_ranks = d["active_ranks"].cast<std::vector<int>>();
-    }
-
-    if (d.contains("main_rank")) {
-      cfg.main_rank = d["main_rank"].cast<int>();
-    }
-
-    if (d.contains("main_rank_loops")) {
-      cfg.main_rank_loops = d["main_rank_loops"].cast<bool>();
-    }
-
-    return cfg;
-  }
-#endif
 } // anonymous namespace
 
 
@@ -121,149 +155,33 @@ namespace pysbio {
     : m_exp(exp)
     , m_run(run)
   {
-    if (data_fmt == pysbio::FTraits::XTC1) {
-#ifdef SBIO_HAS_XTC1
-      sbio::GenericStreamConfig<sbio::XTC1Traits> cfg;
-      cfg.index_batch_size = evt_per_read;
-      cfg.max_buffer_size = dgram_size;
-      if (epolicy == pysbio::ExecutionPolicy::Serial) {
-        SerialDataSource1 ds;
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-      } else if (epolicy == pysbio::ExecutionPolicy::Threaded) {
-        auto ecfg = parse_threaded_config(exec_cfg);
-        ThreadedDataSource1 ds(ecfg);
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-      } else if (epolicy == pysbio::ExecutionPolicy::MPI) {
-#ifdef SBIO_HAS_MPI
-        // If MPI hasn't been initialized, we'll do it for the user here
-        int initialized { 0 };
-        MPI_Initialized(&initialized);
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+      auto make_for_policy = [&](auto PolicyTag) -> DataSourceV {
+        using Policy = typename decltype(PolicyTag)::type;
 
-        if (!initialized) {
-          int argc { 0 };
-          char** argv { nullptr };
-          MPI_Init(&argc, &argv);
-        }
+        ensure_parallel_environment<Policy>();
+        DataSourceFor<Policy, Format> ds(parse_config<Policy>(exec_cfg));
+        load_run(ds, exp, run, evt_per_read, dgram_size);
 
-        auto ecfg = parse_mpi_config(exec_cfg);
-        MPIDataSource1 ds(ecfg);
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-#else
-        throw std::runtime_error("Requiested MPI DataSource, but sbio built without MPI support!");
-#endif
-      } else if (epolicy == pysbio::ExecutionPolicy::MPIThreaded) {
-#ifdef SBIO_HAS_MPI
-        int initialized { 0 };
-        MPI_Initialized(&initialized);
+        return DataSourceV { std::move(ds) };
+      };
 
-        if (!initialized) {
-          int argc { 0 };
-          char** argv { nullptr };
+      return with_policy(epolicy, make_for_policy);
+    };
 
-          int provided;
-          MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
-          if (provided < MPI_THREAD_MULTIPLE) {
-            // Need to check if you get the thread_multiple or not.
-            std::cout << "Was not able to provide full MPI thread support." << std::endl
-                      << "- Support was provied at level: " << provided << std::endl;
-          }
-        }
-
-        auto ecfg = parse_mpi_threaded_config(exec_cfg);
-        ThreadedMPIDataSource1 ds(ecfg);
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-#else
-        throw std::runtime_error("Requested Threaded MPI DataSource, but sbio built without MPI!");
-#endif
-      } else {
-        throw std::runtime_error("Unsupported DataSource type: " +
-                                 std::to_string(static_cast<int>(epolicy)) + "!");
-      }
-#else
-      throw std::runtime_error("Requested XTC1 DataSource, but sbio built without XTC1 support!");
-#endif
-    } else if (data_fmt == pysbio::FTraits::XTC2){
-#ifdef SBIO_HAS_XTC2
-      sbio::GenericStreamConfig<sbio::XTC2Traits> cfg;
-      cfg.index_batch_size = evt_per_read;
-      cfg.max_buffer_size = dgram_size;
-
-      if (epolicy == pysbio::ExecutionPolicy::Serial) {
-        SerialDataSource2 ds;
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-      } else if (epolicy == pysbio::ExecutionPolicy::Threaded) {
-        auto ecfg = parse_threaded_config(exec_cfg);
-        ThreadedDataSource2 ds(ecfg);
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-      } else if (epolicy == pysbio::ExecutionPolicy::MPI) {
-#ifdef SBIO_HAS_MPI
-        // If MPI hasn't been initialized, we'll do it for the user here
-        int initialized { 0 };
-        MPI_Initialized(&initialized);
-
-        if (!initialized) {
-          int argc { 0 };
-          char** argv { nullptr };
-          MPI_Init(&argc, &argv);
-        }
-
-        auto ecfg = parse_mpi_config(exec_cfg);
-        MPIDataSource2 ds(ecfg);
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-#else
-        throw std::runtime_error("Requiested MPI DataSource, but sbio built without MPI support!");
-#endif
-      } else if (epolicy == pysbio::ExecutionPolicy::MPIThreaded) {
-#ifdef SBIO_HAS_MPI
-        int initialized { 0 };
-        MPI_Initialized(&initialized);
-
-        if (!initialized) {
-          int argc { 0 };
-          char** argv { nullptr };
-
-          int provided;
-          MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
-          if (provided < MPI_THREAD_MULTIPLE) {
-            // Need to check if you get the thread_multiple or not.
-            std::cout << "Was not able to provide full MPI thread support." << std::endl
-                      << "- Support was provied at level: " << provided << std::endl;
-          }
-        }
-
-        auto ecfg = parse_mpi_threaded_config(exec_cfg);
-        ThreadedMPIDataSource2 ds(ecfg);
-        ds.load_source(cfg, exp, run);
-        ds.discover_metadata();
-        m_ds = std::move(ds);
-#else
-        throw std::runtime_error("Requested Threaded MPI DataSource, but sbio built without MPI!");
-#endif
-      } else {
-        throw std::runtime_error("Unsupported DataSource type: " +
-                                 std::to_string(static_cast<int>(epolicy)) + "!");
-      }
-#else
-      throw std::runtime_error("Requested XTC2 DataSource, but sbio built without XTC2 support!");
-#endif
-    } else {
-      throw std::runtime_error("Unrecognized format specifier: " + std::to_string(static_cast<int>(data_fmt)));
-    }
+    m_ds = with_format(data_fmt, make_for_format);
   }
+
+  PyDataSource::PyDataSource(DataSourceV ds,
+                             std::string exp,
+                             unsigned run,
+                             std::shared_ptr<ContextWrapper> context)
+    : m_ds(std::move(ds))
+    , m_exp(std::move(exp))
+    , m_run(run)
+    , m_context(std::move(context))
+  {}
 
   py::object PyDataSource::group(py::module& m, const char* name) {
     // TODO: This is quite kludgy because it goes back and forth between sbio det,
@@ -297,9 +215,210 @@ namespace pysbio {
 
   std::size_t PyDataSource::next() {
     auto next_evt = [](auto& ds) -> std::size_t {
+      py::gil_scoped_release release;
       return ds.next();
     };
 
     return std::visit(next_evt, m_ds);
+  }
+
+  std::unique_ptr<StepIterator> PyDataSource::steps(bool batched,
+                                                    std::size_t batch_size) {
+    auto make = [&](auto& ds) {
+      return std::make_unique<StepIterator>(ds, batched, batch_size);
+    };
+
+    return std::visit(make, m_ds);
+  }
+
+  std::unique_ptr<ZipIterator> PyDataSource::zip(const std::vector<py::object>& groups,
+                                                 bool batched) {
+    if (groups.empty() || groups.size() > ZipIterator::MaxGroups) {
+      throw std::invalid_argument("Can zip 1 to " + std::to_string(ZipIterator::MaxGroups) +
+                                  " groups (given " + std::to_string(groups.size()) + ")");
+    }
+
+    auto make = [&](auto& ds) -> std::unique_ptr<ZipIterator> {
+      using DS = std::remove_reference_t<decltype(ds)>;
+      using Group = std::remove_cvref_t<decltype(ds.get_stream_group(""))>;
+
+      std::vector<const Group*> zipped;
+      for (const auto& obj : groups) {
+        auto& wrapper { obj.cast<BrokerGroupWrapper&>() };
+        auto* grp { std::get_if<Group>(&wrapper.grp) };
+        if (grp == nullptr) {
+          throw py::type_error("Can only zip groups of this DataSource!");
+        }
+
+        // The group's StreamBrokers must be this DataSource's
+        const auto* first { ds.data_streams() };
+        const auto* last { first + ds.num_data_streams() };
+        for (std::size_t b = 0; b < grp->num_stream_brokers(); ++b) {
+          const auto* broker { grp->stream_brokers()[b] };
+          if (broker < first || broker >= last) {
+            throw py::value_error("Can only zip groups of this DataSource!");
+          }
+        }
+
+        zipped.push_back(grp);
+      }
+
+      switch (zipped.size()) {
+      case 1: {
+        return make_zip<DS, Group>(ds,
+                                   zipped,
+                                   batched,
+                                   groups,
+                                   std::make_index_sequence<1> {});
+      }
+      case 2: {
+        return make_zip<DS, Group>(ds,
+                                   zipped,
+                                   batched,
+                                   groups,
+                                   std::make_index_sequence<2> {});
+      }
+      case 3: {
+        return make_zip<DS, Group>(ds,
+                                   zipped,
+                                   batched,
+                                   groups,
+                                   std::make_index_sequence<3> {});
+      }
+      default: {
+        return make_zip<DS, Group>(ds,
+                                   zipped,
+                                   batched,
+                                   groups,
+                                   std::make_index_sequence<4> {});
+      }
+      }
+    };
+
+    return std::visit(make, m_ds);
+  }
+
+  /// --- Iterators --- ///
+  py::object StepIterator::next() {
+    py::object value { m_next ? m_next() : py::none() };
+    if (value.is_none()) {
+      close();
+      throw py::stop_iteration();
+    }
+
+    return value;
+  }
+
+  void StepIterator::close() {
+    m_next = nullptr;
+    if (m_range) {
+      // Ending the iteration may wait on other units (e.g. other threads)
+      if (Py_IsInitialized() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        m_range.reset();
+      } else {
+        m_range.reset();
+      }
+    }
+  }
+
+  py::object ZipIterator::next() {
+    py::object value { m_next ? m_next() : py::none() };
+    if (value.is_none()) {
+      close();
+      throw py::stop_iteration();
+    }
+
+    return value;
+  }
+
+  void ZipIterator::close() {
+    m_next = nullptr;
+    if (m_range) {
+      if (Py_IsInitialized() && PyGILState_Check()) {
+        py::gil_scoped_release release;
+        m_range.reset();
+      } else {
+        m_range.reset();
+      }
+    }
+  }
+
+  /// --- Context --- ///
+  ContextWrapper::ContextWrapper(pysbio::ExecutionPolicy epolicy,
+                                 py::dict exec_cfg,
+                                 pysbio::IOPolicy io_policy)
+    : m_epolicy(epolicy)
+  {
+    auto make = [&](auto PolicyTag) -> decltype(m_context) {
+      using Policy = typename decltype(PolicyTag)::type;
+
+      ensure_parallel_environment<Policy>();
+
+      return
+        std::make_unique<sbio::Context<sbio::SyncPOSIXIO, Policy>>(parse_config<Policy>(exec_cfg));
+    };
+
+    m_context = with_policy(epolicy, make);
+  }
+
+  bool ContextWrapper::ok() const {
+    auto ctx_ok = [](const auto& ctx) { return ctx->ok(); };
+
+    return std::visit(ctx_ok, m_context);
+  }
+
+  std::string ContextWrapper::error() const {
+    auto ctx_error = [](const auto& ctx) { return ctx->error(); };
+
+    return std::visit(ctx_error, m_context);
+  }
+
+  std::string ContextWrapper::env(const std::string& key, const std::string& fallback) const {
+    auto ctx_env = [&](const auto& ctx) { return ctx->env(key, fallback); };
+
+    return std::visit(ctx_env, m_context);
+  }
+
+  bool ContextWrapper::has_env(const std::string& key) const {
+    auto ctx_has_env = [&](const auto& ctx) { return ctx->has_env(key); };
+
+    return std::visit(ctx_has_env, m_context);
+  }
+
+  void ContextWrapper::set_env(const std::string& key, const std::string& value) {
+    auto ctx_set_env = [&](auto& ctx) { ctx->set_env(key, value); };
+
+    return std::visit(ctx_set_env, m_context);
+  }
+
+  PyDataSource ContextWrapper::data_source(const std::shared_ptr<ContextWrapper>& self,
+                                           std::string exp,
+                                           unsigned run,
+                                           int evt_per_read,
+                                           int dgram_size,
+                                           pysbio::FTraits data_fmt) {
+    if (!self->ok()) {
+      throw std::runtime_error("Invalid Context: " + self->error());
+    }
+
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+
+      auto make = [&](const auto& ctx) -> DataSourceV {
+        auto ds { ctx->template data_source<Format>() };
+
+        load_run(ds, exp, run, evt_per_read, dgram_size);
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return std::visit(make, self->m_context);
+    };
+
+    // Load before handing `exp` over (argument evaluation order is unspecified)
+    DataSourceV ds { with_format(data_fmt, make_for_format) };
+
+    return PyDataSource(std::move(ds), std::move(exp), run, self);
   }
 } // namespace pysbio

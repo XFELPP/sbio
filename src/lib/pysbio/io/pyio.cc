@@ -64,6 +64,7 @@ PYBIND11_MODULE(pyio, io_module, py::mod_gil_not_used()) {
     .value("HeaderReadError", sbio::IOStatus::HeaderReadError)
     .value("PayloadTruncatedError", sbio::IOStatus::PayloadTruncatedError)
     .value("AllRequestedRead", sbio::IOStatus::AllRequestedRead)
+    .value("BufferConflict", sbio::IOStatus::BufferConflict)
     .export_values()
     .finalize();
 

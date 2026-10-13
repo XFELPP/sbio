@@ -20,6 +20,8 @@
 #ifndef PYSBIO_PYBROKER_GROUP_HH
 #define PYSBIO_PYBROKER_GROUP_HH
 
+#include "pysbio/policies.hh"
+
 #include "sbio/core/broker_group.hh"
 #include "sbio/core/datasource.hh"
 #include "sbio/execution/serial.hh"
@@ -53,98 +55,11 @@
 namespace py = pybind11;
 
 namespace pysbio {
-#ifdef SBIO_HAS_XTC1
-  using SerialBrokerGroup1 = sbio::BrokerGroup<
-    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution, sbio::XTC1Traits>,
-    sbio::XTC1Traits
-  >;
 
-  using ThreadedBrokerGroup1 = sbio::BrokerGroup<
-    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::ThreadedExecution, sbio::XTC1Traits>,
-    sbio::XTC1Traits
-  >;
-#ifdef SBIO_HAS_MPI
-  using MPIBrokerGroup1 = sbio::BrokerGroup<
-    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC1Traits>,
-    sbio::XTC1Traits
-  >;
-
-  using ThreadedMPIBrokerGroup1 = sbio::BrokerGroup<
-    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIThreadedExecution, sbio::XTC1Traits>,
-    sbio::XTC1Traits
-  >;
-#endif
-#endif
-
-#ifdef SBIO_HAS_XTC2
-  using SerialBrokerGroup2 = sbio::BrokerGroup<
-    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::SerialExecution, sbio::XTC2Traits>,
-    sbio::XTC2Traits
-  >;
-
-  using ThreadedBrokerGroup2 = sbio::BrokerGroup<
-      sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::ThreadedExecution, sbio::XTC2Traits>,
-      sbio::XTC2Traits
-  >;
-#ifdef SBIO_HAS_MPI
-  using MPIBrokerGroup2 = sbio::BrokerGroup<
-    sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIExecution, sbio::XTC2Traits>,
-    sbio::XTC2Traits
-  >;
-
-  using ThreadedMPIBrokerGroup2 = sbio::BrokerGroup<
-      sbio::StreamBroker<sbio::SyncPOSIXIO, sbio::MPIThreadedExecution, sbio::XTC2Traits>,
-      sbio::XTC2Traits
-  >;
-#endif
-#endif
-
-#if defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
-#ifdef SBIO_HAS_MPI
-  using BrokerGroupV = std::variant<
-    SerialBrokerGroup1,
-    SerialBrokerGroup2,
-    ThreadedBrokerGroup1,
-    ThreadedBrokerGroup2,
-    MPIBrokerGroup1,
-    MPIBrokerGroup2,
-    ThreadedMPIBrokerGroup1,
-    ThreadedMPIBrokerGroup2
-  >;
-#else
-  using BrokerGroupV = std::variant<
-    SerialBrokerGroup1,
-    ThreadedBrokerGroup1,
-    SerialBrokerGroup2,
-    ThreadedBrokerGroup2
-  >;
-#endif
-
-#elif defined(SBIO_HAS_XTC1)
-#ifdef SBIO_HAS_MPI
-  using BrokerGroupV = std::variant<
-    SerialBrokerGroup1,
-    ThreadedBrokerGroup1,
-    MPIBrokerGroup1,
-    ThreadedMPIBrokerGroup1
-  >;
-#else
-  using BrokerGroupV = std::variant<SerialBrokerGroup1, ThreadedBrokerGroup2>;
-#endif
-
-#elif defined(SBIO_HAS_XTC2)
-#ifdef SBIO_HAS_MPI
-  using BrokerGroupV = std::variant<
-    SerialBrokerGroup2,
-    ThreadedBrokerGroup2,
-    MPIBrokerGroup2,
-    ThreadedMPIBrokerGroup2
-  >;
-#else
-  using BrokerGroupV = std::variant<SerialBrokerGroup2, ThreadedBrokerGroup2>;
-#endif
-
-#endif
+  /**
+   * A BrokerGroup for any bound policy/format combo (see policies.hh)
+   */
+  using BrokerGroupV = VariantOver<BrokerGroupFor>;
 
   struct BrokerGroupWrapper {
     BrokerGroupWrapper(BrokerGroupV g)
@@ -154,13 +69,18 @@ namespace pysbio {
     const std::string& get_detector_type() const { return detector_type; }
     const std::string& get_serial_number() const { return serial_number; }
 
-    ncarray::SOViewFor<ncarray::HostTag> get_data(std::size_t step,
-                                                  const char* alg,
-                                                  const char* field);
+    py::object get_data(std::size_t step, const char* alg, const char* field);
 
-    ncarray::SOViewFor<ncarray::HostTag> get_multi_data(std::initializer_list<std::size_t> steps,
-                                                        const char* alg,
-                                                        const char* field);
+    py::object get_multi_data(std::initializer_list<std::size_t> steps,
+                              const char* alg,
+                              const char* field);
+
+    py::object resolve_data(std::size_t step, const char* alg, const char* field);
+
+    py::object resolve_multi_data(std::size_t first,
+                                  std::size_t last,
+                                  const char* alg,
+                                  const char* field);
 
     BrokerGroupV grp;
     std::string detector_type;

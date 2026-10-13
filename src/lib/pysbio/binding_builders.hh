@@ -258,10 +258,12 @@ namespace pysbio::impl {
       // Get brokers
       // .def("data_streams", &DataSourceT::data_streams)
       // .def("data_streams", &DataSourceT::data_streams)
-      .def("get_stream_broker", [](const DataSourceT& self, std::size_t b_num) {
+      // StreamBrokers own the streams, so return references, not copies
+      .def("get_stream_broker", [](const DataSourceT& self, std::size_t b_num) -> const auto& {
         return self.data_stream(b_num);
       },
-        py::arg("broker_num"));
+        py::arg("broker_num"),
+        py::return_value_policy::reference_internal);
   }
 
   /**
@@ -273,8 +275,14 @@ namespace pysbio::impl {
    */
   template <typename Exec, typename PyExec>
   void bind_epolicy_functions(PyExec& exec_cls) {
-    py::classh<typename Exec::IterationState>(exec_cls, "IterationState")
-      .def(py::init<>());
+    // When using Composed, the IterationState is that of the Manager underneath
+    using IterationState = typename Exec::IterationState;
+    if (py::detail::get_type_info(typeid(IterationState)) == nullptr) {
+      py::classh<typename Exec::IterationState>(exec_cls, "IterationState")
+        .def(py::init<>());
+    } else {
+      exec_cls.attr("IterationState") = py::type::of<IterationState>();
+    }
 
     exec_cls.def(py::init<>())
       .def_static("configure", [](const typename Exec::Config& cfg) {

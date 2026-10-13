@@ -24,10 +24,14 @@
 
 namespace pysbio {
   enum class ExecutionPolicy : std::uint8_t {
-    Serial      = 0,
-    Threaded    = 1,
-    MPI         = 2,
-    MPIThreaded = 3
+    Serial          = 0,
+    Threaded        = 1,
+    MPI             = 2,
+    MPIThreaded     = 3,
+    Cuda            = 4,
+    ThreadedCuda    = 5,
+    MPICuda         = 6,
+    MPIThreadedCuda = 7
   };
 } // namespace pysbio
 

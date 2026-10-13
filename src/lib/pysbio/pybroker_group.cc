@@ -63,6 +63,8 @@ namespace pysbio {
         for (auto const& field : fields) {
           auto cpp_data_getter = [det, alg, field](AlgWrapper& self,
                                                    StepIdx step) {
+
+            py::gil_scoped_release release;
             return det.get_data(step, alg.c_str(), field.c_str());
           };
 
@@ -83,21 +85,70 @@ namespace pysbio {
     return py_det;
   }
 
-  ncarray::SOViewFor<ncarray::HostTag>
-  BrokerGroupWrapper::get_data(std::size_t step, const char* alg, const char* field) {
-    auto getter = [&](auto& grp) {
+  py::object BrokerGroupWrapper::get_data(std::size_t step,
+                                          const char* alg,
+                                          const char* field) {
+    auto getter = [&](auto& grp) -> py::object {
+      auto inner = [&]() {
+        py::gil_scoped_release release;
+        return grp.get_data(step, alg, field);
+      };
 
-      return grp.get_data(step, alg, field);
+      auto arr { inner() };
+      return py::cast(std::move(arr));
     };
 
     return std::visit(getter, this->grp);
   }
 
-  ncarray::SOViewFor<ncarray::HostTag>
-  BrokerGroupWrapper::get_multi_data(std::initializer_list<std::size_t> steps,
-                                     const char* alg,
-                                     const char* field) {
-    auto getter = [&](auto& grp) { return grp.get_multi_data(steps, alg, field); };
+  py::object BrokerGroupWrapper::get_multi_data(std::initializer_list<std::size_t> steps,
+                                                const char* alg,
+                                                const char* field) {
+    auto getter = [&](auto& grp) {
+      auto inner = [&]() {
+        py::gil_scoped_release release;
+        return grp.get_multi_data(steps, alg, field);
+      };
+
+      auto arr { inner() };
+
+      return py::cast(std::move(arr));
+    };
+
+    return std::visit(getter, this->grp);
+  }
+
+  py::object BrokerGroupWrapper::resolve_data(std::size_t step,
+                                              const char* alg,
+                                              const char* field) {
+    auto getter = [&](auto& grp) {
+      auto inner = [&]() {
+        py::gil_scoped_release release;
+        return grp.resolve_data(step, alg, field);
+      };
+
+      auto arr { inner() };
+
+      return py::cast(std::move(arr));
+    };
+
+    return std::visit(getter, this->grp);
+  }
+
+  py::object BrokerGroupWrapper::resolve_multi_data(std::size_t first,
+                                                    std::size_t last,
+                                                    const char* alg,
+                                                    const char* field) {
+    auto getter = [&](auto& grp) {
+      auto inner = [&]() {
+        py::gil_scoped_release release;
+        return grp.resolve_multi_data(first, last, alg, field);
+      };
+
+      auto arr { inner() };
+
+      return py::cast(std::move(arr));
+    };
 
     return std::visit(getter, this->grp);
   }
