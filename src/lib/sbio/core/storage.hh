@@ -50,6 +50,9 @@ namespace hd_std = std;
 
 #endif
 
+#include <memory>
+#include <utility>
+
 namespace sbio {
   namespace impl {
     struct ReqListTag {};
@@ -78,6 +81,23 @@ namespace sbio {
     Pinned  = 1, ///<
     Device  = 2, ///< Resides in device (GPU) memory
     Managed = 3  ///<
+  };
+
+  /**
+   * Indicator of who shares/accesses a buffer.
+   *
+   * For each buffer role, the scope is decided by the execution polic. It can be
+   * determined by the "distribution side" independently of where that memory
+   * actually resides. E.g. a buffer with GPU-memory can be shared just like one
+   * that is based on host-memory.
+   *
+   * @note The Storage::get function is scope-aware and resolves the correct instance
+   *       to use for hte caller.
+   */
+  enum class BufferScope : hd_std::uint8_t {
+    Shared     = 0, ///< One buffer instance for the Storage instance
+    PerUnit    = 1, ///< One buffer instance for each parallel unit
+    NodeShared = 2  ///< One buffer instance for an entire server/node (e.g. MPI Window)
   };
 
   /**
@@ -166,20 +186,70 @@ namespace sbio {
     using type = Hint;
   };
 
+  namespace impl {
+    /**
+     * Whether the Execution policy releases the memory of any buffer.
+     */
+    template <class Policy, class... Buffers>
+    inline constexpr bool releases_any =
+      (requires (Buffers& buf) { Policy::release_buffer(buf); } || ... );
+
+    /**
+     * The designated owner for the memory backing a Storage buffer.
+     *
+     * @note This is used when an Execution policy designates that it releases
+     *       the memory. The owner gets shared by various copies of the Storage
+     *       and can release the memory when the last copy is destroyed.
+     */
+    template <bool Owning>
+    struct StorageOwner {};
+
+    template <>
+    struct StorageOwner<true> {
+      void set_owner(std::shared_ptr<void> owner) { m_owner = std::move(owner); }
+
+      const std::shared_ptr<void>& owner() const { return m_owner; }
+
+    private:
+      std::shared_ptr<void> m_owner {};
+    };
+  } // namespace impl
+
   template <typename List, typename Policy>
   struct Storage;
 
   template <typename... Roles, typename Policy>
   struct Storage<RequirementsList<Roles...>, Policy>
-    : public BufferMember<Roles, typename Policy::template BufferTypeFor<Roles>>... {
+    : public BufferMember<Roles, typename Policy::template BufferTypeFor<Roles>>...
+    , public impl::StorageOwner<
+        impl::releases_any<Policy, typename Policy::template BufferTypeFor<Roles>...>
+      >
+  {
 
     static_assert((ValidBuffer<typename Policy::template BufferTypeFor<Roles>> && ...),
                   "Execution Policy must provide types that satisfy the ValidBuffer concept!");
     /**
      * Compile-time buffer accessor.
+     *
+     * @note This function is scope aware. If a buffer has a per-unit scope, the
+     *       call will resolve to the single unit's instance.
      */
     template <typename RoleOrDescriptor, hd_std::size_t Id = 0>
     SBIO_HD auto& get() {
+      auto& member { get_member<RoleOrDescriptor, Id>() };
+
+      if constexpr (requires { member.local(); }) {
+        return member.local();
+      } else {
+        return member;
+      }
+    }
+
+    /**
+     * Compile-time buffer accessor - non-scope aware version.
+     */
+    template <typename RoleOrDescriptor, hd_std::size_t Id = 0>
+    SBIO_HD auto& get_member() {
       using Descriptor = hd_std::conditional_t<
         IsDescriptor<RoleOrDescriptor>::value,
         RoleOrDescriptor,
@@ -189,6 +259,7 @@ namespace sbio {
       using BufferT = typename Policy::template BufferTypeFor<Descriptor>;
       return static_cast<BufferMember<Descriptor, BufferT>*>(this)->buffer;
     }
+
 
     /**
      * An accessor that will iterate over members of a certain role.

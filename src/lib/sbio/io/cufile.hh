@@ -41,11 +41,20 @@ namespace sbio {
      *       aligned sizes and offsets are faster.
      */
     static constexpr IOCapability Capabilities {
-      IOCapability::ReadToDevice | IOCapability::ReadToHost | IOCapability::ReadToPinned
+      IOCapability::ReadToDevice    |
+      IOCapability::ReadToHost      |
+      IOCapability::ReadToPinned    |
+      IOCapability::ConcurrentReads
     };
 
     cuFileIO();
     ~cuFileIO();
+
+    cuFileIO(const cuFileIO& other) = delete;
+    cuFileIO& operator=(const cuFileIO& other) = default;
+
+    cuFileIO(cuFileIO&& other) noexcept;
+    cuFileIO& operator=(cuFileIO&& other) noexcept;
 
     IOStatus connect(const char* path);
 
@@ -82,6 +91,10 @@ namespace sbio {
 
   private:
     ReadResult read_host(std::uint64_t offset, std::size_t size, void* dest) const;
+
+    void release();
+
+    void take(cuFileIO& other);
 
 #ifdef _WIN32
     HANDLE m_file;

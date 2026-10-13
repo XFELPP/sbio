@@ -25,6 +25,8 @@
 #include "sbio/core/roles.hh"
 #include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/execution/composed.hh"
+#include "sbio/execution/host_memory.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/host_buffer.hh"
 #include "sbio/storage/mpi_shared.hh"
@@ -63,22 +65,32 @@ namespace sbio {
    * - Allocations for the types of `DataRole` and `TableRole` use ThreadLocalBuffer
    *   to allow a single rank to parallelize data across multiple threads.
    */
-  class MPIThreadedExecution : public Execution<MPIThreadedExecution> {
+  class MPIThreadedDistribution {
   public:
     static constexpr std::size_t MaxInactiveRanks { 1024 };
 
+    /**
+     * Index and Shareable buffers are shared by all ranks on a node with MPI Windows.
+     * Data and Table buffers are per-thread, and any other buffers are per-process.
+     */
     template <typename Descriptor>
-    using BufferTypeFor = std::conditional_t<
-      std::is_same_v<typename Descriptor::role, roles::Index> ||
-      std::is_same_v<typename Descriptor::hint, Shareable>,
-      MPISharedBuffer,
-      std::conditional_t<
-        std::is_same_v<typename Descriptor::role, roles::Data> ||
-        std::is_same_v<typename Descriptor::role, roles::Table>,
-        ThreadLocalBuffer,
-        HostBuffer
-      >
-    >;
+    static constexpr BufferScope scope_for() {
+      using BufRole = typename Descriptor::role;
+      using BufHint = typename Descriptor::hint;
+
+      if constexpr (std::is_same_v<BufRole, roles::Index> ||
+                    std::is_same_v<BufHint, Shareable>) {
+        return BufferScope::NodeShared;
+      } else if constexpr (std::is_same_v<BufRole, roles::Data> ||
+                           std::is_same_v<BufRole, roles::Table>) {
+        return BufferScope::PerUnit;
+      } else {
+        return BufferScope::Shared;
+      }
+    }
+
+    template <typename Descriptor>
+    using NodeSharedBuffer = MPISharedBuffer;
 
     struct Config {
       MPI_Comm communicator { MPI_COMM_WORLD };
@@ -253,6 +265,35 @@ namespace sbio {
       }
     }
 
+    /**
+     * The ordinal (associated number) for the calling parallel unit on calling node.
+     *
+     * The units are numbered rank-first, and then by the rank's threads in the order
+     * that the threads ask for a number. I.e., the first thread of every rank on a
+     * node comes before the second thread.
+     *
+     * @note If there is no node-communicator, the world rank is used with node size 1.
+     */
+    //static constexpr std::size_t unit_ordinal() { // C++23 needed for thread_local, but C++20 used for CUDA
+    static std::size_t unit_ordinal() {
+      thread_local const std::size_t thread_ordinal {
+        m_next_thread_ordinal.fetch_add(1, std::memory_order_relaxed)
+      };
+
+      std::size_t node_rank { 0 };
+      std::size_t node_size { 1 };
+      if (m_shmem_rank >= 0 && m_shmem_size > 0) {
+        node_rank = static_cast<std::size_t>(m_shmem_rank);
+        node_size = static_cast<std::size_t>(m_shmem_size);
+      } else if (m_rank > 0) {
+        node_rank = static_cast<std::size_t>(m_rank);
+      } else {
+        node_rank = 0;
+      }
+
+      return node_rank + node_size * thread_ordinal;
+    }
+
     template <class T>
     struct SegmentState {
       SegmentState()
@@ -320,7 +361,7 @@ namespace sbio {
       }
 
     private:
-      friend class MPIThreadedExecution;
+      friend class MPIThreadedDistribution;
 
       /**
        * Intra-rank capacity store for inter-thread synchronization of indices.
@@ -391,9 +432,10 @@ namespace sbio {
       static inline std::atomic<int> next_tag { 0 };
     };
 
-    template <IsRequirementsList Requirements, class IO, class FTraits>
-    requires FormatTraits<FTraits, IO, MPIThreadedExecution>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+    /**
+     * Setup a spdlog logger.
+     */
+    static void init_logger() {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::MPIThreadedExecution");
       if (!logger) {
@@ -401,57 +443,40 @@ namespace sbio {
       } else {
         m_logger = logger;
       }
-
-      return allocate_impl_helper(Requirements{}, request);
     }
 
-    template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
+    /**
+     * Setup a node-wide shared buffer.
+     *
+     * For the MPIThreaded distribution strategy, an MPI Window is used for sharing.
+     * Within the window an area is reserved by the distribution manager (a "catalog")
+     * for distributing state among the participant ranks. If a rank is inactive, it
+     * instead will have a private buffer in lieu of the window.
+     */
+    static void allocate_node_shared(MPISharedBuffer& buf, std::size_t sz) {
       static std::atomic<int> next_win_tag(100); // Tag each MPI window to distinguish them
-      Storage<RequirementsList<Descriptors...>, MPIThreadedExecution> s;
-      std::size_t i { 0 };
 
       if (m_active_comm == MPI_COMM_NULL) {
         // Configuration was forgotten - force a default config now or will seg fault
         Config def_cfg {};
-        configure(def_cfg);
+        configure_impl(def_cfg);
       }
 
-      auto make_window_or_local = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-        std::size_t sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
+      int tag { next_win_tag.fetch_add(1) };
 
-        using BufRole = typename Descriptor::role;
-        using BufHint = typename Descriptor::hint;
-
-        if constexpr (std::is_same_v<BufRole, roles::Index> ||
-                      std::is_same_v<BufHint, Shareable>) {
-          int tag { next_win_tag.fetch_add(1) };
-
-          if (m_shmem_comm == MPI_COMM_NULL) {
-            // Inactive rank, so no node to share with
-            buf.set_memory(new char[sz], sz);
-          } else {
-            // Reserve the catalog area after the buffer (see `catalog_area`)
-            buf.allocate(m_shmem_comm, catalog_offset(sz) + CatalogBytes);
-            buf.set_memory(buf.ptr(), sz);
-            if (buf.window() != MPI_WIN_NULL) {
-              MPI_Win_lock_all(MPI_MODE_NOCHECK, buf.window());
-            }
-          }
-          buf.set_tag(tag);
-        } else if constexpr (std::is_same_v<BufRole, roles::Data> ||
-                             std::is_same_v<BufRole, roles::Table>) {
-          buf.set_memory(nullptr, sz);
-        } else {
-          buf.set_memory(new char[sz], sz);
+      if (m_shmem_comm == MPI_COMM_NULL) {
+        // Inactive rank, so no node to share with
+        buf.set_memory(new char[sz], sz);
+      } else {
+        // Reserve the catalog area after the buffer (see `catalog_area`)
+        buf.allocate(m_shmem_comm, catalog_offset(sz) + CatalogBytes);
+        buf.set_memory(buf.ptr(), sz);
+        if (buf.window() != MPI_WIN_NULL) {
+          MPI_Win_lock_all(MPI_MODE_NOCHECK, buf.window());
         }
-      };
+      }
 
-      ( (make_window_or_local(std::type_identity<Descriptors>{})), ... );
-      return s;
+      buf.set_tag(tag);
     }
 
     /**
@@ -1113,6 +1138,7 @@ namespace sbio {
     static inline bool m_main_rank_loops { true };
 
     static inline std::size_t m_num_threads { 0 };
+    static inline std::atomic<std::size_t> m_next_thread_ordinal { 0 }; ///< For unit_ordinal routine
 
     /**
      * Communicator used when generating shareable buffers.
@@ -1132,6 +1158,11 @@ namespace sbio {
 
     static inline std::shared_ptr<spdlog::logger> m_logger; ///< Execution policy logger
   };
+
+  /**
+   * A hybrid thread/MPI execution policy using host-memory management.
+   */
+  using MPIThreadedExecution = Composed<MPIThreadedDistribution, HostMemory>;
 } // namespace sbio
 
 #endif // SBIO_EXECUTION_MPI_THREADED_HH

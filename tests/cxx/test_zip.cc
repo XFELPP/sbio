@@ -415,4 +415,72 @@ namespace {
   }
 
   INSTANTIATE_TEST_SUITE_P(BatchSizes, ThreadedZip, ::testing::Values(2, 3, 7, 50));
+
+  // Two groups on the same StreamBroker and access pattern but with different step
+  // mappings fill the same buffer. Where they map onto the same steps (as here, with
+  // the Random format's single access pattern) the zip still reads each step once.
+  TEST(ZippedGroups, SharedBufferWithDifferentMappingsReadOnce) {
+    constexpr std::size_t NumEvents { 40 };
+
+    auto zip_reads = [&](bool remap_second) {
+      CountingDS<sbio::SerialExecution> ds;
+      setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexAll, NumEvents, { 1000, 1 });
+
+      auto grp1 = ds.get_stream_group("det0");
+      auto grp2 = ds.get_stream_group("det0");
+      if (remap_second) {
+        grp2.set_step_mapping(sbio::StepMapping::AlignTo, sbio::RandomTraits::DataAccessPtn::Default);
+      }
+
+      std::size_t bad { 0 };
+      std::size_t steps { 0 };
+      const std::size_t before { CountingIO::reads.load() };
+      for (auto step : sbio::zip(ds, grp1, grp2)) {
+        EXPECT_EQ(step.status(), sbio::IOStatus::Success) << "step " << static_cast<std::size_t>(step);
+        bad += !bytes_match(step.get(grp1), step) + !bytes_match(step.get(grp2), step);
+        ++steps;
+      }
+      EXPECT_EQ(steps, NumEvents);
+      EXPECT_EQ(bad, 0u);
+
+      return CountingIO::reads.load() - before;
+    };
+
+    EXPECT_EQ(zip_reads(true), zip_reads(false)) << "the shared buffer is filled once per step";
+  }
+
+  TEST(ZippedGroups, SharedBufferWithDifferentMappingsBatched) {
+    constexpr std::size_t NumEvents { 40 };
+
+    CountingDS<sbio::SerialExecution> ds;
+    setup_datasource(ds, sbio::RandomTraits::IndexingMode::IndexBatch, NumEvents, { 7, 4 });
+
+    auto grp1 = ds.get_stream_group("det0");
+    auto grp2 = ds.get_stream_group("det0");
+    grp2.set_step_mapping(sbio::StepMapping::AlignTo, sbio::RandomTraits::DataAccessPtn::Default);
+
+    std::size_t seen { 0 };
+    std::size_t bad { 0 };
+    for (auto batch : sbio::zip_batches(ds, grp1, grp2)) {
+      EXPECT_EQ(batch.status(), sbio::IOStatus::Success);
+      auto arr1 = batch.get(grp1);
+      auto arr2 = batch.get(grp2);
+      const auto* tbl1 { reinterpret_cast<const void* const*>(arr1.data()) };
+      const auto* tbl2 { reinterpret_cast<const void* const*>(arr2.data()) };
+      for (std::size_t k = 0; k < static_cast<std::size_t>(batch.count()); ++k) {
+        const std::size_t step { batch.first() + k };
+        for (const auto* tbl : { tbl1, tbl2 }) {
+          const auto* bytes { static_cast<const std::uint8_t*>(tbl[k]) };
+          bad += bytes == nullptr ||
+                 bytes[0] != static_cast<std::uint8_t>(step & 0xFF) ||
+                 bytes[1] != static_cast<std::uint8_t>((step + 1) & 0xFF);
+        }
+        ++seen;
+      }
+    }
+
+    EXPECT_EQ(seen, NumEvents);
+    EXPECT_EQ(bad, 0u);
+  }
+
 } // anonymous namespace

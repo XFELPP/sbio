@@ -739,7 +739,10 @@ namespace sbio {
       }
     }
 
-    ~StreamBroker() = default;
+    SBIO_HD ~StreamBroker() = default;
+
+    StreamBroker(StreamBroker&& other) noexcept = default;
+    StreamBroker& operator=(StreamBroker&& other) noexcept = default;
 
     // TODO: Needs to implement some sortable index (mostly for Chronological mode)
     SBIO_HD std::uint32_t stream_idx() const { return 0; }

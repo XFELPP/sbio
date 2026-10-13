@@ -25,6 +25,13 @@
 #include "sbio/execution/mpi.hh"
 #include "sbio/execution/mpi_threaded.hh"
 #endif
+#ifdef SBIO_HAS_CUDA
+#include "sbio/execution/cuda.hh"
+#ifdef SBIO_HAS_MPI
+#include "sbio/execution/mpi_cuda.hh"
+#endif // SBIO_HAS_MPI (within CUDA)
+#endif // SBIO_HAS_CUDA
+
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
 #ifdef SBIO_HAS_XTC1
@@ -40,14 +47,22 @@
 
 #include <pybind11/native_enum.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
 namespace {
   template <typename Exec, typename PyExec>
   void bind_epolicy_functions(PyExec& exec_cls) {
-    py::classh<typename Exec::IterationState>(exec_cls, "IterationState")
-      .def(py::init<>());
+    // TODO: CLEANUP - DUPLICATE FROM binding_builders.hh
+    // When using Composed, the IterationState is that of the Manager underneath
+    using IterationState = typename Exec::IterationState;
+    if (py::detail::get_type_info(typeid(IterationState)) == nullptr) {
+      py::classh<typename Exec::IterationState>(exec_cls, "IterationState")
+        .def(py::init<>());
+    } else {
+      exec_cls.attr("IterationState") = py::type::of<IterationState>();
+    }
 
     exec_cls.def(py::init<>())
       .def_static("configure", [](const typename Exec::Config& cfg) {
@@ -213,6 +228,10 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
     .value("Threaded", pysbio::ExecutionPolicy::Threaded)
     .value("MPI", pysbio::ExecutionPolicy::MPI)
     .value("MPIThreaded", pysbio::ExecutionPolicy::MPIThreaded)
+    .value("Cuda", pysbio::ExecutionPolicy::Cuda)
+    .value("ThreadedCuda", pysbio::ExecutionPolicy::ThreadedCuda)
+    .value("MPICuda", pysbio::ExecutionPolicy::MPICuda)
+    .value("MPIThreadedCuda", pysbio::ExecutionPolicy::MPIThreadedCuda)
     .export_values()
     .finalize();
 
@@ -270,4 +289,72 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
 
   auto threadedexec_cls = py::classh<ThreadedExec>(exec_module, "ThreadedExecution");
   bind_epolicy_functions<ThreadedExec>(threadedexec_cls);
+
+#ifdef SBIO_HAS_CUDA
+  // CUDA MemoryManager can be composed with each kind of DistributionManager
+  // The configuration gets the options of both managers.
+  using CudaCfg = sbio::CudaExecution::Config;
+  using CudaExec = sbio::CudaExecution;
+  using ThreadedCudaCfg = sbio::ThreadedCudaExecution::Config;
+  using ThreadedCudaExec = sbio::ThreadedCudaExecution;
+  using CudaMemCfg = sbio::CudaMemory::Config;
+
+  py::classh<CudaCfg>(exec_module, "CudaExecutionConfig")
+    .def(py::init<>())
+    .def_readwrite("device", &CudaMemCfg::device)
+    .def_readwrite("devices", &CudaMemCfg::devices);
+
+  auto cudaexec_cls = py::classh<CudaExec>(exec_module, "CudaExecution");
+  bind_epolicy_functions<CudaExec>(cudaexec_cls);
+
+  py::classh<ThreadedCudaCfg>(exec_module, "ThreadedCudaExecutionConfig")
+    .def(py::init<>())
+    .def_readwrite("num_threads", &sbio::ThreadedDistribution::Config::num_threads)
+    .def_readwrite("cpu_affinities", &sbio::ThreadedDistribution::Config::cpu_affinities)
+    .def_readwrite("device", &CudaMemCfg::device)
+    .def_readwrite("devices", &CudaMemCfg::devices);
+
+  auto threadedcudaexec_cls = py::classh<ThreadedCudaExec>(exec_module, "ThreadedCudaExecution");
+  bind_epolicy_functions<ThreadedCudaExec>(threadedcudaexec_cls);
+
+#ifdef SBIO_HAS_MPI
+  using MPICudaCfg = sbio::MPICudaExecution::Config;
+  using MPICudaExec = sbio::MPICudaExecution;
+  using MPIThreadedCudaCfg = sbio::MPIThreadedCudaExecution::Config;
+  using MPIThreadedCudaExec = sbio::MPIThreadedCudaExecution;
+  using MPIDistCfg = sbio::MPIDistribution::Config;
+  using MPIThreadedDistCfg = sbio::MPIThreadedDistribution::Config;
+
+  py::classh<MPICudaCfg>(exec_module, "MPICudaExecutionConfig")
+    .def(py::init<>())
+    .def("communicator", [](MPICudaCfg& self, int comm_f) {
+      self.communicator = MPI_Comm_f2c(comm_f);
+    })
+    .def_readwrite("active_ranks", &MPIDistCfg::active_ranks)
+    .def_readwrite("main_rank", &MPIDistCfg::main_rank)
+    .def_readwrite("main_rank_loops", &MPIDistCfg::main_rank_loops)
+    .def_readwrite("device", &CudaMemCfg::device)
+    .def_readwrite("devices", &CudaMemCfg::devices);
+
+  auto mpicudaexec_cls = py::classh<MPICudaExec>(exec_module, "MPICudaExecution");
+  bind_epolicy_functions<MPICudaExec>(mpicudaexec_cls);
+
+  py::classh<MPIThreadedCudaCfg>(exec_module, "MPIThreadedCudaExecutionConfig")
+    .def(py::init<>())
+    .def("communicator", [](MPIThreadedCudaCfg& self, int comm_f) {
+      self.communicator = MPI_Comm_f2c(comm_f);
+    })
+    .def_readwrite("active_ranks", &MPIThreadedDistCfg::active_ranks)
+    .def_readwrite("main_rank", &MPIThreadedDistCfg::main_rank)
+    .def_readwrite("main_rank_loops", &MPIThreadedDistCfg::main_rank_loops)
+    .def_readwrite("num_threads", &MPIThreadedDistCfg::num_threads)
+    .def_readwrite("cpu_affinities", &MPIThreadedDistCfg::cpu_affinities)
+    .def_readwrite("device", &CudaMemCfg::device)
+    .def_readwrite("devices", &CudaMemCfg::devices);
+
+  auto mpithreadedcudaexec_cls = py::classh<MPIThreadedCudaExec>(exec_module,
+                                                                 "MPIThreadedCudaExecution");
+  bind_epolicy_functions<MPIThreadedCudaExec>(mpithreadedcudaexec_cls);
+#endif // SBIO_HAS_MPI (within CUDA)
+#endif // SBIO_HAS_CUDA
 } // exec_module

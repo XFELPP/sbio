@@ -24,6 +24,8 @@
 #include "sbio/core/io.hh"
 #include "sbio/core/state_handle.hh"
 #include "sbio/core/storage.hh"
+#include "sbio/execution/composed.hh"
+#include "sbio/execution/host_memory.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/storage/host_buffer.hh"
 
@@ -39,20 +41,15 @@
 
 namespace sbio {
   /**
-   * SerialExecution is a simple policy, with single-process single-thread host buffers.
+   * SerialDistribution is a simple distribution using a single process and thread.
    *
-   * This execution policy provides purely synchronous behaviour for use with a
-   * single buffer in a host-only pipeline. No synchronization is necessary.
+   * This distribution manager provides purely synchronous behaviour. Every buffer in
+   * the manager is a shared buffer (there's only 1 parallel unit).
+   *
+   * The `SerialExecution` alias below composes this manager with host-memory.
    */
-  class SerialExecution : public Execution<SerialExecution> {
+  class SerialDistribution {
   public:
-    /**
-     * SerialExecution's buffer selector always points to HostBuffer.
-     *
-     * Regardless of role, a `HostBuffer` will always be used for this policy.
-     */
-    template <typename Descriptor>
-    using BufferTypeFor = HostBuffer;
 
     struct Config {};
 
@@ -63,7 +60,7 @@ namespace sbio {
     static void configure_impl(const Config&) {}
 
     class IterationState {
-      friend class SerialExecution;
+      friend class SerialDistribution;
 
       std::size_t m_event_idx { 0 }; ///< The event/step index counter for distribution.
     };
@@ -75,20 +72,14 @@ namespace sbio {
     };
 
     /**
-     * Allocate HostBuffer storage for requested roles.
-     *
-     * The SerialExecution policy does not perform any complex logic when fulfilling
-     * allocation requests. It will serve the request (unless the machine is actually
-     * exhausted of memory).
-     *
-     * @tparam Requirements The per-buffer-role requirement specifications.
-     * @tparam FTraits The data-format traits.
-     * @param[in] request The allocation request.
-     * @returns Allocated storage per the request.
+     * The ordinal (associated number) for the calling parallel unit.
      */
-    template <IsRequirementsList Requirements, class IO, class FTraits>
-    requires FormatTraits<FTraits, IO, SerialExecution>
-    static auto allocate_storage_impl(const AllocationRequest<FTraits>& request) {
+    static constexpr std::size_t unit_ordinal() { return 0; }
+
+    /**
+     * Setup a spdlog logger.
+     */
+    static void init_logger() {
       spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
       std::shared_ptr<spdlog::logger> logger = spdlog::get("sbio::SerialExecution");
       if (!logger) {
@@ -96,27 +87,6 @@ namespace sbio {
       } else {
         m_logger = logger;
       }
-      return allocate_impl_helper(Requirements{}, request);
-    }
-
-    template <typename... Descriptors, class FTraits>
-    static auto allocate_impl_helper(RequirementsList<Descriptors...>,
-                                     const AllocationRequest<FTraits>& request) {
-      Storage<RequirementsList<Descriptors...>, SerialExecution> s;
-
-      std::size_t i { 0 };
-
-      auto make_host_buffers = [&](auto DescTag) {
-        using Descriptor = typename decltype(DescTag)::type;
-
-        std::size_t final_sz { std::max(Descriptor::min_size, request.size_requests[i++]) };
-        auto& buf { s.template get<Descriptor>() };
-
-        buf.set_memory(new char[final_sz], final_sz);
-      };
-      ( (make_host_buffers(std::type_identity<Descriptors>{})), ... );
-
-      return s;
     }
 
     /**
@@ -202,6 +172,11 @@ namespace sbio {
   private:
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
+
+  /**
+   * A serial execution policy using host-memory management.
+   */
+  using SerialExecution = Composed<SerialDistribution, HostMemory>;
 } // namespace sbio
 
 #endif // SBIO_EXECUTION_SERIAL_HH

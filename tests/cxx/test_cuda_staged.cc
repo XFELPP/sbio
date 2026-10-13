@@ -40,7 +40,8 @@ namespace {
   void setup_datasource(DS& ds,
                         sbio::RandomTraits::IndexingMode mode,
                         std::size_t num_events = 50,
-                        std::size_t batch_size = 10) {
+                        std::size_t batch_size = 10,
+                        std::size_t max_batch_size = 4) {
     sbio::randfmt::DetectorSpec detectors[10];
     std::uint8_t num_detectors { 1 };
 
@@ -60,6 +61,7 @@ namespace {
 
     sbio::GenericStreamConfig<sbio::RandomTraits> cfg;
     cfg.format_params = params;
+    cfg.max_batch_size = max_batch_size;
 
     ASSERT_TRUE(ds.load_source(cfg, detectors, num_detectors)); // Test loading with default Locator
     ASSERT_EQ(ds.discover_metadata(), sbio::IOStatus::Success);

@@ -42,6 +42,7 @@ typedef SSIZE_T ssize_t;
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -90,6 +91,44 @@ namespace sbio {
   }
 
   cuFileIO::~cuFileIO() {
+    release();
+  }
+
+  cuFileIO::cuFileIO(cuFileIO&& other) noexcept
+    : IOPolicy<cuFileIO>(std::move(other))
+  {
+    take(other);
+  }
+
+  cuFileIO& cuFileIO::operator=(cuFileIO&& other) noexcept {
+    if (this != &other) {
+      release();
+      IOPolicy<cuFileIO>::operator=(std::move(other));
+      take(other);
+    }
+
+    return *this;
+  }
+
+  void cuFileIO::take(cuFileIO& other) {
+#ifdef _WIN32
+    m_file = other.m_file;
+    other.m_file = INVALID_HANDLE_VALUE;
+#else
+    m_fd = other.m_fd;
+    m_host_fd = other.m_host_fd;
+    other.m_fd = -1;
+    other.m_host_fd = -1;
+#endif // _WIN32
+    std::memcpy(&m_descr, &other.m_descr, sizeof(m_descr));
+    std::memset(&other.m_descr, 0, sizeof(other.m_descr));
+    m_handle = other.m_handle;
+    other.m_handle = nullptr;
+    m_holds_driver = other.m_holds_driver;
+    other.m_holds_driver = false;
+  }
+
+  void cuFileIO::release() {
     if (m_handle) {
       cuFileHandleDeregister(m_handle);
     }
@@ -111,6 +150,15 @@ namespace sbio {
     if (m_holds_driver) {
       close_environment();
     }
+
+#ifdef _WIN32
+    m_file = INVALID_HANDLE_VALUE;
+#else
+    m_fd = -1;
+    m_host_fd = -1;
+#endif // _WIN32
+    m_handle = nullptr;
+    m_holds_driver = false;
   }
 
   IOStatus cuFileIO::connect(const char* path) {

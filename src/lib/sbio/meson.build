@@ -73,6 +73,7 @@ else
 endif
 
 subdir('core')
+subdir('cuda')
 subdir('execution')
 subdir('io')
 subdir('locators')
