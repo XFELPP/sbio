@@ -244,7 +244,8 @@ namespace sbio {
      *
      * @note If there is no node-communicator, the world rank is used.
      */
-    static constexpr std::size_t unit_ordinal() {
+    //static constexpr std::size_t unit_ordinal() { // C++23 needed on MPIThreaded. Make non-constexpr for consistency
+    static std::size_t unit_ordinal() {
       if (m_shmem_rank >= 0) {
         return static_cast<std::size_t>(m_shmem_rank);
       } else if (m_rank > 0) {

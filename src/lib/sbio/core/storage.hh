@@ -50,6 +50,9 @@ namespace hd_std = std;
 
 #endif
 
+#include <memory>
+#include <utility>
+
 namespace sbio {
   namespace impl {
     struct ReqListTag {};
@@ -183,12 +186,45 @@ namespace sbio {
     using type = Hint;
   };
 
+  namespace impl {
+    /**
+     * Whether the Execution policy releases the memory of any buffer.
+     */
+    template <class Policy, class... Buffers>
+    inline constexpr bool releases_any =
+      (requires (Buffers& buf) { Policy::release_buffer(buf); } || ... );
+
+    /**
+     * The designated owner for the memory backing a Storage buffer.
+     *
+     * @note This is used when an Execution policy designates that it releases
+     *       the memory. The owner gets shared by various copies of the Storage
+     *       and can release the memory when the last copy is destroyed.
+     */
+    template <bool Owning>
+    struct StorageOwner {};
+
+    template <>
+    struct StorageOwner<true> {
+      void set_owner(std::shared_ptr<void> owner) { m_owner = std::move(owner); }
+
+      const std::shared_ptr<void>& owner() const { return m_owner; }
+
+    private:
+      std::shared_ptr<void> m_owner {};
+    };
+  } // namespace impl
+
   template <typename List, typename Policy>
   struct Storage;
 
   template <typename... Roles, typename Policy>
   struct Storage<RequirementsList<Roles...>, Policy>
-    : public BufferMember<Roles, typename Policy::template BufferTypeFor<Roles>>... {
+    : public BufferMember<Roles, typename Policy::template BufferTypeFor<Roles>>...
+    , public impl::StorageOwner<
+        impl::releases_any<Policy, typename Policy::template BufferTypeFor<Roles>...>
+      >
+  {
 
     static_assert((ValidBuffer<typename Policy::template BufferTypeFor<Roles>> && ...),
                   "Execution Policy must provide types that satisfy the ValidBuffer concept!");

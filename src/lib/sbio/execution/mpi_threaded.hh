@@ -274,7 +274,8 @@ namespace sbio {
      *
      * @note If there is no node-communicator, the world rank is used with node size 1.
      */
-    static constexpr std::size_t unit_ordinal() {
+    //static constexpr std::size_t unit_ordinal() { // C++23 needed for thread_local, but C++20 used for CUDA
+    static std::size_t unit_ordinal() {
       thread_local const std::size_t thread_ordinal {
         m_next_thread_ordinal.fetch_add(1, std::memory_order_relaxed)
       };

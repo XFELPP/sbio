@@ -24,6 +24,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <mutex>
+#include <vector>
 
 namespace sbio {
   /**
@@ -53,6 +55,7 @@ namespace sbio {
       if (!slot) {
         slot = std::make_shared<Slot>();
         Policy::allocate_buffer(slot->buffer, m_size);
+        m_all->add(slot);
       }
 
       return slot->buffer;
@@ -72,7 +75,35 @@ namespace sbio {
       Inner buffer {};
     };
 
+    /**
+     * Every unit's instance, so their memory can be released together.
+     */
+    class Units {
+    public:
+      Units() = default;
+      Units(const Units&) = delete;
+      Units& operator=(const Units&) = delete;
+
+      ~Units() {
+        if constexpr (requires (Inner& buf) { Policy::release_buffer(buf); }) {
+          for (auto& slot : m_slots) {
+            Policy::release_buffer(slot->buffer);
+          }
+        }
+      }
+
+      void add(const std::shared_ptr<Slot>& slot) {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        m_slots.push_back(slot);
+      }
+
+    private:
+      std::mutex m_mtx {};
+      std::vector<std::shared_ptr<Slot>> m_slots {};
+    };
+
     typename Policy::template SegmentState<std::shared_ptr<Slot>> m_units {};
+    std::shared_ptr<Units> m_all { std::make_shared<Units>() };
     std::size_t m_size { 0 };
   };
 } // namespace sbio

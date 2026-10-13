@@ -29,7 +29,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <initializer_list>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -38,6 +40,31 @@ namespace sbio {
   class Composed;
 
   namespace impl {
+    /**
+     * Release a set of buffers on destruction (via Storage owner.)
+     */
+    class ReleaseList {
+    public:
+      ReleaseList() = default;
+
+      // No copy
+      ReleaseList(const ReleaseList& other) = delete;
+      ReleaseList& operator=(const ReleaseList& other) = delete;
+
+      ~ReleaseList() {
+        for (auto& release : m_releases) {
+          release();
+        }
+      }
+
+      void add(std::function<void()> release) {
+        m_releases.push_back(std::move(release));
+      }
+
+    private:
+      std::vector<std::function<void()>> m_releases {};
+    };
+
     /**
      * A composed configuration is the distribution manager's config + memory manager's.
      *
@@ -222,6 +249,12 @@ namespace sbio {
     template <class Buffer>
     static void allocate_buffer(Buffer& buf, std::size_t size) {
       Mem::allocate_buffer(buf, size);
+    }
+
+    template <class Buffer>
+    static void release_buffer(Buffer& buf)
+    requires requires { Mem::release_buffer(buf); } {
+      Mem::release_buffer(buf);
     }
 
     // NOTE: The syntax below is very ugly... but all the requires requies are needed
@@ -464,6 +497,10 @@ namespace sbio {
       Storage<RequirementsList<Descriptors...>, Composed> s;
       std::size_t i { 0 };
 
+      // The memory of shared buffers is released by the MemorMan
+      // when the last copy of the Storage is destroyed
+      auto owner { std::make_shared<impl::ReleaseList>() };
+
       auto make_buffer = [&](auto DescTag) {
         using Descriptor = typename decltype(DescTag)::type;
 
@@ -480,10 +517,18 @@ namespace sbio {
           buf.set_memory(nullptr, sz); // Allocated per unit, on first access
         } else {
           Mem::allocate_buffer(buf, sz);
+
+          if constexpr (requires { Mem::release_buffer(buf); }) {
+            owner->add([released = buf]() mutable { Mem::release_buffer(released); });
+          }
         }
       };
 
       ( (make_buffer(std::type_identity<Descriptors> {})), ... );
+
+      if constexpr (requires { s.set_owner(owner); }) {
+        s.set_owner(std::move(owner));
+      }
 
       return s;
     }

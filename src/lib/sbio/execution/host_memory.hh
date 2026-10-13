@@ -36,6 +36,11 @@ namespace sbio {
     static void allocate_buffer(HostBuffer& buf, std::size_t size) {
       buf.set_memory(new char[size], size);
     }
+
+    static void release_buffer(HostBuffer& buf) {
+      delete[] static_cast<char*>(buf.ptr());
+      buf.set_memory(nullptr, 0);
+    }
   };
 } // namespace sbio
 

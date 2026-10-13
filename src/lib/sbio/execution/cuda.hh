@@ -275,6 +275,13 @@ namespace sbio {
       } else {
         m_register_buffer.store(nullptr, std::memory_order_release);
       }
+
+      if constexpr (reads_to_device<IO>() &&
+                    requires (void* ptr) { IO::deregister_buffer(ptr); }) {
+        m_deregister_buffer.store(&IO::deregister_buffer, std::memory_order_release);
+      } else {
+        m_deregister_buffer.store(nullptr, std::memory_order_release);
+      }
     }
 
     template <class Buffer>
@@ -305,6 +312,44 @@ namespace sbio {
         buf.set_memory(pinned, size);
       } else if constexpr (std::is_same_v<Buffer&, HostBuffer&>) {
         buf.set_memory(new char[size], size);
+      }
+    }
+
+     /**
+     * Release the memory of a buffer allocated by `allocate_buffer`.
+     *
+     * @note If there are errors, they're ignored. This function is likely to
+     *       run late in the process lifecycle (e.g. CUDA shutting down), and things
+     *       are going to be released anyway.
+     */
+    template <class Buffer>
+    requires (std::is_same_v<Buffer, CudaMirroredBuffer> ||
+              std::is_same_v<Buffer, CudaPinnedBuffer> ||
+              std::is_same_v<Buffer, HostBuffer>)
+    static void release_buffer(Buffer& buf) {
+      if constexpr (std::is_same_v<Buffer, CudaMirroredBuffer>) {
+        if (buf.ptr() != nullptr) {
+          if (auto deregister_buffer { m_deregister_buffer.load(std::memory_order_acquire) }) {
+            deregister_buffer(buf.ptr());
+          }
+          static_cast<void>(cudaFree(buf.ptr()));
+        }
+
+        if (buf.host_ptr() != nullptr) {
+          static_cast<void>(cudaFreeHost(buf.host_ptr()));
+        }
+
+        buf.set_memory(nullptr, 0);
+        buf.set_host_memory(nullptr);
+      } else if constexpr (std::is_same_v<Buffer, CudaPinnedBuffer>) {
+        if (buf.ptr() != nullptr) {
+          static_cast<void>(cudaFreeHost(buf.ptr()));
+        }
+
+        buf.set_memory(nullptr, 0);
+      } else {
+        delete[] static_cast<char*>(buf.ptr());
+        buf.set_memory(nullptr, 0);
       }
     }
 
@@ -517,11 +562,13 @@ namespace sbio {
     }
 
     using RegisterFn = bool (*)(void*, std::size_t);
+    using DeregisterFn = void (*)(void*);
 
     static inline std::atomic<int> m_device { 0 };
     static inline std::vector<int> m_devices {}; ///< Only written once at configure
     static inline std::atomic<UnitOrdinalFn> m_unit_ordinal { nullptr };
     static inline std::atomic<RegisterFn> m_register_buffer { nullptr };
+    static inline std::atomic<DeregisterFn> m_deregister_buffer { nullptr };
     static inline std::shared_ptr<spdlog::logger> m_logger;
   };
 
