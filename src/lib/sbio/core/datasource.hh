@@ -215,9 +215,8 @@ namespace sbio {
     template <typename... Args>
     bool load_source(const StreamConfig& cfg, Args&&... args) {
       using Locator = typename FTraits::DefaultLocator;
-      auto locator_params {
-        typename Locator::template LocatorParameters<DataFormat>(std::forward<Args>(args)...)
-      };
+      using LocatorParams = typename Locator::template LocatorParameters<DataFormat>;
+      auto locator_params { LocatorParams(std::forward<Args>(args)...) };
 
       return Locator::find_streams(*this, locator_params, cfg);
     }

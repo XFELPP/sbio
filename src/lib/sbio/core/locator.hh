@@ -56,12 +56,12 @@ namespace sbio {
   };
 
   template <typename Locator, typename FTraits>
-  struct LocatorParameters {
+  struct LocatorParametersFor {
     struct Type {};
   };
 
   template <typename Locator, typename FTraits>
-  using LocatorParameters_t = typename LocatorParameters<Locator, FTraits>::Type;
+  using LocatorParameters_t = typename LocatorParametersFor<Locator, FTraits>::Type;
 
   template <typename T, typename Locator, typename FTraits>
   concept IsLocatorTraits = requires {

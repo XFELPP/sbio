@@ -47,7 +47,7 @@ namespace sbio {
   // --- Specializations for locator traits --- //
 
   template <>
-  struct LocatorParameters<CustomLambdaLocator, RandomTraits> {
+  struct LocatorParametersFor<CustomLambdaLocator, RandomTraits> {
     struct Type {
       randfmt::DetectorSpec detectors[10];
       hd_std::uint8_t num_detectors { 0 };

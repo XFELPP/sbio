@@ -63,6 +63,10 @@ namespace hd_std = std;
 
 #endif // __CUDACC__
 
+#ifdef _WIN32
+#include <windows.h>
+#endif // _WIN32
+
 namespace sbio {
   /**
    * Determines whether a class conforms to the StreamBroker interface.
@@ -323,10 +327,17 @@ namespace sbio {
             status = m_streams[r].connect(res.handle.path);
             break;
           }
+#ifdef _WIN32
+          case StreamResourceType::WindowsHandle: {
+            status = m_streams[r].connect(static_cast<HANDLE>(res.handle.win_handle));
+            break;
+          }
+#else
           case StreamResourceType::FileDescriptor: {
             status = m_streams[r].connect(res.handle.fd);
             break;
           }
+#endif // _WIN32
           //case StreamResourceType::MemoryRegion: {
           //  status = m_streams[r].connect(res.handle.memory.ptr,
           //                                res.handle.memory.size);

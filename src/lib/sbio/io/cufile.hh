@@ -28,6 +28,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#ifdef _WIN32
+#include <windows.h> // HANDLE for FileHandle
+#endif // _WIN32
+
 namespace sbio {
   /**
    * A IO protocol using cuFile APIs in conjunction with POSIX descriptors.

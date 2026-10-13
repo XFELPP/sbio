@@ -133,7 +133,7 @@ namespace sbio {
     m_file = h_file;
 
     LARGE_INTEGER sz {};
-    if (::GetFileSize(h_file, &sz)) {
+    if (::GetFileSizeEx(h_file, &sz)) {
       m_file_size = static_cast<std::size_t>(sz.QuadPart);
     }
 

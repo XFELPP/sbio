@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-13
+
+### Added
+- Comprehensive iterator setups, and a `zip` API for making coordination of various `BrokerGroup`s easier.
+- `IterationState` allowing multiple DataSources and other features (removes a lot of static state from Execution policies)
+- `Context` API for checking compatibility of IO and Execution policy, as well as environment management
+- `Composed` execution policies which offload to `DistributionManager`s and `MemoryManager`s for additional composition
+- Generic implementations for fetching, indexing, etc in the `StreamBroker` with simpler `FormatTrait` APIs
+- Initial device side integrations wired through (not exposed via Python easily though)
+
+### Changed
+- `Stream` is now stateless
+- `FormatTraits` integrations can be simpler to use the generic core facilities instead
+- Remove a lot of static state from Execution policies
+- Refactored `MPIThreadedDistribution` (previously `MPIThreadedExecution` without the `Composed`). `MPI` updated just for consistency.
+
+### Fixed
+- Thread safety (and generally, execution policy safety) for all core classes
+- Various bugs in return paths through `BrokerGroup` APIs especially for batch calls (shape problems, metadata, suboffsets, etc).
+- Hangs and issues with breaks and early terminations of iteration loops
+
+
 ## [0.1.4] - 2026-08-10
 
 ### Added

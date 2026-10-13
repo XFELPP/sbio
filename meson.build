@@ -2,7 +2,7 @@ project(
     'sbio',
     'c',
     'cpp',
-    version: '0.1.4',
+    version: '0.2.0',
     meson_version: '>=1.10.0',
     default_options: [
         'c_std=c17',
@@ -90,12 +90,14 @@ elif cpp.get_id() == 'msvc'
 endif
 
 # For Windows adjust for limit of 65,536 COFF sections
+# and keep min, max and ERROR from <windows.h> from becoming macros.
 if cpp.get_id() == 'msvc'
-    add_project_arguments('/bigobj', '/DNOMINMAX', language: 'cpp')
+    add_project_arguments('/bigobj', '/DNOMINMAX', '/DNOGDI', language: 'cpp')
     if sbio_has_cuda
         add_project_arguments(
             '-Xcompiler=/bigobj',
             '-Xcompiler=/DNOMINMAX',
+            '-Xcompiler=/DNOGDI',
             '-D_SOURCE_LOCATION_',
             language: 'cuda',
         )

@@ -145,7 +145,9 @@ namespace sbio {
         return { IOStatus::ZeroBytesRead, 0 };
       }
 
-      const hd_std::size_t n { hd_std::min(max, file_size() - offset) };
+      const hd_std::size_t n {
+        static_cast<hd_std::size_t>(hd_std::min<hd_std::uint64_t>(max, file_size() - offset))
+      };
       return read(offset, n, dest);
     }
 

@@ -30,7 +30,6 @@
 #include "sbio/core/storage.hh"
 #include "sbio/core/storage_view.hh"
 #include "sbio/core/sync.hh"
-#include "sbio/export_macro.hh"
 #include "sbio/formats/format_traits.hh"
 #include "sbio/locators/custom_lambda.hh"
 #include "sbio/util/parameters.hh"
@@ -73,7 +72,7 @@ namespace hd_std = std;
 #endif
 
 namespace sbio {
-  struct SBIO_API RandomTraits : public BaseTraits {
+  struct RandomTraits : public BaseTraits {
     using DefaultLocator = CustomLambdaLocator;
 
     static constexpr hd_std::size_t HeaderSize { sizeof(randfmt::Header) };

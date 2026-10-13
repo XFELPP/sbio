@@ -139,6 +139,16 @@ namespace sbio {
 
       return Bits { bits };
     }
+
+    // Windows MSVC NON-CONFORMANT AND NEEDS THSI CONCEPT TO WOKR WITH END_ITERATION_IMPL BELOW
+    template <class Dist, class FTraits, class IterState, class IndexTrigger>
+    concept HasTemplateEndIter = requires (IterState& state,
+                                           typename FTraits::StepIdxType& max_capacity,
+                                           IndexTrigger&& trigger) {
+      Dist::template end_iteration_impl<FTraits>(state,
+                                                 max_capacity,
+                                                 std::forward<IndexTrigger>(trigger));
+    };
   } // namespace impl
 
   /**
@@ -390,14 +400,12 @@ namespace sbio {
                                                      std::forward<IndexTrigger>(trigger));
     }
 
+    // DIFFERENT BECAUSE WINDOWS MSVC BAD CONFORMANCE
     template <class FTraits, class IterState, class IndexTrigger>
     static void end_iteration_impl(IterState& state,
                                    typename FTraits::StepIdxType& max_capacity,
                                    IndexTrigger&& trigger)
-    requires requires { Dist::template end_iteration_impl<FTraits>(state,
-                                                                   max_capacity,
-                                                                   std::forward<IndexTrigger>(trigger));
-    } {
+    requires impl::HasTemplateEndIter<Dist, FTraits, IterState, IndexTrigger> {
       Dist::template end_iteration_impl<FTraits>(state,
                                                  max_capacity,
                                                  std::forward<IndexTrigger>(trigger));
@@ -491,6 +499,18 @@ namespace sbio {
       }
     }
 
+    /**
+     * Allocate a node-shared buffer with the DistributionManager.
+     *
+     * @note A function template, so `Dist::allocate_node_shared` is only looked up for
+     *       distributions with node-shared buffers (clang checks it in the discarded
+     *       branch of `allocate_helper`'s lambda otherwise).
+     */
+    template <class Buffer>
+    static void allocate_node_shared_buffer(Buffer& buf, std::size_t sz) {
+      Dist::allocate_node_shared(buf, sz);
+    }
+
     template <typename... Descriptors, class FTraits>
     static auto allocate_helper(RequirementsList<Descriptors...>,
                                 const AllocationRequest<FTraits>& request) {
@@ -512,7 +532,7 @@ namespace sbio {
           static_assert(Mem::template PlacementFor<Descriptor>::memory_space() == MemorySpace::Host,
                         "Node-shared buffers live in host memory and the memory manager must "
                         "place this role in host memory.");
-          Dist::allocate_node_shared(buf, sz);
+          allocate_node_shared_buffer(buf, sz);
         } else if constexpr (scope == BufferScope::PerUnit) {
           buf.set_memory(nullptr, sz); // Allocated per unit, on first access
         } else {

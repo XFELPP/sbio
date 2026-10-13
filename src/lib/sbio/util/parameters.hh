@@ -172,7 +172,7 @@ namespace sbio {
 #endif
 
     // --- C-string comparison --- //
-    SBIO_HD inline auto operator==(const char* str) const {
+    SBIO_HD inline bool operator==(const char* str) const {
       if (str) {
         return hd_std::strcmp(storage.data(), str) == 0 ? true : false;
       }
@@ -300,7 +300,7 @@ namespace sbio {
    * @returns A NamedMember.
    */
   template <typename Class, typename T>
-  SBIO_HD SBIO_API constexpr NamedMember<Class, T>
+  SBIO_HD constexpr NamedMember<Class, T>
   make_named_member(const char* name, T Class::* ptr) {
     return { name, ptr };
   }

@@ -164,7 +164,7 @@ namespace sbio {
    * @tparam MaxFields The maximum capacity for the number of fields.
    */
   template <typename FTraits, hd_std::size_t MaxGroups = 128, hd_std::size_t MaxFields = 1024>
-  struct SBIO_API MetadataInventory {
+  struct MetadataInventory {
     using RequestSchema = typename FTraits::RequestSchema;
     using DataRequest = sbio::DataRequest<RequestSchema>;
 

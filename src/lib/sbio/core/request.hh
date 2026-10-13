@@ -20,7 +20,6 @@
 #ifndef SBIO_CORE_REQUEST_HH
 #define SBIO_CORE_REQUEST_HH
 
-#include "sbio/export_macro.hh"
 #include "sbio/util/parameters.hh"
 #include "sbio/util/string.hh"
 
@@ -111,7 +110,7 @@ namespace sbio {
    * @tparam Keys... The set of named schema fields. E.g. <"alg", "field">
    */
   template <FixedName... Keys>
-  struct SBIO_API DataRequest<NamedKeys<Keys...>> {
+  struct DataRequest<NamedKeys<Keys...>> {
     FixedName<> group_name;
     FixedName<> group_type;
     hd_std::size_t segment_number { 0 };

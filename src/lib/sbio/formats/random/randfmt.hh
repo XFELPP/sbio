@@ -20,6 +20,8 @@
 #ifndef SBIO_FORMATS_RANDOM_RANDFMT_HH
 #define SBIO_FORMATS_RANDOM_RANDFMT_HH
 
+#include "sbio/export_macro.hh"
+
 #include <ncarray/dtype.hh>
 
 #ifdef __CUDACC__
@@ -47,6 +49,10 @@ namespace hd_std = std;
 #endif
 
 #endif
+
+#ifdef _WIN32
+#include <windows.h> // HANDLE for FileHandle
+#endif // _WIN32
 
 namespace sbio::randfmt {
   /**
@@ -319,46 +325,46 @@ namespace sbio::randfmt {
   using FileHandle = int;
 #endif // _WIN32
 
-  void write_bytes(FileHandle f_handle,
-                   const void* buf,
-                   hd_std::size_t sz,
-                   hd_std::uint64_t off);
+  SBIO_API void write_bytes(FileHandle f_handle,
+                            const void* buf,
+                            hd_std::size_t sz,
+                            hd_std::uint64_t off);
 
-  void write_super_block(FileHandle f_handle,
-                         hd_std::uint64_t seq_no,
-                         hd_std::uint8_t flags,
-                         hd_std::uint8_t num_sub_blocks,
-                         BlockType* block_types,
-                         hd_std::uint8_t* block_ids,
-                         void** payloads,
-                         hd_std::uint32_t* sizes,
-                         hd_std::uint64_t& curr_offset);
+  SBIO_API void write_super_block(FileHandle f_handle,
+                                  hd_std::uint64_t seq_no,
+                                  hd_std::uint8_t flags,
+                                  hd_std::uint8_t num_sub_blocks,
+                                  BlockType* block_types,
+                                  hd_std::uint8_t* block_ids,
+                                  void** payloads,
+                                  hd_std::uint32_t* sizes,
+                                  hd_std::uint64_t& curr_offset);
 
-  void construct_data_block(hd_std::uint32_t size,
-                            hd_std::uint8_t pattern_type,
-                            hd_std::uint8_t*& payload,
-                            hd_std::uint32_t seed = 42,
-                            hd_std::uint64_t seq_no = 0);
+  SBIO_API void construct_data_block(hd_std::uint32_t size,
+                                     hd_std::uint8_t pattern_type,
+                                     hd_std::uint8_t*& payload,
+                                     hd_std::uint32_t seed = 42,
+                                     hd_std::uint64_t seq_no = 0);
 
-  void construct_cfg_block(hd_std::uint32_t seed,
-                           hd_std::uint8_t pattern_type,
-                           hd_std::uint64_t total_events,
-                           hd_std::uint8_t flags,
-                           hd_std::uint8_t*& payload);
+  SBIO_API void construct_cfg_block(hd_std::uint32_t seed,
+                                    hd_std::uint8_t pattern_type,
+                                    hd_std::uint64_t total_events,
+                                    hd_std::uint8_t flags,
+                                    hd_std::uint8_t*& payload);
 
-  void construct_meta_block(hd_std::uint8_t num_detectors,
-                            const DetectorSpec* detector_specs,
-                            hd_std::uint8_t*& payload);
+  SBIO_API void construct_meta_block(hd_std::uint8_t num_detectors,
+                                     const DetectorSpec* detector_specs,
+                                     hd_std::uint8_t*& payload);
 
-  void write_sbiornd_file(FileHandle f_handle,
-                          hd_std::uint64_t& curr_offset,
-                          hd_std::uint8_t num_detectors,
-                          const DetectorSpec* detector_specs,
-                          hd_std::uint8_t* det_block_ids,
-                          hd_std::uint32_t seed,
-                          hd_std::uint8_t pattern_type,
-                          hd_std::uint64_t total_events,
-                          hd_std::uint8_t flags);
+  SBIO_API void write_sbiornd_file(FileHandle f_handle,
+                                   hd_std::uint64_t& curr_offset,
+                                   hd_std::uint8_t num_detectors,
+                                   const DetectorSpec* detector_specs,
+                                   hd_std::uint8_t* det_block_ids,
+                                   hd_std::uint32_t seed,
+                                   hd_std::uint8_t pattern_type,
+                                   hd_std::uint64_t total_events,
+                                   hd_std::uint8_t flags);
 
 } // namespace sbio::randfmt
 

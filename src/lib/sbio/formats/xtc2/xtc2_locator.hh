@@ -41,7 +41,7 @@ namespace sbio {
   // --- Specializations for locator traits --- //
 
   template <>
-  struct LocatorParameters<PathPatternLocator, XTC2Traits> {
+  struct LocatorParametersFor<PathPatternLocator, XTC2Traits> {
     struct Type {
       FixedName<XTC2Traits::MaxNameSize> experiment;
       unsigned run;
@@ -113,7 +113,7 @@ namespace sbio {
   };
 
   template <>
-  struct LocatorParameters<SingleFileLocator, XTC2Traits> {
+  struct LocatorParametersFor<SingleFileLocator, XTC2Traits> {
     struct Type {
       FixedName<1024> path;
 
