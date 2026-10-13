@@ -68,7 +68,8 @@ namespace sbio {
     NoOffsetInData,
     HeaderReadError,
     PayloadTruncatedError,
-    AllRequestedRead
+    AllRequestedRead,
+    BufferConflict // Two fetches (for different steps) are using the same buffer
   };
 
   struct ReadResult {

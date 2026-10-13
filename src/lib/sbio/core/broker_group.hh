@@ -690,6 +690,59 @@ namespace sbio {
       }
     }
 
+    /**
+     * Check if a fetch for `broker_no` fills the same buffer as other's `other_no`.
+     *
+     * @note This occurs when both BrokerGroups use the same StreamBroker and access
+     *       pattern. If using different step mappings (see shares_fetch), they may
+     *       need different steps in the buffer.
+     *
+     * @param[in] broker_no The StreamBroker broker number for this BrokerGroup.
+     * @param[in] other The other BrokerGroup.
+     * @param[in] other_no The StreamBroker broker number for the `other` BrokerGroup.
+     * @returns Whether the fetches fill the same buffer.
+     */
+    SBIO_HD inline bool shares_buffer(std::size_t broker_no,
+                                      const BrokerGroup& other,
+                                      std::size_t other_no) const {
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        // They cannot share because the fetched StreamBroker depends on the stpe
+        return false;
+      } else {
+        return
+          m_topology.stream_brokers[broker_no] == other.m_topology.stream_brokers[other_no] &&
+          m_topology.access_ptn(broker_no) == other.m_topology.access_ptn(other_no);
+      }
+    }
+
+    /**
+     * Get the range of steps for a StreamBroker that correspond to a group's range.
+     *
+     * @note If there is no step alignment occurring, then the two ranges are identical
+     *       and this is a normal fetch. Otherwise, it is a fetch over the range that
+     *       the steps map onto.
+     *
+     * @returns Whether the steps could be mapped.
+     */
+    SBIO_HD inline IOStatus fetch_range_for(StepIdxType first,
+                                            StepIdxType last,
+                                            std::size_t broker_no,
+                                            std::size_t& first_ordinal,
+                                            std::size_t& end_ordinal) const {
+      const auto& seg { m_topology.active_segment(first, broker_no) };
+      if (is_aligned(seg)) {
+        return map_batch(seg, first, last, first_ordinal, end_ordinal);
+      }
+
+      const StepIdxType last_step {
+        (last > first) ? static_cast<StepIdxType>(last - 1) : first
+      };
+      first_ordinal = m_topology.remap_step_idx(first);
+      end_ordinal = m_topology.remap_step_idx(last_step) + 1;
+
+      return IOStatus::Success;
+    }
+
     template <class CBType, typename... Args>
     requires std::invocable<CBType, DataResult>
     inline ncarray::SOViewFor<MemTag> get_multi_data(const std::initializer_list<StepIdxType>& steps,

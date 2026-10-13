@@ -182,6 +182,12 @@ namespace sbio {
      * groups is recorded once, so a step (or batch) is fetched exactly once per distinct
      * fetch, through the Execution policy's `get_data` / `get_data_steps` hooks.
      *
+     * @note Fetches for the same StreamBroker with a different access pattern, and
+     *       different step alignment/mapping end up filling the same buffer. As a
+     *       result, they can only be zipped when they need the same steps. If a
+     *       step/batch map onto the same set of steps, then that is fetched once.
+     *       Otherwise, a `IOStatus::BufferConflict` is reported.
+     *
      * @tparam ExecutionPolicy The Execution policy.
      * @tparam FTraits The data format.
      * @tparam Groups The BrokerGroup types.
@@ -252,7 +258,10 @@ namespace sbio {
       struct Fetch {
         hd_std::size_t group;
         hd_std::size_t broker_no;
+        hd_std::size_t buffer_of { NoFetch }; ///< An earlier fetch, filling the same buffer
       };
+
+      static constexpr hd_std::size_t NoFetch { static_cast<hd_std::size_t>(-1) };
 
       template <hd_std::size_t... Is>
       SBIO_HD void plan_fetches(hd_std::index_sequence<Is...>) {
@@ -272,12 +281,22 @@ namespace sbio {
 
         for (hd_std::size_t b = 0; b < num_brokers; ++b) {
           bool shared { false };
-          for (const auto& f : m_fetches) {
-            shared = shared || shares_fetch(group, b, f, hd_std::index_sequence_for<Groups...> {});
+          hd_std::size_t buffer_of { NoFetch };
+          for (hd_std::size_t f = 0; f < m_fetches.size(); ++f) {
+            shared =
+              shared ||
+              shares_fetch(group,
+                           b,
+                           m_fetches[f],
+                           hd_std::index_sequence_for<Groups...> {});
+            if (buffer_of == NoFetch &&
+                shares_buffer(group, b, m_fetches[f], hd_std::index_sequence_for<Groups...> {})) {
+              buffer_of = f;
+            }
           }
 
           if (!shared) {
-            m_fetches.push_back({ G, b });
+            m_fetches.push_back({ G, b, buffer_of });
           }
         }
       }
@@ -301,10 +320,100 @@ namespace sbio {
         return shared;
       }
 
+      template <class Group, hd_std::size_t... Is>
+      SBIO_HD bool shares_buffer(const Group& group,
+                                 hd_std::size_t broker_no,
+                                 const Fetch& fetch_,
+                                 hd_std::index_sequence<Is...> seq) const {
+        bool shared { false };
+        auto check = [&](const auto* other, hd_std::size_t idx) {
+          if constexpr (hd_std::is_same_v<hd_std::remove_cvref_t<decltype(*other)>, Group>) {
+            if (idx == fetch_.group) {
+              shared = group.shares_buffer(broker_no, *other, fetch_.broker_no);
+            }
+          }
+        };
+
+        ( check(hd_std::get<Is>(m_groups), Is), ... );
+
+        return shared;
+      }
+
+      /**
+       * The range of steps for a StreamBroker that are read for a BrokerGroups range.
+       *
+       * @note See `BrokerGroup::fetch_range_for`
+       */
+      template <hd_std::size_t... Is>
+      SBIO_HD IOStatus fetch_range(const Fetch& fetch_,
+                                   StepIdxType first,
+                                   StepIdxType last,
+                                   hd_std::size_t& first_ordinal,
+                                   hd_std::size_t& end_ordinal,
+                                   hd_std::index_sequence<Is...> seq) const {
+        IOStatus status { IOStatus::Success };
+        auto get_range = [&](const auto* group, hd_std::size_t idx) {
+          if (idx == fetch_.group) {
+            status = group->fetch_range_for(first,
+                                            last,
+                                            fetch_.broker_no,
+                                            first_ordinal,
+                                            end_ordinal);
+          }
+        };
+
+        ( get_range(hd_std::get<Is>(m_groups), Is), ... );
+
+        return status;
+      }
+
+      template <hd_std::size_t... Is>
+      SBIO_HD IOStatus check_shared_buffer(const Fetch& fetch_,
+                                           StepIdxType first,
+                                           StepIdxType last,
+                                           hd_std::index_sequence<Is...> seq) const {
+        hd_std::size_t first_ordinal { 0 };
+        hd_std::size_t end_ordinal { 0 };
+
+        hd_std::size_t other_first { 0 };
+        hd_std::size_t other_end { 0 };
+
+        IOStatus status {
+          fetch_range(fetch_, first, last, first_ordinal, end_ordinal, seq)
+        };
+
+        if (status == IOStatus::Success) {
+          status = fetch_range(m_fetches[fetch_.buffer_of],
+                               first,
+                               last,
+                               other_first,
+                               other_end,
+                               seq);
+        }
+
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        if (first_ordinal == other_first && end_ordinal == other_end) {
+          return IOStatus::Success;
+        }
+
+        // The steps dont match, and they'll end up overwriting each other
+        return IOStatus::BufferConflict;
+      }
+
       template <hd_std::size_t... Is>
       SBIO_HD IOStatus fetch_one(const Fetch& fetch_,
                                  StepIdxType step,
                                  hd_std::index_sequence<Is...>) const {
+        if (fetch_.buffer_of != NoFetch) {
+          return check_shared_buffer(fetch_,
+                                     step,
+                                     static_cast<StepIdxType>(step + 1),
+                                     hd_std::index_sequence<Is...> {});
+        }
+
         IOStatus status { IOStatus::Success };
         auto do_fetch = [&](const auto* group, hd_std::size_t idx) {
           if (idx == fetch_.group) {
@@ -322,6 +431,13 @@ namespace sbio {
       SBIO_HD IOStatus fetch_range_one(const Fetch& fetch_,
                                        StepBatch<StepIdxType> batch,
                                        hd_std::index_sequence<Is...>) const {
+        if (fetch_.buffer_of != NoFetch) {
+          return check_shared_buffer(fetch_,
+                                     batch.first,
+                                     batch.last,
+                                     hd_std::index_sequence<Is...> {});
+        }
+
         IOStatus status { IOStatus::Success };
         auto do_fetch = [&](const auto* group, hd_std::size_t idx) {
           if (idx == fetch_.group) {
