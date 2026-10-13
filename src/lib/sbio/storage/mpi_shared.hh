@@ -112,6 +112,7 @@ namespace sbio {
       , m_size(other.m_size)
       , m_window(other.m_window)
       , m_tag(other.m_tag)
+      , m_seq(other.m_seq)
     {}
 
     /**
@@ -126,6 +127,7 @@ namespace sbio {
         m_size = other.m_size;
         m_window = other.m_window;
         m_tag = other.m_tag;
+        m_seq = other.m_seq;
       }
 
       return *this;
@@ -142,6 +144,7 @@ namespace sbio {
       , m_size(other.m_size)
       , m_window(std::move(other.m_window))
       , m_tag(other.m_tag)
+      , m_seq(other.m_seq)
     {
       other.m_ptr = nullptr;
       other.m_size = 0;
@@ -160,6 +163,7 @@ namespace sbio {
         m_size = other.m_size;
         m_window = std::move(other.m_window);
         m_tag = other.m_tag;
+        m_seq = other.m_seq;
 
         other.m_ptr = nullptr;
         other.m_size = 0;

@@ -56,6 +56,12 @@ namespace sbio {
 
     ~SyncPOSIXIO();
 
+    SyncPOSIXIO(const SyncPOSIXIO& other) = delete;
+    SyncPOSIXIO& operator=(const SyncPOSIXIO& other) = delete;
+
+    SyncPOSIXIO(SyncPOSIXIO&& other) noexcept;
+    SyncPOSIXIO& operator=(SyncPOSIXIO&& other) noexcept;
+
     IOStatus connect(const char* path);
 
 #ifdef _WIN32

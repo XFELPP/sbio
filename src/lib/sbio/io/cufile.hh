@@ -50,6 +50,12 @@ namespace sbio {
     cuFileIO();
     ~cuFileIO();
 
+    cuFileIO(const cuFileIO& other) = delete;
+    cuFileIO& operator=(const cuFileIO& other) = default;
+
+    cuFileIO(cuFileIO&& other) noexcept;
+    cuFileIO& operator=(cuFileIO&& other) noexcept;
+
     IOStatus connect(const char* path);
 
 #ifndef _WIN32
@@ -85,6 +91,10 @@ namespace sbio {
 
   private:
     ReadResult read_host(std::uint64_t offset, std::size_t size, void* dest) const;
+
+    void release();
+
+    void take(cuFileIO& other);
 
 #ifdef _WIN32
     HANDLE m_file;

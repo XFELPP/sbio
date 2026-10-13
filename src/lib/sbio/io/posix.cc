@@ -61,6 +61,48 @@ namespace sbio {
 #endif // _WIN32
   }
 
+  SyncPOSIXIO::SyncPOSIXIO(SyncPOSIXIO&& other) noexcept
+    : IOPolicy<SyncPOSIXIO>(std::move(other))
+#ifdef _WIN32
+    , m_file(other.m_file)
+#else
+    , m_fd(other.m_fd)
+#endif
+  {
+    // The moved-from object no longer owns the file
+#ifdef _WIN32
+    other.m_file = INVALID_HANDLE_VALUE;
+#else
+    other.m_fd = -1;
+#endif
+  }
+
+  SyncPOSIXIO& SyncPOSIXIO::operator=(SyncPOSIXIO&& other) noexcept {
+    if (this != &other) {
+      // Close the file owned so far
+#ifdef _WIN32
+      if (m_file != INVALID_HANDLE_VALUE) {
+        ::CloseHandle(m_file);
+      }
+#else
+      if (m_fd >= 0) {
+        ::close(m_fd);
+      }
+#endif // _WIN32
+
+      IOPolicy<SyncPOSIXIO>::operator=(std::move(other));
+#ifdef _WIN32
+      m_file = other.m_file;
+      other.m_file = INVALID_HANDLE_VALUE;
+#else
+      m_fd = other.m_fd;
+      other.m_fd = -1;
+#endif
+    }
+
+    return *this;
+  }
+
   IOStatus SyncPOSIXIO::connect(const char* path) {
 #ifdef _WIN32
     m_file = CreateFileA(path,
