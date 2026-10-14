@@ -329,17 +329,18 @@ namespace sbio {
         }
       }
 
-
       if (batch_idx > 0) {
+        // The batch starts at a datagram of the target kind. Step past it, and
+        // `batch_idx` more of the target kind.
         std::size_t matched_count { 0 };
         while (matched_count < batch_idx) {
           // When reading batches, to simplify we allow reading a massive chunk that
           // may include intervening transitions.
+          std::size_t dgram_size { sizeof(XTC2::Dgram) + dg->xtc.sizeofPayload() };
+          dg = reinterpret_cast<XTC2::Dgram*>(reinterpret_cast<char*>(dg) + dgram_size);
           if (dg->service() == target_service) {
             matched_count++;
           }
-          std::size_t dgram_size { sizeof(XTC2::Dgram) + dg->xtc.sizeofPayload() };
-          dg = reinterpret_cast<XTC2::Dgram*>(reinterpret_cast<char*>(dg) + dgram_size);
         }
       }
 

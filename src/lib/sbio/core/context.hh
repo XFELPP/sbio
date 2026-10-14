@@ -235,14 +235,20 @@ namespace sbio {
      *
      * @pre `ok()`.
      * @tparam FTraits The data format type
-     * @returns The DataSource, ready for stream locating.
+     * @returns The DataSource, ready for stream locating. It sees the Context's
+     *          environment overrides.
      */
     template <class FTraits>
     requires FormatTraits<FTraits, IO, EPolicy>
     DataSource<IO, EPolicy, FTraits> data_source() const {
       assert(m_ok && "Creating a DataSource from an invalid Context!");
 
-      return DataSource<IO, EPolicy, FTraits>(ExecutionPolicyConfigured {});
+      DataSource<IO, EPolicy, FTraits> ds(ExecutionPolicyConfigured {});
+      for (const auto& [key, value] : m_env) {
+        ds.set_env(key, value);
+      }
+
+      return ds;
     }
 
     /**
