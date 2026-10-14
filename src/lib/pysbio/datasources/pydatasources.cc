@@ -60,7 +60,7 @@ PYBIND11_MODULE(pydatasources, datasource_module, py::mod_gil_not_used()) {
 
   auto threaded_ds_xtc1 =
       py::classh<XTC1ThreadedDataSource>(datasource_module, "XTC1ThreadedDataSource");
-  pysbio::impl::bind_broker_group_functions<XTC1ThreadedDataSource>(threaded_ds_xtc1);
+  pysbio::impl::bind_datasource_functions<XTC1ThreadedDataSource>(threaded_ds_xtc1);
 
 #ifdef SBIO_HAS_MPI
   using XTC1MPIDataSource = sbio::DataSource<
@@ -82,7 +82,7 @@ PYBIND11_MODULE(pydatasources, datasource_module, py::mod_gil_not_used()) {
   auto mpi_threaded_ds_xtc1 =
       py::classh<XTC1ThreadedMPIDataSource>(datasource_module,
                                             "XTC1ThreadedMPIDataSource");
-  pysbio::impl::bind_broker_group_functions<XTC1ThreadedMPIDataSource>(mpi_threaded_ds_xtc1);
+  pysbio::impl::bind_datasource_functions<XTC1ThreadedMPIDataSource>(mpi_threaded_ds_xtc1);
 
 #endif // SBIO_HAS_MPI
 #endif // SBIO_HAS_XTC1

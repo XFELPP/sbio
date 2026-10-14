@@ -65,7 +65,9 @@ namespace pysbio {
                                                    StepIdx step) {
 
             py::gil_scoped_release release;
-            return det.get_data(step, alg.c_str(), field.c_str());
+            return with_request_keys<SGT>(alg.c_str(), field.c_str(), [&](auto... keys) {
+              return det.get_data(step, keys...);
+            });
           };
 
           auto py_data_getter = py::cpp_function(cpp_data_getter, py::is_method(py_alg));
@@ -91,7 +93,9 @@ namespace pysbio {
     auto getter = [&](auto& grp) -> py::object {
       auto inner = [&]() {
         py::gil_scoped_release release;
-        return grp.get_data(step, alg, field);
+        return with_request_keys<decltype(grp)>(alg, field, [&](auto... keys) {
+          return grp.get_data(step, keys...);
+        });
       };
 
       auto arr { inner() };
@@ -107,7 +111,9 @@ namespace pysbio {
     auto getter = [&](auto& grp) {
       auto inner = [&]() {
         py::gil_scoped_release release;
-        return grp.get_multi_data(steps, alg, field);
+        return with_request_keys<decltype(grp)>(alg, field, [&](auto... keys) {
+          return grp.get_multi_data(steps, keys...);
+        });
       };
 
       auto arr { inner() };
@@ -124,7 +130,9 @@ namespace pysbio {
     auto getter = [&](auto& grp) {
       auto inner = [&]() {
         py::gil_scoped_release release;
-        return grp.resolve_data(step, alg, field);
+        return with_request_keys<decltype(grp)>(alg, field, [&](auto... keys) {
+          return grp.resolve_data(step, keys...);
+        });
       };
 
       auto arr { inner() };
@@ -142,7 +150,9 @@ namespace pysbio {
     auto getter = [&](auto& grp) {
       auto inner = [&]() {
         py::gil_scoped_release release;
-        return grp.resolve_multi_data(first, last, alg, field);
+        return with_request_keys<decltype(grp)>(alg, field, [&](auto... keys) {
+          return grp.resolve_multi_data(first, last, keys...);
+        });
       };
 
       auto arr { inner() };
