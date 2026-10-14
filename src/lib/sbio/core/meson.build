@@ -2,6 +2,7 @@ installed_core_headers = [
     'access_style.hh',
     'broker_group.hh',
     'broker.hh',
+    'chronology.hh',
     'context.hh',
     'datasource.hh',
     'execution.hh',

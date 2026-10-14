@@ -113,6 +113,7 @@ namespace sbio {
 
     StepKind step_kind {};                   ///< The kind this StepOffset accesses
     hd_std::uint64_t ordinal { 0 };          ///< Which step of its kind this is, counted over all batches
+    hd_std::uint64_t order_key { 0 };        ///< Position in time across streams (Chronological formats)
   };
 
   namespace impl {

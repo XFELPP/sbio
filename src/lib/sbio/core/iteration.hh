@@ -272,12 +272,8 @@ namespace sbio {
       SBIO_HD void plan_group() {
         const auto& group { *hd_std::get<G>(m_groups) };
 
-        using Group = hd_std::remove_cvref_t<decltype(group)>;
-        constexpr bool Chronological {
-          Group::DataFormat::PartitioningStrategy == StreamPartitioningStrategy::Chronological
-        };
-        // Chronological groups fetch a single, step-dependent, StreamBroker.
-        const hd_std::size_t num_brokers { Chronological ? 1 : group.num_stream_brokers() };
+        // For Chronological groups, only the StreamBroker holding a step fetches it
+        const hd_std::size_t num_brokers { group.num_stream_brokers() };
 
         for (hd_std::size_t b = 0; b < num_brokers; ++b) {
           bool shared { false };

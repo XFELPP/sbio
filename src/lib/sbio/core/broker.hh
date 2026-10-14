@@ -712,6 +712,28 @@ namespace sbio {
     SBIO_HD inline const GenericStreamConfig<DataFormat>& config() const { return m_config; }
 
     /**
+     * Visit the indexed steps of a kind, in order.
+     *
+     * Only the steps of the current index batch are visited (including a step carried
+     * over from the previous batch).
+     *
+     * @param[in] kind The kind of steps to visit.
+     * @param[in] fn Called as `fn(ordinal, order_key)` for each step.
+     */
+    template <class Fn>
+    requires UsesGenericIndex
+    inline void visit_steps(typename FTraits::StepKind kind, Fn&& fn) {
+      StorageView<SBStorageType, EPolicy> sv(m_storage);
+      const auto* rows { acquire_rows(sv) };
+
+      for (hd_std::uint32_t r { m_catalog.first_row[kind_idx(kind)] }; r != NoRow; r = rows[r].next_of_kind) {
+        fn(rows[r].ordinal, rows[r].order_key);
+      }
+
+      sv.template release<roles::Index, index_ids::Steps>(const_cast<StepOffset<FTraits>*>(rows));
+    }
+
+    /**
      * Configure the Broker with a set of metadata.
      *
      * Under some Execution policies, not all Brokers will necessarily move through
@@ -755,8 +777,11 @@ namespace sbio {
     StreamBroker(StreamBroker&& other) noexcept = default;
     StreamBroker& operator=(StreamBroker&& other) noexcept = default;
 
-    // TODO: Needs to implement some sortable index (mostly for Chronological mode)
-    SBIO_HD std::uint32_t stream_idx() const { return 0; }
+    // The stream's identifier (e.g. from its filename), set by the Locator: sorts the
+    // StreamBrokers (mostly for Chronological mode)
+    SBIO_HD std::uint32_t stream_idx() const {
+      return static_cast<std::uint32_t>(m_config.identity.stream_id);
+    }
 
     SBIO_HD inline StreamCatalog<FTraits>& catalog() noexcept {
       return m_catalog;
@@ -979,6 +1004,9 @@ namespace sbio {
           step.prev_of_kind = m_catalog.last_row[k];
           step.step_kind = kind;
           step.ordinal = m_catalog.cummulative_steps[k];
+          if constexpr (requires { { FTraits::order_key(unit) } -> std::convertible_to<hd_std::uint64_t>; }) {
+            step.order_key = FTraits::order_key(unit);
+          }
 
           if (m_catalog.last_row[k] != NoRow) {
             rows[m_catalog.last_row[k]].next_of_kind = r;

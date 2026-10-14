@@ -35,6 +35,7 @@
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
 
+#include <array>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -224,6 +225,8 @@ namespace sbio {
         }
       }
 
+      m_topology.count_logical_segments();
+
       std::size_t max_batch_count { 1 };
       if (!m_topology.empty() && m_topology.broker_for_segment(0) != nullptr) {
         max_batch_count = m_topology.broker_for_segment(0)->config().max_batch_size;
@@ -262,7 +265,12 @@ namespace sbio {
     const char* group_name() const { return m_topology.group_name; }
     const char* group_type() const { return m_topology.group_type; }
 
-    inline std::size_t num_segments() const { return m_topology.num_segments; }
+    /**
+     * The number of (logical) segments of the group.
+     *
+     * @note For Chronological formats, every StreamBroker holds each segment.
+     */
+    inline std::size_t num_segments() const { return m_topology.num_logical_segments; }
     inline const DataSegmentRef* segments() const {
       if (!m_topology.empty()) {
         return &m_topology.segments[0];
@@ -284,6 +292,10 @@ namespace sbio {
     SBIO_HD inline std::size_t num_stream_brokers() const { return m_topology.num_stream_brokers; }
 
     SBIO_HD inline IOStatus fetch_next_for(StepIdxType& step_idx, std::size_t broker_no) const {
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        return chrono_fetch(step_idx, broker_no);
+      }
+
       const auto& seg { m_topology.active_segment(step_idx, broker_no) };
       auto remapped_step_idx { m_topology.remap_step_idx(step_idx) };
 
@@ -309,6 +321,19 @@ namespace sbio {
      */
     SBIO_HD inline IOStatus fetch_steps_for(std::initializer_list<StepIdxType> steps,
                                             std::size_t broker_no) const {
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        const bool passed_step { steps.size() == 3 };
+        const StepIdxType first { *steps.begin() };
+        const StepIdxType last { passed_step ? *(steps.end() - 2) : *(steps.end() - 1) };
+
+        ChronoBatch batch;
+        const auto status { chrono_batch(first, last, batch) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+        return chrono_fetch_batch(batch, broker_no);
+      }
+
       const auto& seg { m_topology.active_segment(*steps.begin(), broker_no) };
       if (!is_aligned(seg)) {
         return seg.broker->fetch_steps(steps, seg.access_ptn, seg.cursor.get());
@@ -406,6 +431,10 @@ namespace sbio {
           target_idx = std::get<0>(std::forward_as_tuple(opt_step...));
         }
 
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          return chrono_fetch(target_idx, i);
+        }
+
         const auto& seg { m_topology.active_segment(target_idx, i) };
         auto remapped_step_idx { m_topology.remap_step_idx(target_idx) };
 
@@ -422,22 +451,31 @@ namespace sbio {
         const auto& seg { m_topology.segment(i) };
 
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % this->num_segments() };
+          // `i` is the logical segment, in the StreamBroker holding the step
+          std::size_t broker_no { 0 };
+          std::size_t ordinal { 0 };
+          const std::size_t seg_idx {
+            m_topology.locate(step_idx, broker_no, ordinal)
+              ? m_topology.segment_index_for(broker_no, i)
+              : TopologyType::NoSegment
+          };
 
-          auto res = get_data_for(req,
-                                  active_stream_idx,
-                                  std::forward<CBType>(callback));
-
-          ptr_tbl[0] = const_cast<void*>(res.data);
-          // This assumes all segments are same shape...
-          ref_res.data = res.data;
-          ref_res.size = res.size;
-          ref_res.rank = res.rank;
-          // TODO: Consider ways to avoid copy....
-          for (std::uint16_t j = 0; j < res.rank; ++j) {
-            ref_res.shape[j] = res.shape[j];
+          ptr_tbl[i] = nullptr;
+          if (seg_idx != TopologyType::NoSegment) {
+            auto res = get_data_for(req, seg_idx, std::forward<CBType>(callback));
+            ptr_tbl[i] = const_cast<void*>(res.data);
+            if (ref_res.data == nullptr) {
+              // This assumes all segments are same shape...
+              ref_res.data = res.data;
+              ref_res.size = res.size;
+              ref_res.rank = res.rank;
+              // TODO: Consider ways to avoid copy....
+              for (std::uint16_t j = 0; j < res.rank; ++j) {
+                ref_res.shape[j] = res.shape[j];
+              }
+              ref_res.dtype = res.dtype;
+            }
           }
-          ref_res.dtype = res.dtype;
         } else {
           auto res = get_data_for(req,
                                   i,
@@ -462,13 +500,9 @@ namespace sbio {
         }
       };
 
+      // For Chronological formats, only the StreamBroker holding a step fetches it
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
-
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        num_brokers = 1;
-        num_segments = 1;
-      }
 
       ExecutionPolicy::template get_data<FTraits>(step_idx,
                                                   read_cb,
@@ -480,7 +514,7 @@ namespace sbio {
 
       CompositeDataResult<MemTag> composite {
         ptr_table,
-        m_topology.num_segments,
+        this->num_segments(),
         1,
         ref_res.rank,
         ref_res.shape,
@@ -521,6 +555,10 @@ namespace sbio {
           target_idx = std::get<0>(std::forward_as_tuple(opt_step...));
         }
 
+        if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+          return chrono_fetch(target_idx, i);
+        }
+
         const auto& seg { m_topology.active_segment(target_idx, i) };
         auto remapped_step_idx { m_topology.remap_step_idx(target_idx) };
 
@@ -537,19 +575,31 @@ namespace sbio {
         const auto& seg { m_topology.segment(i) };
 
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          auto active_stream_idx { step_idx % this->num_segments() };
-          auto res = get_data_for(req, active_stream_idx);
+          // `i` is the logical segment, in the StreamBroker holding the step
+          std::size_t broker_no { 0 };
+          std::size_t ordinal { 0 };
+          const std::size_t seg_idx {
+            m_topology.locate(step_idx, broker_no, ordinal)
+              ? m_topology.segment_index_for(broker_no, i)
+              : TopologyType::NoSegment
+          };
 
-          ptr_tbl[0] = const_cast<void*>(res.data);
-          //  This assumes all segments are same shape...
-          ref_res.data = res.data;
-          ref_res.size = res.size;
-          ref_res.rank = res.rank;
-          // TODO: Consider ways to avoid copy....
-          for (std::uint16_t j = 0; j < res.rank; ++j) {
-            ref_res.shape[j] = res.shape[j];
+          ptr_tbl[i] = nullptr;
+          if (seg_idx != TopologyType::NoSegment) {
+            auto res = get_data_for(req, seg_idx);
+            ptr_tbl[i] = const_cast<void*>(res.data);
+            if (ref_res.data == nullptr) {
+              //  This assumes all segments are same shape...
+              ref_res.data = res.data;
+              ref_res.size = res.size;
+              ref_res.rank = res.rank;
+              // TODO: Consider ways to avoid copy....
+              for (std::uint16_t j = 0; j < res.rank; ++j) {
+                ref_res.shape[j] = res.shape[j];
+              }
+              ref_res.dtype = res.dtype;
+            }
           }
-          ref_res.dtype = res.dtype;
         } else {
           auto res = get_data_for(req, i);
           // NOTE: The order of the segments may not be the "physical" order
@@ -572,13 +622,9 @@ namespace sbio {
         }
       };
 
+      // For Chronological formats, only the StreamBroker holding a step fetches it
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
-
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        num_brokers = 1;
-        num_segments = 1;
-      }
 
       ExecutionPolicy::template get_data<FTraits>(step_idx,
                                                   read_cb,
@@ -588,7 +634,7 @@ namespace sbio {
 
       CompositeDataResult<MemTag> composite {
         ptr_tbl,
-        m_topology.num_segments,
+        this->num_segments(),
         1,
         ref_res.rank,
         ref_res.shape,
@@ -636,11 +682,24 @@ namespace sbio {
       };
 
       if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        auto active_stream_idx { step_idx % this->num_segments() };
-        auto res = get_data_for(req, active_stream_idx);
+        std::size_t broker_no { 0 };
+        std::size_t ordinal { 0 };
+        const bool located { m_topology.locate(step_idx, broker_no, ordinal) };
 
-        ptr_tbl[0] = const_cast<void*>(res.data);
-        copy_ref(res);
+        for (std::size_t l = 0; l < this->num_segments(); ++l) {
+          const std::size_t seg_idx {
+            located ? m_topology.segment_index_for(broker_no, l) : TopologyType::NoSegment
+          };
+
+          ptr_tbl[l] = nullptr;
+          if (seg_idx != TopologyType::NoSegment) {
+            auto res = get_data_for(req, seg_idx);
+            ptr_tbl[l] = const_cast<void*>(res.data);
+            if (ref_res.data == nullptr) {
+              copy_ref(res);
+            }
+          }
+        }
       } else {
         for (std::size_t i = 0; i < this->num_segments(); ++i) {
           const auto& seg { m_topology.segment(i) };
@@ -655,7 +714,7 @@ namespace sbio {
 
       CompositeDataResult<MemTag> composite {
         ptr_tbl,
-        m_topology.num_segments,
+        this->num_segments(),
         1,
         ref_res.rank,
         ref_res.shape,
@@ -679,15 +738,13 @@ namespace sbio {
     SBIO_HD inline bool shares_fetch(std::size_t broker_no,
                                      const BrokerGroup& other,
                                      std::size_t other_no) const {
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        return false; // The fetched StreamBroker depends on the step
-      } else {
-        return
-          m_topology.stream_brokers[broker_no] == other.m_topology.stream_brokers[other_no] &&
-          m_topology.access_ptn(broker_no) == other.m_topology.access_ptn(other_no)         &&
-          m_topology.step_mapping == other.m_topology.step_mapping                          &&
-          m_topology.align_ptn == other.m_topology.align_ptn;
-      }
+      // For Chronological formats, the steps a StreamBroker fetches depend only on the
+      // merged order (shared by the DataSource's groups) and the step mapping
+      return
+        m_topology.stream_brokers[broker_no] == other.m_topology.stream_brokers[other_no] &&
+        m_topology.access_ptn(broker_no) == other.m_topology.access_ptn(other_no)         &&
+        m_topology.step_mapping == other.m_topology.step_mapping                          &&
+        m_topology.align_ptn == other.m_topology.align_ptn;
     }
 
     /**
@@ -705,14 +762,9 @@ namespace sbio {
     SBIO_HD inline bool shares_buffer(std::size_t broker_no,
                                       const BrokerGroup& other,
                                       std::size_t other_no) const {
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        // They cannot share because the fetched StreamBroker depends on the stpe
-        return false;
-      } else {
-        return
-          m_topology.stream_brokers[broker_no] == other.m_topology.stream_brokers[other_no] &&
-          m_topology.access_ptn(broker_no) == other.m_topology.access_ptn(other_no);
-      }
+      return
+        m_topology.stream_brokers[broker_no] == other.m_topology.stream_brokers[other_no] &&
+        m_topology.access_ptn(broker_no) == other.m_topology.access_ptn(other_no);
     }
 
     /**
@@ -729,6 +781,16 @@ namespace sbio {
                                             std::size_t broker_no,
                                             std::size_t& first_ordinal,
                                             std::size_t& end_ordinal) const {
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        ChronoBatch batch;
+        const auto status { chrono_batch(first, last, batch) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        return chrono_ordinals(batch, broker_no, first_ordinal, end_ordinal);
+      }
+
       const auto& seg { m_topology.active_segment(first, broker_no) };
       if (is_aligned(seg)) {
         return map_batch(seg, first, last, first_ordinal, end_ordinal);
@@ -763,9 +825,15 @@ namespace sbio {
       assert(count * this->num_segments() * sizeof(void *) <= ptr_buf.size() &&
              "A requested batch cannot be larger than configured max_batch_size!");
 
+      ChronoBatch chrono {};
+      IOStatus chrono_status { IOStatus::Success };
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        chrono_status = chrono_batch(first, last, chrono);
+      }
+
       auto read_cb = [&](std::size_t i, auto&&... opt_step) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          /// TODO: Setup Chronological
+          return chrono_status == IOStatus::Success ? chrono_fetch_batch(chrono, i) : chrono_status;
         } else {
           return fetch_steps_for(steps, i);
         }
@@ -774,7 +842,26 @@ namespace sbio {
       auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
         const auto& seg { m_topology.segment(i) };
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          /// TODO: Setup Chronological
+          // `i` is the logical segment, in the StreamBroker holding the step
+          std::size_t seg_idx { TopologyType::NoSegment };
+          std::size_t slot { 0 };
+          chrono_slot(chrono, static_cast<StepIdxType>(first + cnt), i, seg_idx, slot);
+
+          const std::size_t ptr_idx { cnt * this->num_segments() + i };
+          ptr_tbl[ptr_idx] = nullptr;
+          if (seg_idx != TopologyType::NoSegment) {
+            auto res = get_data_for(req, seg_idx, std::forward<CBType>(callback), slot);
+            ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+            if (ref_res.data == nullptr) {
+              ref_res.data = res.data;
+              ref_res.size = res.size;
+              ref_res.rank = res.rank;
+              for (std::uint16_t j = 0; j < res.rank; ++j) {
+                ref_res.shape[j] = res.shape[j];
+              }
+              ref_res.dtype = res.dtype;
+            }
+          }
         } else {
           auto res = get_data_for(req,
                                   i,
@@ -803,13 +890,9 @@ namespace sbio {
         }
       };
 
+      // For Chronological formats, only the StreamBroker holding a step fetches it
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
-
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        num_brokers = 1;
-        num_segments = 1;
-      }
 
       ExecutionPolicy::template get_data_steps<FTraits>(steps,
                                                         read_cb,
@@ -821,7 +904,7 @@ namespace sbio {
 
       CompositeDataResult<MemTag> composite {
         ptr_table,
-        m_topology.num_segments,
+        this->num_segments(),
         count,
         ref_res.rank,
         ref_res.shape,
@@ -850,9 +933,15 @@ namespace sbio {
       assert(count * this->num_segments() * sizeof(void *) <= ptr_buf.size() &&
              "A requested batch cannot be larger than configured max_batch_size!");
 
+      ChronoBatch chrono {};
+      IOStatus chrono_status { IOStatus::Success };
+      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
+        chrono_status = chrono_batch(first, last, chrono);
+      }
+
       auto read_cb = [&](std::size_t i, auto&&... opt_step) {
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          // TODO: Setup Chronological
+          return chrono_status == IOStatus::Success ? chrono_fetch_batch(chrono, i) : chrono_status;
         } else {
           return fetch_steps_for(steps, i);
         }
@@ -861,7 +950,26 @@ namespace sbio {
       auto get_data_cb = [&](std::size_t i, std::size_t cnt) {
         const auto& seg { m_topology.segment(i) };
         if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-          // TODO: Setup Chronological
+          // `i` is the logical segment, in the StreamBroker holding the step
+          std::size_t seg_idx { TopologyType::NoSegment };
+          std::size_t slot { 0 };
+          chrono_slot(chrono, static_cast<StepIdxType>(first + cnt), i, seg_idx, slot);
+
+          const std::size_t ptr_idx { cnt * this->num_segments() + i };
+          ptr_tbl[ptr_idx] = nullptr;
+          if (seg_idx != TopologyType::NoSegment) {
+            auto res = get_data_for(req, seg_idx, slot);
+            ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+            if (ref_res.data == nullptr) {
+              ref_res.data = res.data;
+              ref_res.size = res.size;
+              ref_res.rank = res.rank;
+              for (std::uint16_t j = 0; j < res.rank; ++j) {
+                ref_res.shape[j] = res.shape[j];
+              }
+              ref_res.dtype = res.dtype;
+            }
+          }
         } else {
           auto res = get_data_for(req, i, batch_slot(i, first, cnt));
 
@@ -887,13 +995,9 @@ namespace sbio {
         }
       };
 
+      // For Chronological formats, only the StreamBroker holding a step fetches it
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
-
-      if constexpr (FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological) {
-        num_brokers = 1;
-        num_segments = 1;
-      }
 
       ExecutionPolicy::template get_data_steps<FTraits>(steps,
                                                         read_cb,
@@ -903,7 +1007,7 @@ namespace sbio {
 
       CompositeDataResult<MemTag> composite {
         ptr_tbl,
-        m_topology.num_segments,
+        this->num_segments(),
         count,
         ref_res.rank,
         ref_res.shape,
@@ -966,11 +1070,40 @@ namespace sbio {
             }
           }
         }
-      } // TODO: Setup Chronological (as for get_multi_data)
+      } else {
+        ChronoBatch chrono {};
+        const bool batched { chrono_batch(first, last, chrono) == IOStatus::Success };
+
+        for (std::size_t cnt = 0; cnt < count; ++cnt) {
+          for (std::size_t l = 0; l < this->num_segments(); ++l) {
+            std::size_t seg_idx { TopologyType::NoSegment };
+            std::size_t slot { 0 };
+            if (batched) {
+              chrono_slot(chrono, static_cast<StepIdxType>(first + cnt), l, seg_idx, slot);
+            }
+
+            const std::size_t ptr_idx { cnt * this->num_segments() + l };
+            ptr_tbl[ptr_idx] = nullptr;
+            if (seg_idx != TopologyType::NoSegment) {
+              auto res = get_data_for(req, seg_idx, slot);
+              ptr_tbl[ptr_idx] = const_cast<void*>(res.data);
+              if (ref_res.data == nullptr) {
+                ref_res.data = res.data;
+                ref_res.size = res.size;
+               ref_res.rank = res.rank;
+                for (std::uint16_t j = 0; j < res.rank; ++j) {
+                  ref_res.shape[j] = res.shape[j];
+                }
+                ref_res.dtype = res.dtype;
+              }
+            }
+          }
+        }
+      }
 
       CompositeDataResult<MemTag> composite {
         ptr_tbl,
-        m_topology.num_segments,
+        this->num_segments(),
         count,
         ref_res.rank,
         ref_res.shape,
@@ -1064,6 +1197,169 @@ namespace sbio {
       }
 
       return ordinal - first_ordinal;
+    }
+
+    /// --- Chronological formats --- ///
+
+    // Each step is in one StreamBroker (see GroupTopology::locate). A StreamBroker
+    // fetches only the steps it holds.
+    // A batch's steps held by one StreamBroker are consecutive there.
+
+    using TopologyType = GroupTopology<BrokerType, MaxSegments>;
+
+    /**
+     * The steps of a batch held by each StreamBroker (in the group's step space).
+     */
+    struct ChronoBatch {
+      std::array<std::size_t, MaxSegments> first {}; ///< First ordinal, per StreamBroker
+      std::array<std::size_t, MaxSegments> last {};  ///< Last ordinal (inclusive), per StreamBroker
+      std::array<bool, MaxSegments> any {};          ///< Whether the StreamBroker holds any
+    };
+
+    /**
+     * The first SegmentRef of a StreamBroker.
+     *
+     * @note The chosen SegmentRef's cursor and pattern fetch for all.
+     */
+    SBIO_HD inline std::size_t first_segment_of(std::size_t broker_no) const {
+      for (std::size_t n = 0; n < m_topology.num_segments; ++n) {
+        if (m_topology.segment(n).broker == m_topology.stream_brokers[broker_no]) {
+          return n;
+        }
+      }
+      return TopologyType::NoSegment;
+    }
+
+    /**
+     * Fetch a step, if StreamBroker `broker_no` holds it.
+     */
+    SBIO_HD inline IOStatus chrono_fetch(StepIdxType step_idx, std::size_t broker_no) const {
+      std::size_t holder { 0 };
+      std::size_t space_ordinal { 0 };
+      if (!m_topology.locate(step_idx, holder, space_ordinal)) {
+        return IOStatus::NoOffsetInData;
+      }
+
+      const std::size_t seg_idx { first_segment_of(broker_no) };
+      if (holder != broker_no || seg_idx == TopologyType::NoSegment) {
+        return IOStatus::Success; // Another StreamBroker holds the step
+      }
+
+      const auto& seg { m_topology.segment(seg_idx) };
+      std::size_t ordinal { 0 };
+      const auto status { m_topology.map_step(seg, space_ordinal, ordinal) };
+      if (status != IOStatus::Success) {
+        return status;
+      }
+
+      return seg.broker->fetch_step(ordinal, seg.access_ptn, seg.cursor.get());
+    }
+
+    /**
+     * Find which steps of [first, last) each StreamBroker holds.
+     */
+    SBIO_HD inline IOStatus chrono_batch(StepIdxType first,
+                                         StepIdxType last,
+                                         ChronoBatch& batch) const {
+      const StepIdxType end { (last > first) ? last : static_cast<StepIdxType>(first + 1) };
+      for (StepIdxType step = first; step < end; ++step) {
+        std::size_t broker_no { 0 };
+        std::size_t ordinal { 0 };
+        if (!m_topology.locate(step, broker_no, ordinal)) {
+          return IOStatus::NoOffsetInData;
+        }
+
+        if (!batch.any[broker_no]) {
+          batch.any[broker_no] = true;
+          batch.first[broker_no] = ordinal;
+        }
+        batch.last[broker_no] = ordinal;
+      }
+      return IOStatus::Success;
+    }
+
+    /**
+     * The ordinals [first, end) StreamBroker `broker_no` fetches for a batch.
+     *
+     * Empty (first == end == 0) if it holds none of the batch's steps.
+     */
+    SBIO_HD inline IOStatus chrono_ordinals(const ChronoBatch& batch,
+                                            std::size_t broker_no,
+                                            std::size_t& first_ordinal,
+                                            std::size_t& end_ordinal) const {
+      first_ordinal = 0;
+      end_ordinal = 0;
+
+      const std::size_t seg_idx { first_segment_of(broker_no) };
+      if (!batch.any[broker_no] || seg_idx == TopologyType::NoSegment) {
+        return IOStatus::Success;
+      }
+
+      const auto& seg { m_topology.segment(seg_idx) };
+      std::size_t last_ordinal { 0 };
+      IOStatus status { m_topology.map_step(seg, batch.first[broker_no], first_ordinal) };
+      if (status == IOStatus::Success) {
+        status = m_topology.map_step(seg, batch.last[broker_no], last_ordinal);
+      }
+      end_ordinal = last_ordinal + 1;
+
+      return status;
+    }
+
+    /**
+     * Fetch the steps of a batch StreamBroker `broker_no` holds.
+     */
+    SBIO_HD inline IOStatus chrono_fetch_batch(const ChronoBatch& batch,
+                                               std::size_t broker_no) const {
+      std::size_t first_ordinal { 0 };
+      std::size_t end_ordinal { 0 };
+      const auto status { chrono_ordinals(batch, broker_no, first_ordinal, end_ordinal) };
+      if (status != IOStatus::Success || end_ordinal == first_ordinal) {
+        return status;
+      }
+
+      const auto& seg { m_topology.segment(first_segment_of(broker_no)) };
+      return seg.broker->fetch_steps({ static_cast<StepIdxType>(first_ordinal),
+                                       static_cast<StepIdxType>(end_ordinal) },
+                                     seg.access_ptn,
+                                     seg.cursor.get());
+    }
+
+    /**
+     * Where a step of a fetched batch is, for a logical segment.
+     *
+     * @param[out] seg_idx The SegmentRef (NoSegment if it cannot be found).
+     * @param[out] slot The step's position in its StreamBroker's fetched batch.
+     */
+    SBIO_HD inline void chrono_slot(const ChronoBatch& batch,
+                                    StepIdxType step,
+                                    std::size_t logical,
+                                    std::size_t& seg_idx,
+                                    std::size_t& slot) const {
+      seg_idx = TopologyType::NoSegment;
+      slot = 0;
+
+      std::size_t broker_no { 0 };
+      std::size_t space_ordinal { 0 };
+      if (!m_topology.locate(step, broker_no, space_ordinal) || !batch.any[broker_no]) {
+        return;
+      }
+
+      const std::size_t idx { m_topology.segment_index_for(broker_no, logical) };
+      if (idx == TopologyType::NoSegment) {
+        return;
+      }
+
+      const auto& seg { m_topology.segment(idx) };
+      std::size_t first_ordinal { 0 };
+      std::size_t ordinal { 0 };
+      if (m_topology.map_step(seg, batch.first[broker_no], first_ordinal) != IOStatus::Success ||
+          m_topology.map_step(seg, space_ordinal, ordinal) != IOStatus::Success) {
+        return; // Not fetched (the fetch failed with the same mapping)
+      }
+
+      seg_idx = idx;
+      slot = ordinal - first_ordinal;
     }
 
     mutable GroupTopology<BrokerType, MaxSegments> m_topology;
