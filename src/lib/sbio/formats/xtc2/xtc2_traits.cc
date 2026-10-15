@@ -170,16 +170,24 @@ namespace sbio {
         reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + sd_offset);
     if (shapes_data->namesId() != nid) {
       // Need to update the offset
+      const auto* dg { reinterpret_cast<XTC2::Dgram*>(buffer) };
+      const std::size_t dgram_size { sizeof(XTC2::Dgram) + dg->xtc.sizeofPayload() };
+
       std::uint32_t total_offset = sd_offset;
       do {
         std::size_t shapes_data_size { shapes_data->sizeofPayload() + sizeof(XTC2::Xtc) };
         total_offset += shapes_data_size;
 
+        if (total_offset + sizeof(XTC2::ShapesData) > dgram_size) {
+          return {}; // Not in this datagram
+        }
+
         shapes_data =
           reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + total_offset);
       } while(shapes_data->namesId() != nid);
 
-      // Cache the newly found offset
+      // Use, and cache, the newly found offset
+      sd_offset = total_offset;
       cache.store(field_id, sd_offset);
     }
 

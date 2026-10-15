@@ -16,19 +16,36 @@ if build_python_opt
         # link_args: py_mod_link_args,
     )
 
-    py_mod = py3.extension_module(
-        'pyxtc2',
-        [
-            'pyxtc2.cc',
-        ],
-        install: true,
-        install_dir: pysbio_fmts_install_dir,
-        include_directories: sbio_headers,
-        dependencies : deps_for_py_mod,
-        install_rpath: py_to_lib_install_rpath,
-        build_rpath: py_to_lib_install_rpath,
-        # link_args: py_mod_link_args,
-    )
+    if sbio_build_xtc1
+        py_mod = py3.extension_module(
+            'pyxtc1',
+            [
+                'pyxtc1.cc',
+            ],
+            install: true,
+            install_dir: pysbio_fmts_install_dir,
+            include_directories: sbio_headers,
+            dependencies : deps_for_py_mod,
+            install_rpath: py_to_lib_install_rpath,
+            build_rpath: py_to_lib_install_rpath,
+        )
+    endif # sbio_build_xtc1
+
+    if sbio_build_xtc2
+        py_mod = py3.extension_module(
+            'pyxtc2',
+            [
+                'pyxtc2.cc',
+            ],
+            install: true,
+            install_dir: pysbio_fmts_install_dir,
+            include_directories: sbio_headers,
+            dependencies : deps_for_py_mod,
+            install_rpath: py_to_lib_install_rpath,
+            build_rpath: py_to_lib_install_rpath,
+            # link_args: py_mod_link_args,
+        )
+    endif # sbio_build_xtc2
 endif # build_python_opt
 
 installed_py_bindings_formats_headers = [

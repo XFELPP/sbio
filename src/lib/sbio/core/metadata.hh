@@ -585,6 +585,11 @@ namespace sbio {
           return false;
         }
 
+        // A group is read with the access pattern that it was registered with
+        if (m_groups[entry_no].access_ptn != static_cast<hd_std::uint8_t>(ptn)) {
+          return false;
+        }
+
         return
           (hd_std::strcmp(name_query, "*") == 0) ||
           m_groups[entry_no].key.group_name == name_query;

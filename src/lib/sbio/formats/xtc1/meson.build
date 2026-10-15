@@ -9,6 +9,13 @@ if build_core_opt
     endif
 
     if sbio_build_xtc1
+        # TODO: Should NOT need this cuda_dep here...
+        #       Need to fix this whole setup
+        xtc1slim_deps = [ncarray_dep]
+        if sbio_has_cuda
+            xtc1slim_deps += [cuda_dep]
+        endif # sbio_has_cuda
+
         libxtc1slim = shared_library(
             'xtc1slim',
             [
@@ -17,6 +24,7 @@ if build_core_opt
             ],
             cpp_args: ['-DSBIO_BUILD_API'],
             include_directories: sbio_headers,
+            dependencies: xtc1slim_deps,
             install: true,
             install_dir: libsbio_install_dir,
             install_rpath: lib_install_rpath,
@@ -39,6 +47,7 @@ installed_formats_xtc1_headers = [
     'registry.hh',
     'traversal.hh',
     'xtc1.hh',
+    'xtc1_locator.hh',
     'xtc1_schemas.hh',
     'xtc1_traits.hh',
 ]

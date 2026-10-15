@@ -124,10 +124,9 @@ namespace pysbio::impl {
                auto alg { args[0].cast<std::string>() };
                auto field { args[1].cast<std::string>() };
 
-               return self.get_data(step_idx,
-                                    cpp_cb,
-                                    const_cast<const char*>(alg.c_str()),
-                                    const_cast<const char*>(field.c_str()));
+               return with_request_keys<BrokerGroupT>(alg.c_str(), field.c_str(), [&](auto... keys) {
+                 return self.get_data(step_idx, cpp_cb, keys...);
+               });
              } else {
                throw
                  std::runtime_error("Unsupported number of arguments: " +
@@ -148,9 +147,9 @@ namespace pysbio::impl {
                auto alg { args[0].cast<std::string>() };
                auto field { args[1].cast<std::string>() };
 
-               return self.get_data(step_idx,
-                                    const_cast<const char*>(alg.c_str()),
-                                    const_cast<const char*>(field.c_str()));
+               return with_request_keys<BrokerGroupT>(alg.c_str(), field.c_str(), [&](auto... keys) {
+                 return self.get_data(step_idx, keys...);
+               });
              } else {
                throw
                  std::runtime_error("Unsupported number of arguments: " +
@@ -178,10 +177,9 @@ namespace pysbio::impl {
                auto alg { args[0].cast<std::string>() };
                auto field { args[1].cast<std::string>() };
 
-               return self.get_multi_data(steps,
-                                          cpp_cb,
-                                          const_cast<const char*>(alg.c_str()),
-                                          const_cast<const char*>(field.c_str()));
+               return with_request_keys<BrokerGroupT>(alg.c_str(), field.c_str(), [&](auto... keys) {
+                 return self.get_multi_data(steps, cpp_cb, keys...);
+               });
              } else {
                throw
                  std::runtime_error("Unsupported number of arguments: " +
@@ -202,9 +200,9 @@ namespace pysbio::impl {
                auto alg { args[0].cast<std::string>() };
                auto field { args[1].cast<std::string>() };
 
-               return self.get_multi_data(steps,
-                                          const_cast<const char*>(alg.c_str()),
-                                          const_cast<const char*>(field.c_str()));
+               return with_request_keys<BrokerGroupT>(alg.c_str(), field.c_str(), [&](auto... keys) {
+                 return self.get_multi_data(steps, keys...);
+               });
              } else {
                throw
                  std::runtime_error("Unsupported number of arguments: " +

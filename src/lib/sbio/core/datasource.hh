@@ -22,6 +22,7 @@
 
 #include "sbio/core/broker.hh"
 #include "sbio/core/broker_group.hh"
+#include "sbio/core/chronology.hh"
 #include "sbio/core/execution.hh"
 #include "sbio/core/io.hh"
 #include "sbio/core/locator.hh"
@@ -35,12 +36,18 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <limits>
+#include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility> // std::forward
+#include <vector>
 
 #ifndef SBIO_HD
 #ifdef __CUDACC__
@@ -156,6 +163,19 @@ namespace sbio {
     template <class... Sources>
     friend class SourceSet;
 
+    /**
+     * Whether the steps of the StreamBrokers are merged in time.
+     *
+     * Chronological formats with a generic index, which name the kind of step that is
+     * spread over the streams (`ChronologicalKind`), are merged by the steps' order keys.
+     * Otherwise steps are dealt round-robin to the StreamBrokers.
+     */
+    static constexpr bool MergesStreams {
+      FTraits::PartitioningStrategy == StreamPartitioningStrategy::Chronological &&
+      BrokerType::UsesGenericIndex &&
+      requires { FTraits::ChronologicalKind; }
+    };
+
     DataSource() = default;
 
     /**
@@ -191,6 +211,40 @@ namespace sbio {
       m_epolicy_configured = true;
     }
 
+    /*
+     * Retrieve an environment variable, with optional fallback.
+     *
+     * Locators use this to find data (e.g. a data root directory).
+     *
+     * @note Overrides set on the DataSource (e.g. from the `Context` that created it)
+     *       are searched before the process environment.
+     *
+     * @param[in] key The environment variable name.
+     * @param[in] fallback The value if the variable is not set.
+     * @returns The value of the variable, or `fallback`.
+     */
+    std::string env(std::string_view key, std::string_view fallback = {}) const {
+      if (auto it { m_env.find(std::string(key)) }; it != m_env.end()) {
+        return it->second;
+      }
+
+      if (const char* value { std::getenv(std::string(key).c_str()) }) {
+        return value;
+      }
+
+      return std::string(fallback);
+    }
+
+    /**
+     * Provide an override for an environment variable that only this DataSource uses.
+     *
+     * @param[in] key The environment variable name.
+     * @param[in] value The value to use for it.
+     */
+    void set_env(std::string_view key, std::string_view value) {
+      m_env[std::string(key)] = std::string(value);
+    }
+
     /**
      * Add a new StreamBroker to the set tracked by the DataSource.
      *
@@ -210,6 +264,33 @@ namespace sbio {
       m_num_data_streams++;
 
       return true;
+    }
+
+    /**
+     * Add a StreamBroker that reads a chain of chunks, in order.
+     *
+     * @param[in] chunks The configuration of each chunk, in chain order.
+     * @param[in] num_chunks The number of chunks.
+     * @returns Whether the StreamBroker could be added.
+     */
+    inline bool add_data_chain(const StreamConfig* chunks, std::size_t num_chunks) {
+      if (num_chunks == 0 || !add_data_stream(chunks[0])) {
+        return false;
+      }
+
+      m_pending_chunks.resize(m_num_data_streams);
+      for (std::size_t c = 1; c < num_chunks; ++c) {
+        m_pending_chunks[m_num_data_streams - 1].push_back(chunks[c]);
+      }
+      return true;
+    }
+
+    /**
+     * Append a chunk to a StreamBroker's chain (e.g. one that appeared while live).
+     */
+    inline void append_chunk(std::size_t n_stream, const StreamConfig& chunk) {
+      m_pending_chunks.resize(m_num_data_streams);
+      m_pending_chunks[n_stream].push_back(chunk);
     }
 
     template <typename... Args>
@@ -270,6 +351,16 @@ namespace sbio {
       }
 
       m_steps_capacity = steps_capacity;
+
+      if constexpr (MergesStreams) {
+        m_chronology = std::make_shared<ChronologicalOrder>(m_num_data_streams);
+        for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
+          add_indexed_steps(n_stream);
+        }
+
+        m_chronology->merge();
+        m_steps_capacity = m_chronology->size();
+      }
 
       return IOStatus::Success;
     }
@@ -340,6 +431,7 @@ namespace sbio {
 
       auto topo =
         GroupTopologyType::build_topology(name, m_data_streams, m_num_data_streams);
+      topo.chronology = m_chronology.get();
 
       return BrokerGroup<BrokerType, FTraits, MaxSegments>(topo);
     }
@@ -652,13 +744,93 @@ namespace sbio {
     }
 
   private:
+    /**
+     * Move a StreamBroker to its next chunk, if its chunk is done and another is waiting.
+     */
+    inline void advance_chunk_if_done(std::size_t n_stream) const {
+      if (n_stream >= m_pending_chunks.size() || m_pending_chunks[n_stream].empty()) {
+        return;
+      }
+
+      auto& broker { m_data_streams[n_stream] };
+      if (broker.catalog().chunk_complete) {
+        broker.advance_chunk(m_pending_chunks[n_stream].front());
+        m_pending_chunks[n_stream].pop_front();
+      }
+    }
+
+    /**
+     * Add a StreamBroker's newly indexed steps to the order to merge.
+     *
+     * A StreamBroker that indexed nothing new is exhausted.
+     */
+    inline void add_indexed_steps(std::size_t n_stream) const {
+      auto& broker { m_data_streams[n_stream] };
+
+      std::size_t new_rows { 0 };
+      for (const auto n : broker.catalog().num_steps) {
+        new_rows += n;
+      }
+
+      if (new_rows == 0) {
+        m_chronology->set_exhausted(n_stream);
+        return;
+      }
+
+      broker.visit_steps(FTraits::ChronologicalKind, [&](std::uint64_t ordinal, std::uint64_t key) {
+        m_chronology->add(n_stream, ordinal, key);
+      });
+    }
+
+    /**
+     * Index StreamBrokers further, until more steps are merged or all are exhausted.
+     *
+     * StreamBrokers with steps waiting to be merged keep their index.
+     *
+     * @returns Whether more steps were merged.
+     */
+    inline bool merge_trigger() const {
+      while (true) {
+        bool indexed { false };
+        for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
+          if (!m_chronology->may_index(n_stream)) {
+            continue;
+          }
+
+          advance_chunk_if_done(n_stream);
+          const IOStatus status { m_data_streams[n_stream].index_stream() };
+          if (status == IOStatus::Success) {
+            add_indexed_steps(n_stream);
+          } else {
+            // No more data (ZeroBytesRead), or it cannot be read
+            m_chronology->set_exhausted(n_stream);
+          }
+          indexed = true;
+        }
+
+        if (m_chronology->merge() > 0) {
+          m_steps_capacity = m_chronology->size();
+          return true;
+        }
+
+        if (!indexed) {
+          return false; // Everything is exhausted
+        }
+      }
+    }
+
     SBIO_HD inline bool reindex_trigger() const {
+      if constexpr (MergesStreams) {
+        return merge_trigger();
+      }
+
       using StepIdx = typename FTraits::StepIdxType;
 
       StepIdx total_capacity { std::numeric_limits<StepIdx>::lowest() };
       bool failed { false };
 
       for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
+        advance_chunk_if_done(n_stream);
         IOStatus status = m_data_streams[n_stream].index_stream();
 
         if (status != IOStatus::Success) {
@@ -700,6 +872,24 @@ namespace sbio {
      * The current steps capacity before reindexing is required.
      */
     mutable std::size_t m_steps_capacity { 0 };
+
+    /**
+     * The order of steps across StreamBrokers (see `MergesStreams`).
+     *
+     * @note This is held by pointer. BrokerGroups refer to it, and it must not
+     *       move with the DataSource.
+     */
+    std::shared_ptr<ChronologicalOrder> m_chronology {};
+
+    /**
+     * Environment variable overrides (e.g. from the `Context`).
+     */
+    std::map<std::string, std::string> m_env {};
+
+    /**
+     * Remaining chunks to read per StreamBroker (in order).
+     */
+    mutable std::vector<std::deque<StreamConfig>> m_pending_chunks {};
 
     /**
      * The EPolicy's state for iterating and distribution steps from this DataSource.

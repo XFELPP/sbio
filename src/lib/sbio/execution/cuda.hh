@@ -415,6 +415,10 @@ namespace sbio {
                                              PayloadOffsetCache& cache,
                                              typename FTraits::DataAccessPtn ptn,
                                              std::size_t batch_idx) {
+      static_assert(!requires { FTraits::ResolvesOnDevice; } || FTraits::ResolvesOnDevice,
+                    "This data format resolves requests on the host only: "
+                    "it cannot be read directly to the device (e.g. with cuFile).");
+
       using Snapshot = impl::DeviceSnapshot<StorageT>;
       using Policy = typename Snapshot::policy;
 

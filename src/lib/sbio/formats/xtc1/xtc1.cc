@@ -21,35 +21,62 @@
 
 #include "sbio/formats/xtc1/registry.hh"
 #include "sbio/formats/xtc1/xtc1_schemas.hh"
-#include "sbio/formats/xtc1/xtc1_traits.hh"
 
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <string_view>
 
+#ifndef SBIO_HD
+#ifdef __CUDACC__
+#define SBIO_HD __host__ __device__
+#else
+#define SBIO_HD
+#endif
+#endif
+
 namespace {
-  SBIO_HD std::uint32_t
-  get_sd_offset_local_helper(const sbio::XTC1Traits::MetadataInventory& inv,
-                             std::uint32_t nid) {
-    for (std::size_t i = 0; i < inv.m_sd_offset_count; ++i) {
-      if (inv.m_sd_offsets[i].names_id == nid) {
-        return inv.m_sd_offsets[i].offset;
-      }
+  using sbio::XTC1::DType;
+  using sbio::XTC1::SimulatedSchema;
+  using sbio::XTC1::Xtc;
+
+  /**
+   * Read a scalar (integral) configuration value of a field from a payload.
+   *
+   * @returns Whether the field's type could be read as an integer.
+   */
+  SBIO_HD bool read_scalar(const char* ptr, DType dtype, std::uint64_t& value) {
+    switch (dtype) {
+    case DType::UINT8:   { value = *reinterpret_cast<const std::uint8_t*>(ptr); return true; }
+    case DType::UINT16:  { value = *reinterpret_cast<const std::uint16_t*>(ptr); return true; }
+    case DType::UINT32:  { value = *reinterpret_cast<const std::uint32_t*>(ptr); return true; }
+    case DType::UINT64:  { value = *reinterpret_cast<const std::uint64_t*>(ptr); return true; }
+    case DType::INT8:    { value = *reinterpret_cast<const std::int8_t*>(ptr); return true; }
+    case DType::INT16:   { value = *reinterpret_cast<const std::int16_t*>(ptr); return true; }
+    case DType::INT32:   { value = *reinterpret_cast<const std::int32_t*>(ptr); return true; }
+    case DType::INT64:   { value = *reinterpret_cast<const std::int64_t*>(ptr); return true; }
+    case DType::ENUMVAL: { value = *reinterpret_cast<const std::int32_t*>(ptr); return true; }
+    default:             { return false; }
     }
+
     return 0;
   }
 
-  SBIO_HD std::uint32_t
-  resolve_field_idx_local_helper(const sbio::XTC1Traits::MetadataInventory& inv,
-                                 std::uint32_t nid,
-                                 const char* field) {
-    for (std::size_t i = 0; i < inv.m_field_count; ++i) {
-      if (inv.m_field_table[i].key.names_id == nid &&
-          std::strcmp(inv.m_field_table[i].key.fieldname, field) == 0) {
-        return inv.m_field_table[i].field_idx;
+  SBIO_HD bool schema_constant(const SimulatedSchema* schema,
+                               std::string_view name,
+                               std::uint64_t& value) {
+    if (schema == nullptr) {
+      return false;
+    }
+
+    for (const auto& c : schema->constants) {
+      if (c.name == name) {
+        value = c.value;
+        return true;
       }
     }
-    return 0xFFFFFFFF;
+
+    return false;
   }
 
   SBIO_HD std::uint64_t get_schema_constant(const std::string_view& name) {
@@ -60,72 +87,53 @@ namespace {
         }
       }
     }
+
     return 0;
   }
 
+  /**
+   * Value of a name used in a field's shape or offset expression.
+   *
+   * Names are looked up, in order, as:
+   * 1. A scalar field of the detector's configuration (e.g. `numberOfModules`).
+   * 2. A constant of the configuration's schema.
+   * 3. A constant of the schema of the Xtc being resolved.
+   * 4. A constant of any schema (first match).
+   *
+   * @param[in] name The name to look up.
+   * @param[in] config_xtc The detector's configuration Xtc (may be nullptr).
+   * @param[in] own_schema The schema of the Xtc being resolved (may be nullptr).
+   */
   SBIO_HD std::uint64_t get_schema_constant_local(const std::string_view& name,
-                                                  const void* inv_ptr,
-                                                  std::uint32_t nid) {
-    if (!inv_ptr) {
-      return get_schema_constant(name);
-    }
-    auto& inv = *reinterpret_cast<const sbio::XTC1Traits::MetadataInventory*>(inv_ptr);
+                                                  const Xtc* config_xtc,
+                                                  const SimulatedSchema* own_schema) {
+    std::uint64_t value { 0 };
 
-    char name_buf[256];
-    std::size_t name_len { std::min(name.size(), sizeof(name_buf) - 1) };
-    std::memcpy(name_buf, name.data(), name_len);
-    name_buf[name_len] = '\0';
+    if (config_xtc != nullptr) {
+      const auto* cfg_schema {
+        sbio::XTC1::find_schema(config_xtc->contains.id(), config_xtc->contains.version())
+      };
 
-    std::uint32_t f_idx { resolve_field_idx_local_helper(inv, nid, name_buf) };
-    if (f_idx != 0xFFFFFFFF && inv.m_config_buffer != nullptr) {
-      std::uint32_t sd_offset { get_sd_offset_local_helper(inv, nid) };
-      const auto* xtc =
-        reinterpret_cast<const sbio::XTC1::Xtc*>(reinterpret_cast<const char*>(inv.m_config_buffer) + sd_offset);
-
-      sbio::XTC1::TypeId::Type type { static_cast<sbio::XTC1::TypeId::Type>(xtc->contains.id()) };
-      std::uint32_t version { xtc->contains.version() };
-
-      auto* schema { sbio::XTC1::find_schema(type, version) };
-      if (schema && f_idx < schema->fields.size()) {
-        const auto& f { schema->fields[f_idx] };
-        const char* field_ptr { xtc->payload() + f.offset };
-
-        if (f.dtype == sbio::XTC1::DType::UINT32) {
-          return *reinterpret_cast<const std::uint32_t*>(field_ptr);
-        } else if (f.dtype == sbio::XTC1::DType::UINT16) {
-          return *reinterpret_cast<const std::uint16_t*>(field_ptr);
-        } else if (f.dtype == sbio::XTC1::DType::UINT8) {
-          return *reinterpret_cast<const std::uint8_t*>(field_ptr);
-        } else if (f.dtype == sbio::XTC1::DType::INT32) {
-          return *reinterpret_cast<const std::int32_t*>(field_ptr);
-        } else if (f.dtype == sbio::XTC1::DType::INT16) {
-          return *reinterpret_cast<const std::int16_t*>(field_ptr);
-        } else if (f.dtype == sbio::XTC1::DType::INT8) {
-          return *reinterpret_cast<const std::int8_t*>(field_ptr);
-        }
-      }
-    }
-
-    const char* dettype = nullptr;
-    for (std::size_t i = 0; i < inv.m_names_id_count; ++i) {
-      if (inv.m_names_id_table[i].names_id == nid) {
-        dettype = inv.m_names_id_table[i].key.dettype;
-        break;
-      }
-    }
-    if (!dettype) {
-      return get_schema_constant(name);
-    }
-    for (const auto& schema : sbio::XTC1::g_schema_registry) {
-      const char* schema_name = sbio::XTC1::TypeId::name(schema.type);
-      if (schema_name && std::strcmp(schema_name, dettype) == 0) {
-        for (const auto& c : schema.constants) {
-          if (c.name == name) {
-            return c.value;
+      if (cfg_schema != nullptr) {
+        for (const auto& f : cfg_schema->fields) {
+          if (f.name == name && f.rank == 0 &&
+              f.offset + sbio::XTC1::DTypeSize[static_cast<int>(f.dtype)] <=
+                static_cast<std::uint32_t>(config_xtc->sizeofPayload()) &&
+              read_scalar(config_xtc->payload() + f.offset, f.dtype, value)) {
+            return value;
           }
         }
+
+        if (schema_constant(cfg_schema, name, value)) {
+          return value;
+        }
       }
     }
+
+    if (schema_constant(own_schema, name, value)) {
+      return value;
+    }
+
     return get_schema_constant(name);
   }
 } // anonymous namespace
@@ -170,31 +178,14 @@ namespace sbio::XTC1 {
     return nullptr;
   }
 
-  SBIO_HD DataResult resolve_xtc_pointer(void* buffer,
-                                         std::uint32_t sd_offset,
-                                         const Name* field_schema,
-                                         std::uint32_t nid,
-                                         std::uint32_t f_idx,
-                                         std::uint32_t evt_type_id,
-                                         const void* inv,
-                                         std::uint32_t src_log,
-                                         std::uint32_t src_phy) {
+  SBIO_HD DataResult resolve_xtc_pointer(const Xtc* xtc,
+                                         const char* field_name,
+                                         std::uint32_t field_idx_hint,
+                                         const Xtc* config_xtc) {
     DataResult result {};
 
-    const Xtc* xtc { nullptr };
-
-    // Get the XTC payload by type lookup or event offset.
-    if (evt_type_id != 0 && evt_type_id != static_cast<std::uint32_t>(TypeId::Id_Xtc)) {
-      // Scan for the matching TypeId
-      auto* dg { reinterpret_cast<Dgram*>(buffer) };
-      xtc = find_xtc_by_type(&dg->xtc, static_cast<TypeId::Type>(evt_type_id), src_log, src_phy);
-
-      if (!xtc) {
-        return result;
-      }
-    } else {
-      // Config data: Jump to the recorded offset
-      xtc = reinterpret_cast<const Xtc*>(reinterpret_cast<char*>(buffer) + sd_offset);
+    if (xtc == nullptr || field_name == nullptr) {
+      return result;
     }
 
     const char* payload { xtc->payload() };
@@ -203,8 +194,26 @@ namespace sbio::XTC1 {
     std::uint32_t version { xtc->contains.version() };
 
     auto* schema = find_schema(type, version);
-    if (schema == nullptr || f_idx >= schema->fields.size()) {
-      return result; // Schema type or field index out of range
+    if (schema == nullptr) {
+      return result; // Unknown schema type/version
+    }
+
+    // The index recorded at Configure may be for another version of the type (e.g. an
+    // event type's version is only known from the events). Check it by name.
+    const std::string_view name { field_name };
+    std::uint32_t f_idx { field_idx_hint };
+    if (f_idx >= schema->fields.size() || schema->fields[f_idx].name != name) {
+      f_idx = static_cast<std::uint32_t>(schema->fields.size());
+      for (std::uint32_t i = 0; i < schema->fields.size(); ++i) {
+        if (schema->fields[i].name == name) {
+          f_idx = i;
+          break;
+        }
+      }
+
+      if (f_idx >= schema->fields.size()) {
+        return result; // No such field for this version
+      }
     }
 
     const auto& field = schema->fields[f_idx];
@@ -213,7 +222,7 @@ namespace sbio::XTC1 {
     for (std::uint32_t i = 0; i < MaxRank; ++i) {
       std::string_view of { field.offset_fields[i] };
       if (!of.empty()) {
-        std::uint64_t val { get_schema_constant_local(of, inv, nid) };
+        std::uint64_t val { get_schema_constant_local(of, config_xtc, schema) };
         offset += field.offset_multipliers[i] * val;
       }
     }
@@ -243,8 +252,12 @@ namespace sbio::XTC1 {
         std::uint32_t depth = *reinterpret_cast<const std::uint32_t*>(payload + 8);
         std::uint32_t depth_bytes = (depth + 7) / 8;
 
+        // For an image the schema's flat pixel array is (height, width), with the pixel
+        // type following the bit depth
+        result.rank = 2;
         result.shape[0] = h;
         result.shape[1] = w;
+        result.dtype = (depth_bytes > 1) ? DType::UINT16 : DType::UINT8;
         result.size = h * w * depth_bytes;
       } else {
         bool all_resolved { true };
@@ -259,8 +272,7 @@ namespace sbio::XTC1 {
             continue;
           }
 
-          //std::uint64_t val { get_schema_constant(sf) };
-          std::uint64_t val { get_schema_constant_local(sf, inv, nid) };
+          std::uint64_t val { get_schema_constant_local(sf, config_xtc, schema) };
           if (val == 0) {
             all_resolved = false;
             unresolved_idx = r;
@@ -270,19 +282,16 @@ namespace sbio::XTC1 {
           }
         }
 
-        if (all_resolved) {
-          //result.size = resolved_product * DTypeSize[static_cast<int>(field.dtype)];
-          std::uint32_t expected_size {
-            resolved_product * DTypeSize[static_cast<int>(field.dtype)]
-          };
-          std::uint32_t actual_payload_size {
-              xtc->sizeofPayload() > offset ? xtc->sizeofPayload() - offset : 0
-          };
+        const std::uint32_t elem_size { DTypeSize[static_cast<int>(field.dtype)] };
+        const std::uint32_t payload_size { static_cast<std::uint32_t>(xtc->sizeofPayload()) };
+        const std::uint32_t field_payload_size { payload_size > offset ? payload_size - offset : 0 };
 
-          if (expected_size > actual_payload_size && actual_payload_size > 0) {
+        if (all_resolved) {
+          std::uint32_t expected_size { resolved_product * elem_size };
+
+          if (expected_size > field_payload_size && field_payload_size > 0) {
             std::uint32_t rest_product { resolved_product / result.shape[0] };
-            std::uint32_t elem_size { DTypeSize[static_cast<int>(field.dtype)] };
-            std::uint32_t total_elements { actual_payload_size / elem_size };
+            std::uint32_t total_elements { field_payload_size / elem_size };
             if (rest_product > 0 && (total_elements % rest_product == 0)) {
               result.shape[0] = total_elements / rest_product;
               expected_size = total_elements * elem_size;
@@ -290,8 +299,6 @@ namespace sbio::XTC1 {
           }
           result.size = expected_size;
         } else if (unresolved_idx != 0xFFFFFFFF) {
-          std::uint32_t field_payload_size { xtc->sizeofPayload() - offset };
-          std::uint32_t elem_size { DTypeSize[static_cast<int>(field.dtype)] };
           std::uint32_t total_elements { field_payload_size / elem_size };
           if (resolved_product > 0 && (total_elements % resolved_product == 0)) {
             result.shape[unresolved_idx] = total_elements / resolved_product;

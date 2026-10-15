@@ -82,6 +82,7 @@ namespace sbio {
     hd_std::array<hd_std::size_t, NumStepKinds> cummulative_steps { 0 }; ///< Cummulative counts over all epochs
 
     hd_std::size_t num_rows { 0 };
+    bool chunk_complete { false }; ///< Whetehr the indexed chunk is done (end of file/stream, or format marker)
     hd_std::array<hd_std::uint32_t, NumStepKinds> first_row {};
     hd_std::array<hd_std::uint32_t, NumStepKinds> last_row {};
 
@@ -113,6 +114,7 @@ namespace sbio {
 
     StepKind step_kind {};                   ///< The kind this StepOffset accesses
     hd_std::uint64_t ordinal { 0 };          ///< Which step of its kind this is, counted over all batches
+    hd_std::uint64_t order_key { 0 };        ///< Position in time across streams (Chronological formats)
   };
 
   namespace impl {
