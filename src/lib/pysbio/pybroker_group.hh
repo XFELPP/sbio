@@ -41,7 +41,9 @@
 
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
+#ifdef SBIO_HAS_MPI
 #include <mpi.h>
+#endif
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
