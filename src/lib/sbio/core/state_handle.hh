@@ -82,6 +82,7 @@ namespace sbio {
     hd_std::array<hd_std::size_t, NumStepKinds> cummulative_steps { 0 }; ///< Cummulative counts over all epochs
 
     hd_std::size_t num_rows { 0 };
+    bool chunk_complete { false }; ///< Whetehr the indexed chunk is done (end of file/stream, or format marker)
     hd_std::array<hd_std::uint32_t, NumStepKinds> first_row {};
     hd_std::array<hd_std::uint32_t, NumStepKinds> last_row {};
 

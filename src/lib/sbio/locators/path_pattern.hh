@@ -175,21 +175,28 @@ namespace sbio {
       }
 
       for (const auto& [stream_id, stream_chain_map] : streams) {
-        if (stream_chain_map.size() == 1) {
-          // Have one single StreamBroker to construct
-          auto cfg { base_cfg };
-          const auto& role_paths { stream_chain_map.begin()->second };
-          cfg.identity.stream_id = stream_id;
-          cfg.identity.chain_id = stream_chain_map.begin()->first;
+        // Have a chain of StreamBrokers that will run sequentially
+        for (const auto& [stream_id, stream_chain_map] : streams) {
+          // The map is ordered by chain id with the chain's chunks, in order
+          std::vector<GenericStreamConfig<FTraits>> chunks;
+          for (const auto& [chain_id, role_paths] : stream_chain_map) {
+            auto cfg { base_cfg };
+            cfg.identity.stream_id = stream_id;
+            cfg.identity.chain_id = chain_id;
 
-          for (std::size_t r = 0; r < VariantCount; ++r) {
-            cfg.resources[r] = StreamResource::from_path(role_paths[r].c_str());
+            for (std::size_t r = 0; r < VariantCount; ++r) {
+              // A role without a file in this chunk keeps the previous
+              // chunk's (e.g. the single SMD of an XTC2 run)
+              cfg.resources[r] =
+                role_paths[r].empty()
+                  ? StreamResource{}
+                  : StreamResource::from_path(role_paths[r].c_str());
+            }
+
+            chunks.push_back(cfg);
           }
 
-          ds.add_data_stream(cfg);
-        } else {
-          // Have a chain of StreamBrokers that will run sequentially
-          // TODO: Need to work out the StreamBrokerChain mechanism.
+          ds.add_data_chain(chunks.data(), chunks.size());
         }
       }
 

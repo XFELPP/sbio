@@ -37,6 +37,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -46,6 +47,7 @@
 #include <string>
 #include <string_view>
 #include <utility> // std::forward
+#include <vector>
 
 #ifndef SBIO_HD
 #ifdef __CUDACC__
@@ -262,6 +264,33 @@ namespace sbio {
       m_num_data_streams++;
 
       return true;
+    }
+
+    /**
+     * Add a StreamBroker that reads a chain of chunks, in order.
+     *
+     * @param[in] chunks The configuration of each chunk, in chain order.
+     * @param[in] num_chunks The number of chunks.
+     * @returns Whether the StreamBroker could be added.
+     */
+    inline bool add_data_chain(const StreamConfig* chunks, std::size_t num_chunks) {
+      if (num_chunks == 0 || !add_data_stream(chunks[0])) {
+        return false;
+      }
+
+      m_pending_chunks.resize(m_num_data_streams);
+      for (std::size_t c = 1; c < num_chunks; ++c) {
+        m_pending_chunks[m_num_data_streams - 1].push_back(chunks[c]);
+      }
+      return true;
+    }
+
+    /**
+     * Append a chunk to a StreamBroker's chain (e.g. one that appeared while live).
+     */
+    inline void append_chunk(std::size_t n_stream, const StreamConfig& chunk) {
+      m_pending_chunks.resize(m_num_data_streams);
+      m_pending_chunks[n_stream].push_back(chunk);
     }
 
     template <typename... Args>
@@ -716,6 +745,21 @@ namespace sbio {
 
   private:
     /**
+     * Move a StreamBroker to its next chunk, if its chunk is done and another is waiting.
+     */
+    inline void advance_chunk_if_done(std::size_t n_stream) const {
+      if (n_stream >= m_pending_chunks.size() || m_pending_chunks[n_stream].empty()) {
+        return;
+      }
+
+      auto& broker { m_data_streams[n_stream] };
+      if (broker.catalog().chunk_complete) {
+        broker.advance_chunk(m_pending_chunks[n_stream].front());
+        m_pending_chunks[n_stream].pop_front();
+      }
+    }
+
+    /**
      * Add a StreamBroker's newly indexed steps to the order to merge.
      *
      * A StreamBroker that indexed nothing new is exhausted.
@@ -753,6 +797,7 @@ namespace sbio {
             continue;
           }
 
+          advance_chunk_if_done(n_stream);
           const IOStatus status { m_data_streams[n_stream].index_stream() };
           if (status == IOStatus::Success) {
             add_indexed_steps(n_stream);
@@ -785,6 +830,7 @@ namespace sbio {
       bool failed { false };
 
       for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
+        advance_chunk_if_done(n_stream);
         IOStatus status = m_data_streams[n_stream].index_stream();
 
         if (status != IOStatus::Success) {
@@ -839,6 +885,11 @@ namespace sbio {
      * Environment variable overrides (e.g. from the `Context`).
      */
     std::map<std::string, std::string> m_env {};
+
+    /**
+     * Remaining chunks to read per StreamBroker (in order).
+     */
+    mutable std::vector<std::deque<StreamConfig>> m_pending_chunks {};
 
     /**
      * The EPolicy's state for iterating and distribution steps from this DataSource.

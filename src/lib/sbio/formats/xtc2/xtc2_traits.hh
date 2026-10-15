@@ -209,6 +209,41 @@ namespace sbio {
       return status;
     }
 
+    /**
+     * Check whether a new BD chunk is begun from this datagram.
+     *
+     * For XTC2 the order of transitions to indicate chunk boundaries is:
+     * 1. DISABLE
+     * 2. ENDSTEP
+     * 3. BEGINSTEP
+     * 4. ENABLE
+     *     |- New ChunkInfo with next `chunkid` and `filename` pointer
+     *
+     * @param[in] dg The current datagram
+     * @param[in] inv The metadata inventory.
+     * @returns Whether a new BD chunk file is beginning.
+     */
+    SBIO_HD static bool starts_chunk(const DataUnit* dg,
+                                     const MetadataInventory<XTC2Traits>& inv) {
+      if (dg->service() != XTC2::TransitionId::Enable) {
+        // Anything not an ENABLE cannot be a boundary for chunks
+        return false;
+      }
+
+      // NOTE: To consider, in this case, could use the chunkid here against the
+      //       chain_id in the general infrastructure. Something to think on...
+
+      // ChunkInfo detector and alg def are:
+      // - chunkinfo det
+      // - chunkinfo alg (version 0.0.1)
+      // - Has chunkid
+      //   and filename
+      using namespace sbio::literals;
+      DataRequest req("chunkinfo", "chunkinfo", "chunkinfo"_alg, "chunkid"_field);
+      PayloadOffsetCache cache {};
+      return resolve_data(const_cast<DataUnit*>(dg), inv, req, cache).data != nullptr;
+    }
+
     SBIO_HD static constexpr StepKind kind_for_ptn(DataAccessPtn ptn) {
       switch (ptn) {
       case DataAccessPtn::SlowUpdate: { return StepKind::SlowUpdate; }
