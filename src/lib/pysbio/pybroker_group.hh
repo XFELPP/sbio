@@ -22,28 +22,8 @@
 
 #include "pysbio/policies.hh"
 
-#include "sbio/core/broker_group.hh"
-#include "sbio/core/datasource.hh"
-#include "sbio/execution/serial.hh"
-
-#ifdef SBIO_HAS_MPI
-#include "sbio/execution/mpi.hh"
-#include "sbio/execution/mpi_threaded.hh"
-#endif
-#include "sbio/execution/threaded.hh"
-#include "sbio/io/posix.hh"
-#ifdef SBIO_HAS_XTC1
-#include "sbio/formats/xtc1/xtc1_traits.hh"
-#endif
-#ifdef SBIO_HAS_XTC2
-#include "sbio/formats/xtc2/xtc2_traits.hh"
-#endif
-
 #include <ncarray/ncarrays.hh>
 #include <ncarray/soarrays.hh>
-#ifdef SBIO_HAS_MPI
-#include <mpi.h>
-#endif
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>

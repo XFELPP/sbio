@@ -42,6 +42,12 @@
 #include <vector>
 
 namespace sbio {
+  namespace literals {
+    SBIO_HD constexpr auto operator ""_dataset(const char* str, std::size_t) {
+      return NamedArg<"dataset"> { str };
+    }
+  } // namespace literals
+
   /**
    * Mutex held for every call into libhdf5.
    *
