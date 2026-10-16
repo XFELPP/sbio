@@ -191,11 +191,13 @@ endif
 
 #### Parse Chosen Data Formats to Build ####
 ############################################
+sbio_build_hdf5 = false
 sbio_build_xtc1 = false
 sbio_build_xtc2 = false
 sbio_build_sbiofmt = false
 
 if sbio_data_formats_opt == 'all'
+    sbio_build_hdf5 = true
     sbio_build_xtc1 = true
     sbio_build_xtc2 = true
     sbio_build_sbiofmt = true
@@ -203,7 +205,9 @@ else
     selected_formats = sbio_data_formats_opt.split(',')
     foreach data_fmt : selected_formats
         data_fmt = data_fmt.strip()
-        if data_fmt == 'xtc1'
+        if data_fmt == 'hdf5'
+            sbio_build_hdf5 = true
+        elif data_fmt == 'xtc1'
             sbio_build_xtc1 = true
         elif data_fmt == 'xtc2'
             sbio_build_xtc2 = true
@@ -218,6 +222,11 @@ endif
 # Export a list of the enabled data formats for downstream projects to link properly
 enabled_formats = []
 
+if sbio_build_hdf5
+    add_project_arguments('-DSBIO_HAS_HDF5', language: ['cpp', 'cuda'])
+    message('Will build HDF5 data format support.')
+    enabled_formats += ['hdf5']
+endif
 if sbio_build_xtc1
     add_project_arguments('-DSBIO_HAS_XTC1', language: ['cpp', 'cuda'])
     message('Will build XTC1 data format support.')
@@ -365,6 +374,7 @@ endif
 deps_for_sbio += ncarray_dep
 
 #### MPI
+sbio_has_mpi = false
 if build_mpi_opt == 'none'
     message('Skipping MPI support.')
 else
@@ -413,10 +423,73 @@ else
     if not found_mpi
         warning('MPI was requested, but was not built!')
     else
+        sbio_has_mpi = true
         add_project_arguments('-DSBIO_HAS_MPI', language: ['cpp', 'cuda'])
         deps_for_sbio += mpi_dep
     endif
 endif # MPI builds
+
+#### HDF5 setup
+if sbio_build_hdf5
+    hdf5_dep = dependency('hdf5', language: 'c', version: '>=1.14.0', required: false)
+    if not hdf5_dep.found()
+        cmake = import('cmake')
+        hdf5_opts = cmake.subproject_options()
+        has_parallel_hdf5 = false
+        if sbio_has_mpi
+            has_parallel_hdf5 = true
+            message('Using HDF5 subproject with parallel support enabled')
+            add_project_arguments('-DSBIO_HAS_PARALLEL_HDF5', language: ['cpp', 'cuda'])
+            hdf5_opts.add_cmake_defines(
+                {
+                    'HDF5_ENABLE_PARALLEL': 'ON',
+                    # 'HDF5_BUILD_CPP_LIB': 'ON',
+                    'HDF5_BUILD_CPP_LIB': 'OFF',
+                    'HDF5_BUILD_TOOLS': 'OFF',
+                    'HDF5_BUILD_FORTRAN': 'OFF',
+                    'HDF5_BUILD_STATIC_LIBS': 'OFF',
+                    'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    'HDF5_BUILD_EXAMPLES': 'OFF',
+                    'HDF5_BUILD_TESTS': 'OFF',
+                    # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
+                },
+            )
+        else
+            hdf5_opts.add_cmake_defines(
+                {
+                    # 'HDF5_BUILD_CPP_LIB': 'ON',
+                    'HDF5_BUILD_CPP_LIB': 'OFF',
+                    'HDF5_BUILD_TOOLS': 'OFF',
+                    'HDF5_BUILD_FORTRAN': 'OFF',
+                    'HDF5_BUILD_STATIC_LIBS': 'OFF',
+                    'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    'HDF5_BUILD_EXAMPLES': 'OFF',
+                    'HDF5_BUILD_TESTS': 'OFF',
+                    # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
+                },
+            )
+        endif
+
+        # If building C++ can silent warnings until a real fix...
+        # if cpp.get_argument_syntax() == 'gcc'
+        #     hdf5_opts.append_compile_args('c', '-Wno-missing-include-dirs')
+        #     hdf5_opts.append_compile_args('cpp', '-Wno-missing-include-dirs')
+        # endif
+
+        hdf5_proj = cmake.subproject('hdf5', options: hdf5_opts)
+
+        message('HDF5 targets: ' + ', '.join(hdf5_proj.target_list()))
+
+        hdf5_c_dep = hdf5_proj.dependency('hdf5-shared')
+        # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-shared')
+
+        hdf5_dep = declare_dependency(
+            # dependencies: [hdf5_c_dep, hdf5_cpp_dep],
+            dependencies: [hdf5_c_dep],
+        )
+    endif # hdf5 not found
+    deps_for_sbio += hdf5_dep
+endif
 
 #### OpenMP
 #openmp_dep = dependency('openmp', required: true)
@@ -527,6 +600,10 @@ pc_libs = [libsbio]
 #     pc_libs += [libdevsbio]
 # endif
 
+if sbio_build_hdf5
+    pc_libs += [libsbioH5driver]
+endif
+
 if sbio_build_xtc1
     pc_libs += [libxtc1slim]
 endif
@@ -542,6 +619,10 @@ endif
 feature_flags = []
 if sbio_has_cuda
     feature_flags += ['-DSBIO_HAS_CUDA']
+endif
+
+if sbio_build_hdf5
+    feature_flags += ['-DSBIO_HAS_HDF5']
 endif
 
 if sbio_build_xtc1

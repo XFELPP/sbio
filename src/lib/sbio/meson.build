@@ -10,6 +10,10 @@ if build_core_opt
         core_sources += ['io/cufile.cc']
     endif
 
+    if sbio_build_hdf5
+        core_sources += ['formats/hdf5/hdf5_format.cc']
+    endif
+
     if sbio_build_xtc1
         core_sources += ['formats/xtc1/xtc1_traits.cc']
     endif
@@ -54,6 +58,10 @@ if build_core_opt
 else
     libsbio = cpp.find_library('sbio', required: true)
     found_libs = [libsbio]
+    if sbio_build_hdf5
+        libsbioH5driver = cpp.find_library('sbioH5driver', required: true)
+        found_libs += [libsbioH5driver]
+    endif
     if sbio_build_xtc1
         libxtc1slim = cpp.find_library('xtc1slim', required: true)
         found_libs += [libxtc1slim]
