@@ -27,6 +27,12 @@
 
 #include "sbio/core/iteration.hh"
 #include "sbio/core/stream.hh"
+
+#ifdef SBIO_HAS_HDF5
+#include "sbio/formats/hdf5/cxi_locator.hh"
+#include "sbio/formats/hdf5/cxi_spec.hh"
+#endif
+
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_locator.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -65,6 +71,19 @@ namespace {
     cfg.max_buffer_size = dgram_size;
 
     ds.load_source(cfg, exp, run);
+    ds.discover_metadata();
+  }
+
+  template <class DS>
+  void load_file(DS& ds,
+                 const std::string& path,
+                 int index_batch_size,
+                 int max_buffer_size) {
+    typename DS::StreamConfig cfg;
+    cfg.index_batch_size = index_batch_size;
+    cfg.max_buffer_size = max_buffer_size;
+
+    ds.load_source(cfg, path);
     ds.discover_metadata();
   }
 
@@ -162,7 +181,12 @@ namespace pysbio {
 
         ensure_parallel_environment<Policy>();
         DataSourceFor<Policy, Format> ds(parse_config<Policy>(exec_cfg));
-        load_run(ds, exp, run, evt_per_read, dgram_size);
+        // TODO: Need to fix this for different constructors (Locators) -- CXITraits
+        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
+          load_file(ds, exp, evt_per_read, dgram_size);
+        } else {
+          load_run(ds, exp, run, evt_per_read, dgram_size);
+        }
 
         return DataSourceV { std::move(ds) };
       };
@@ -206,7 +230,8 @@ namespace pysbio {
       if constexpr (use_wrapper) {
         return wrap_xtc_detector(m, grp);
       } else {
-        return grp;
+        // TODO: Need to fix this... Need to bind for differetn Traits?
+        return py::cast(std::make_shared<BrokerGroupWrapper>(grp));
       }
     };
 
@@ -408,7 +433,12 @@ namespace pysbio {
       auto make = [&](const auto& ctx) -> DataSourceV {
         auto ds { ctx->template data_source<Format>() };
 
-        load_run(ds, exp, run, evt_per_read, dgram_size);
+        // TODO: Need to fix this for different constructors (Locators) -- CXITraits
+        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
+          load_file(ds, exp, evt_per_read, dgram_size);
+        } else {
+          load_run(ds, exp, run, evt_per_read, dgram_size);
+        }
 
         return DataSourceV { std::move(ds) };
       };

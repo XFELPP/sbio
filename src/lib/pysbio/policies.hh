@@ -40,6 +40,9 @@
 #endif
 #endif
 #include "sbio/io/posix.hh"
+#ifdef SBIO_HAS_HDF5
+#include "sbio/formats/hdf5/cxi_spec.hh"
+#endif
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_traits.hh"
 #endif
@@ -93,8 +96,16 @@ namespace pysbio {
   >;
 
   using DataFormats = TypeList<
-#if defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
+#if defined(SBIO_HAS_HDF5) && defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
+    sbio::CXITraits, sbio::XTC1Traits, sbio::XTC2Traits
+#elif defined(SBIO_HAS_HDF5) && defined(SBIO_HAS_XTC1)
+    sbio::CXITraits, sbio::XTC1Traits
+#elif defined(SBIO_HAS_HDF5) && defined(SBIO_HAS_XTC2)
+    sbio::CXITraits, sbio::XTC2Traits
+#elif defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
     sbio::XTC1Traits, sbio::XTC2Traits
+#elif defined(SBIO_HAS_HDF5)
+    sbio::CXITraits
 #elif defined(SBIO_HAS_XTC1)
     sbio::XTC1Traits
 #elif defined(SBIO_HAS_XTC2)
@@ -211,6 +222,11 @@ namespace pysbio {
   template <class Fn>
   decltype(auto) with_format(FTraits data_fmt, Fn&& fn) {
     switch (data_fmt) {
+#ifdef SBIO_HAS_HDF5
+    case FTraits::CXI: {
+      return fn(std::type_identity<sbio::CXITraits> {});
+    }
+#endif
 #ifdef SBIO_HAS_XTC1
     case FTraits::XTC1: {
       return fn(std::type_identity<sbio::XTC1Traits> {});
