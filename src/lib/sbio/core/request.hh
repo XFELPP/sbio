@@ -247,6 +247,9 @@ namespace sbio {
             return field_values[i];
           }
         }
+
+        static FixedName<> fallback {};
+        return fallback; // Fallback option?
       }
     }
 

@@ -213,7 +213,10 @@ namespace {
 
       // Check the actual bytes match as well
       EXPECT_TRUE(bytes_match(arr1, step));
+      count++;
     }
+
+    EXPECT_EQ(count, 30u);
   }
 
   TEST(ZippedGroups, SerialBreakEarly) {

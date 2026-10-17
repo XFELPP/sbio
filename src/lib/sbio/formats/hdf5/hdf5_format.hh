@@ -446,7 +446,7 @@ namespace sbio {
       BufferDescriptor<roles::Data, 1>                                // PerStep steps
     >;
 
-    using RequestSchema = sbio::NamedKeys<"field">;
+    using RequestSchema = sbio::NamedKeys<"dataset">;
     using DataRequest = sbio::DataRequest<RequestSchema>;
     using GroupKeys = sbio::NamedKeys<>;
 
