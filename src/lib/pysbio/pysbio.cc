@@ -40,7 +40,7 @@ namespace py = pybind11;
 using namespace pysbio;
 
 namespace {
-  static constexpr const char* ds_doc = R"a(Create a datasource for reading XTC1 or XTC2 data.
+  static constexpr const char* xtc_ds_doc = R"a(Create a datasource for reading XTC1 or XTC2 data.
 
 Args:
     exp (str): The LCLS experiment.
@@ -50,6 +50,23 @@ Args:
     events_per_read (int): The number of event offsets to index on each attempt.
 
     max_dgram_size (int): The maximum size of a Datagram to accept.
+
+    data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
+
+    epolicy (pysbio.ExecutionPolicy): The Execution policy to use (Serial, MPI, Threaded, etc.)
+
+    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).
+
+    io_policy (pysbio.IOPolicy): The IO policy to use (POSIX, cuFile, etc).)a";
+
+  static constexpr const char* file_ds_doc = R"a(Create a datasource for reading XT1/XTC2, or CXI data.
+
+Args:
+    path (str): The path to the XTC1/XTC2, or CXI file.
+
+    index_batch_size (int): The number of step offsets to index in one go.
+
+    max_buffer_size (int): The maximum size for a single data buffer.
 
     data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
 
@@ -83,27 +100,81 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   //       Instead, create the *classes* dynamically and attach the methods
   py::classh<BrokerGroupWrapper>(pysbio_module, "BrokerGroupWrapper", py::dynamic_attr())
     .def_property_readonly("group_type", &BrokerGroupWrapper::get_detector_type)
+    .def_property_readonly("group_fields", &BrokerGroupWrapper::group_fields)
     .def_property_readonly("serial_number", &BrokerGroupWrapper::get_serial_number)
     .def("get_data",
-         &BrokerGroupWrapper::get_data,
+         [](BrokerGroupWrapper& self,
+            std::size_t step,
+            const char* alg,
+            const char* field) {
+           return self.get_data(step, alg, field);
+         },
          py::arg("step"),
          py::arg("alg"),
          py::arg("field"))
+    .def("get_data",
+         [](BrokerGroupWrapper& self, std::size_t step, const char* field) {
+           return self.get_data(step, field);
+         },
+         py::arg("step"),
+         py::arg("field"))
     .def("get_multi_data",
-         &BrokerGroupWrapper::get_multi_data,
+         [](BrokerGroupWrapper& self,
+            std::initializer_list<std::size_t> steps,
+            const char* alg,
+            const char* field) {
+           return self.get_multi_data(steps, alg, field);
+         },
          py::arg("steps"),
          py::arg("alg"),
          py::arg("field"))
+    .def("get_multi_data",
+         [](BrokerGroupWrapper& self,
+            std::initializer_list<std::size_t> steps,
+            const char* field) {
+           return self.get_multi_data(steps, field);
+         },
+         py::arg("steps"),
+         py::arg("field"))
     .def("resolve_data",
-         &BrokerGroupWrapper::resolve_data,
+         [](BrokerGroupWrapper& self,
+            std::size_t step,
+            const char* alg,
+            const char* field) {
+           return self.resolve_data(step, alg, field);
+         },
          py::arg("step"),
          py::arg("alg"),
          py::arg("field"))
+    .def("resolve_data",
+         [](BrokerGroupWrapper& self,
+            std::size_t step,
+            const char* field) {
+           return self.resolve_data(step, field);
+         },
+         py::arg("step"),
+         py::arg("field"))
     .def("resolve_multi_data",
-         &BrokerGroupWrapper::resolve_multi_data,
+         [](BrokerGroupWrapper& self,
+            std::size_t first,
+            std::size_t last,
+            const char* alg,
+            const char* field) {
+           return self.resolve_multi_data(first, last, alg, field);
+         },
          py::arg("first"),
          py::arg("last"),
          py::arg("alg"),
+         py::arg("field"))
+    .def("resolve_multi_data",
+         [](BrokerGroupWrapper& self,
+            std::size_t first,
+            std::size_t last,
+            const char* field) {
+           return self.resolve_multi_data(first, last, field);
+         },
+         py::arg("first"),
+         py::arg("last"),
          py::arg("field"));
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
@@ -201,7 +272,25 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
          py::arg("exec_cfg") = py::dict(),
          py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
-         ds_doc)
+         xtc_ds_doc)
+    .def(py::init<
+           std::string,
+           int,
+           int,
+           pysbio::FTraits,
+           pysbio::ExecutionPolicy,
+           py::dict,
+           pysbio::IOPolicy
+         >(),
+         py::arg("path"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
+         py::arg("exec_cfg") = py::dict(),
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
+         file_ds_doc)
+    .def_property_readonly("available_groups", &PyDataSource::available_groups)
     .def("group", [&](PyDataSource& self, const char* name) {
       return self.group(pysbio_module, name);
     },

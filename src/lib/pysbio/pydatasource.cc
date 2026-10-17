@@ -27,6 +27,8 @@
 
 #include "sbio/core/iteration.hh"
 #include "sbio/core/stream.hh"
+#include "sbio/locators/path_pattern.hh"
+#include "sbio/locators/single_file.hh"
 
 #ifdef SBIO_HAS_HDF5
 #include "sbio/formats/hdf5/cxi_locator.hh"
@@ -70,7 +72,7 @@ namespace {
     cfg.index_batch_size = evt_per_read;
     cfg.max_buffer_size = dgram_size;
 
-    ds.load_source(cfg, exp, run);
+    ds.template load_source_with<sbio::PathPatternLocator>(cfg, exp, run);
     ds.discover_metadata();
   }
 
@@ -83,7 +85,7 @@ namespace {
     cfg.index_batch_size = index_batch_size;
     cfg.max_buffer_size = max_buffer_size;
 
-    ds.load_source(cfg, path);
+    ds.template load_source_with<sbio::SingleFileLocator>(cfg, path);
     ds.discover_metadata();
   }
 
@@ -171,8 +173,6 @@ namespace pysbio {
                              pysbio::ExecutionPolicy epolicy,
                              py::dict exec_cfg,
                              pysbio::IOPolicy io_policy)
-    : m_exp(exp)
-    , m_run(run)
   {
     auto make_for_format = [&](auto FormatTag) -> DataSourceV {
       using Format = typename decltype(FormatTag)::type;
@@ -180,13 +180,9 @@ namespace pysbio {
         using Policy = typename decltype(PolicyTag)::type;
 
         ensure_parallel_environment<Policy>();
-        DataSourceFor<Policy, Format> ds(parse_config<Policy>(exec_cfg));
-        // TODO: Need to fix this for different constructors (Locators) -- CXITraits
-        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
-          load_file(ds, exp, evt_per_read, dgram_size);
-        } else {
-          load_run(ds, exp, run, evt_per_read, dgram_size);
-        }
+        DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
+
+        load_run(ds, exp, run, evt_per_read, dgram_size);
 
         return DataSourceV { std::move(ds) };
       };
@@ -195,6 +191,57 @@ namespace pysbio {
     };
 
     m_ds = with_format(data_fmt, make_for_format);
+
+    // Get a list of BrokerGroups (load_run runs discover_metadata)
+    enumerate_group_names();
+  }
+
+  // Setup to read 1 file (generally, HDF5, but XTC1/XTC2 work too)
+  PyDataSource::PyDataSource(std::string path,
+                             int index_batch_size,
+                             int max_buffer_size,
+                             pysbio::FTraits data_fmt,
+                             pysbio::ExecutionPolicy epolicy,
+                             py::dict exec_cfg,
+                             pysbio::IOPolicy io_policy)
+  {
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+      auto make_for_policy = [&](auto PolicyTag) -> DataSourceV {
+        using Policy = typename decltype(PolicyTag)::type;
+
+        ensure_parallel_environment<Policy>();
+        DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
+
+        load_file(ds, path, index_batch_size, max_buffer_size);
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return with_policy(epolicy, make_for_policy);
+    };
+
+    m_ds = with_format(data_fmt, make_for_format);
+
+    // Get a list of BrokerGroups (load_file runs discover_metadata)
+    enumerate_group_names();
+  }
+
+  void PyDataSource::enumerate_group_names() {
+    auto check_inventories = [&](auto& ds) {
+      for (std::size_t i = 0; i < ds.num_data_streams(); ++i) {
+        const auto& broker { ds.data_stream(i) };
+        const auto& inv { broker.metadata() };
+        for (const auto& inv_grp : inv.groups()) {
+          const auto& grp_key { inv_grp.key };
+          if (m_available_groups.find(grp_key.group_name) == m_available_groups.end()) {
+            m_available_groups.insert(grp_key.group_name);
+          }
+        }
+      }
+    };
+
+    std::visit(check_inventories, m_ds);
   }
 
   PyDataSource::PyDataSource(DataSourceV ds,
@@ -202,8 +249,6 @@ namespace pysbio {
                              unsigned run,
                              std::shared_ptr<ContextWrapper> context)
     : m_ds(std::move(ds))
-    , m_exp(std::move(exp))
-    , m_run(run)
     , m_context(std::move(context))
   {}
 
@@ -381,7 +426,7 @@ namespace pysbio {
       ensure_parallel_environment<Policy>();
 
       return
-        std::make_unique<sbio::Context<sbio::SyncPOSIXIO, Policy>>(parse_config<Policy>(exec_cfg));
+        std::make_unique<sbio::Context<sbio::SyncPOSIXIO, Policy>>(parse_epolicy_config<Policy>(exec_cfg));
     };
 
     m_context = with_policy(epolicy, make);

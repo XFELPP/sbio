@@ -49,6 +49,7 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <variant>
 
@@ -136,10 +137,23 @@ namespace pysbio {
                  py::dict exec_cfg = py::dict(),
                  pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
+    // Setup to read 1 file (generally, HDF5, but XTC1/XTC2 work too)
+    PyDataSource(std::string path,
+                 int index_batch_size,
+                 int max_buffer_size,
+                 pysbio::FTraits data_fmt = pysbio::FTraits::CXI,
+                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPI,
+                 py::dict exec_cfg = py::dict(),
+                 pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
+
     PyDataSource(DataSourceV ds,
                  std::string exp,
                  unsigned run,
                  std::shared_ptr<ContextWrapper> context);
+
+    const std::set<std::string>& available_groups() const {
+      return m_available_groups;
+    }
 
     py::object group(py::module& m, const char* name);
 
@@ -155,10 +169,11 @@ namespace pysbio {
     DataSourceV& ds() { return m_ds; }
 
   private:
+    void enumerate_group_names();
+
     DataSourceV m_ds;
 
-    std::string m_exp;
-    unsigned m_run;
+    std::set<std::string> m_available_groups;
 
     std::shared_ptr<ContextWrapper> m_context {};
   };

@@ -255,7 +255,7 @@ namespace pysbio {
    * @note Unknown keys are errors.
    */
   template <class EPolicy>
-  typename EPolicy::Config parse_config(const py::dict& d) {
+  typename EPolicy::Config parse_epolicy_config(const py::dict& d) {
     typename EPolicy::Config cfg {};
     std::size_t used { 0 };
 
