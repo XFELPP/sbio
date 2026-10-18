@@ -24,6 +24,7 @@
 #include "pysbio/io/pyio.hh"
 #include "pysbio/policies.hh"
 #include "pysbio/pybroker_group.hh"
+#include "pysbio/pyiteration.hh"
 
 #include "sbio/core/iteration.hh"
 #include "sbio/core/stream.hh"
@@ -59,9 +60,6 @@
 namespace py = pybind11;
 
 namespace {
-  // Simple Execution policy configuration
-  // The more technically inclined can use the full bindings via pysbio/execution
-
   template <class DS>
   void load_run(DS& ds,
                 const std::string& exp,
@@ -87,79 +85,6 @@ namespace {
 
     ds.template load_source_with<sbio::SingleFileLocator>(cfg, path);
     ds.discover_metadata();
-  }
-
-  template <class T, std::size_t>
-  using Repeat = T;
-
-  template <class Range>
-  struct ZipState {
-    template <class DS, class... Groups>
-    ZipState(DS& ds, const Groups&... groups)
-      : range(ds, groups...)
-    {}
-
-    Range range;
-    std::optional<typename Range::ConstIterator> it {};
-    std::optional<typename Range::ConstIterator> end {};
-  };
-
-  template <class DS, class Group, std::size_t... Is>
-  std::unique_ptr<pysbio::ZipIterator> make_zip(DS& ds,
-                                                const std::vector<const Group*>& groups,
-                                                bool batched,
-                                                std::vector<py::object> keep_alive,
-                                                std::index_sequence<Is...>) {
-    auto make = [&](auto RangeTag) {
-      using Range = typename decltype(RangeTag)::type;
-      using State = ZipState<Range>;
-
-      auto state { std::make_shared<State>(ds, *groups[Is]...) };
-
-      auto next = [state, batched]() -> py::object {
-        {
-          // Fetching happens as the iterator moves
-          py::gil_scoped_release release;
-          if (!state->it) {
-            state->it.emplace(state->range.begin());
-            state->end.emplace(state->range.end());
-          } else {
-            ++(*state->it);
-          }
-        }
-
-        if (*state->it == *state->end) {
-          return py::none();
-        }
-
-        auto handle { **state->it };
-        if constexpr (requires { handle.batch(); }) {
-          return py::cast(pysbio::ZipBatch {
-            static_cast<std::size_t>(handle.first()),
-            static_cast<std::size_t>(handle.last()),
-            handle.status()
-          });
-        } else {
-          return
-            py::cast(pysbio::ZipStep {
-                static_cast<std::size_t>(handle.step()),
-                handle.status()
-              });
-        }
-      };
-
-      const std::size_t num_fetches { state->range.num_fetches() };
-      return std::make_unique<pysbio::ZipIterator>(std::move(next),
-                                                   std::move(state),
-                                                   num_fetches,
-                                                   std::move(keep_alive));
-    };
-
-    if (batched) {
-      return make(std::type_identity<sbio::ZippedBatchRange<DS, Repeat<Group, Is>...>> {});
-    }
-
-    return make(std::type_identity<sbio::ZippedGroupRange<DS, Repeat<Group, Is>...>> {});
   }
 } // anonymous namespace
 
@@ -303,115 +228,7 @@ namespace pysbio {
 
   std::unique_ptr<ZipIterator> PyDataSource::zip(const std::vector<py::object>& groups,
                                                  bool batched) {
-    if (groups.empty() || groups.size() > ZipIterator::MaxGroups) {
-      throw std::invalid_argument("Can zip 1 to " + std::to_string(ZipIterator::MaxGroups) +
-                                  " groups (given " + std::to_string(groups.size()) + ")");
-    }
-
-    auto make = [&](auto& ds) -> std::unique_ptr<ZipIterator> {
-      using DS = std::remove_reference_t<decltype(ds)>;
-      using Group = std::remove_cvref_t<decltype(ds.get_stream_group(""))>;
-
-      std::vector<const Group*> zipped;
-      for (const auto& obj : groups) {
-        auto& wrapper { obj.cast<BrokerGroupWrapper&>() };
-        auto* grp { std::get_if<Group>(&wrapper.grp) };
-        if (grp == nullptr) {
-          throw py::type_error("Can only zip groups of this DataSource!");
-        }
-
-        // The group's StreamBrokers must be this DataSource's
-        const auto* first { ds.data_streams() };
-        const auto* last { first + ds.num_data_streams() };
-        for (std::size_t b = 0; b < grp->num_stream_brokers(); ++b) {
-          const auto* broker { grp->stream_brokers()[b] };
-          if (broker < first || broker >= last) {
-            throw py::value_error("Can only zip groups of this DataSource!");
-          }
-        }
-
-        zipped.push_back(grp);
-      }
-
-      switch (zipped.size()) {
-      case 1: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<1> {});
-      }
-      case 2: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<2> {});
-      }
-      case 3: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<3> {});
-      }
-      default: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<4> {});
-      }
-      }
-    };
-
-    return std::visit(make, m_ds);
-  }
-
-  /// --- Iterators --- ///
-  py::object StepIterator::next() {
-    py::object value { m_next ? m_next() : py::none() };
-    if (value.is_none()) {
-      close();
-      throw py::stop_iteration();
-    }
-
-    return value;
-  }
-
-  void StepIterator::close() {
-    m_next = nullptr;
-    if (m_range) {
-      // Ending the iteration may wait on other units (e.g. other threads)
-      if (Py_IsInitialized() && PyGILState_Check()) {
-        py::gil_scoped_release release;
-        m_range.reset();
-      } else {
-        m_range.reset();
-      }
-    }
-  }
-
-  py::object ZipIterator::next() {
-    py::object value { m_next ? m_next() : py::none() };
-    if (value.is_none()) {
-      close();
-      throw py::stop_iteration();
-    }
-
-    return value;
-  }
-
-  void ZipIterator::close() {
-    m_next = nullptr;
-    if (m_range) {
-      if (Py_IsInitialized() && PyGILState_Check()) {
-        py::gil_scoped_release release;
-        m_range.reset();
-      } else {
-        m_range.reset();
-      }
-    }
+    return make_zip(*this, groups, batched);
   }
 
   /// --- Context --- ///

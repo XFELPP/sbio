@@ -22,6 +22,7 @@
 #include "pysbio/io/pyio.hh"
 #include "pysbio/pybroker_group.hh"
 #include "pysbio/pydatasource.hh"
+#include "pysbio/pyiteration.hh"
 #include "pysbio/pysourceset.hh"
 
 #include "sbio/core/types.hh"

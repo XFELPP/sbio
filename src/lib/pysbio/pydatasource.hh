@@ -24,6 +24,7 @@
 #include "pysbio/formats/pyformat_traits.hh"
 #include "pysbio/io/pyio.hh"
 #include "pysbio/policies.hh"
+#include "pysbio/pyiteration.hh"
 
 #include "sbio/core/context.hh"
 #include "sbio/core/datasource.hh"
@@ -41,10 +42,7 @@
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
-#include <ncarray/ncarrays.hh>
-#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 
 #include <cstdlib>
 #include <functional>
@@ -61,70 +59,7 @@ namespace pysbio {
    */
   using DataSourceV = VariantOver<DataSourceFor>;
 
-  struct BrokerGroupWrapper;
   class ContextWrapper;
-
-  class StepIterator {
-  public:
-    template <class DS_OR_SET>
-    StepIterator(DS_OR_SET& ds_or_set, bool batched, std::size_t batch_size);
-
-    // No copy
-    StepIterator(const StepIterator&) = delete;
-    StepIterator& operator=(const StepIterator&) = delete;
-
-    ~StepIterator() { close(); }
-
-    py::object next();
-
-    void close();
-
-  private:
-    std::function<py::object()> m_next {};
-    std::shared_ptr<void> m_range {};
-  };
-
-  struct ZipStep {
-    std::size_t step;
-    sbio::IOStatus status;
-  };
-
-  struct ZipBatch {
-    std::size_t first;
-    std::size_t last;
-    sbio::IOStatus status;
-  };
-
-  class ZipIterator {
-  public:
-    static constexpr std::size_t MaxGroups { 4 };
-
-    ZipIterator(std::function<py::object()> next,
-                std::shared_ptr<void> range,
-                std::size_t num_fetches,
-                std::vector<py::object> keep_alive)
-      : m_next(std::move(next))
-      , m_range(std::move(range))
-      , m_num_fetches(num_fetches)
-      , m_keep_alive(std::move(keep_alive))
-    {}
-
-    ZipIterator(const ZipIterator&) = delete;
-    ZipIterator& operator=(const ZipIterator&) = delete;
-
-    ~ZipIterator() { close(); }
-
-    py::object next();
-    void close();
-
-    std::size_t num_fetches() const { return m_num_fetches; }
-
-  private:
-    std::function<py::object()> m_next {};
-    std::shared_ptr<void> m_range {};
-    std::size_t m_num_fetches { 0 };
-    std::vector<py::object> m_keep_alive {}; ///< The zipped groups
-  };
 
   class PyDataSource {
   public:
@@ -164,9 +99,8 @@ namespace pysbio {
     std::unique_ptr<ZipIterator> zip(const std::vector<py::object>& groups,
                                      bool batched);
 
-    // TODO: Switch to making this const after the ConstIterator works when
-    //       DataSource::next is properly restructured to support it.
     DataSourceV& ds() { return m_ds; }
+    const DataSourceV& ds() const { return m_ds; }
 
   private:
     void enumerate_group_names();
@@ -217,46 +151,6 @@ namespace pysbio {
     typename ContextVariant<ExecutionPolicies>::type m_context;
     pysbio::ExecutionPolicy m_epolicy;
    };
-
-  template <class DS_OR_SET>
-  StepIterator::StepIterator(DS_OR_SET& ds_or_set,
-                             bool batched,
-                             std::size_t batch_size) {
-    using StepIdx = typename DS_OR_SET::StepIdxType;
-    constexpr StepIdx Exhausted { DS_OR_SET::DataFormat::ExhaustedSentinel };
-
-    if (batched) {
-      m_range = std::make_shared<typename DS_OR_SET::BatchRange>(ds_or_set, batch_size);
-      m_next = [&ds_or_set, batch_size]() -> py::object {
-        sbio::StepBatch<StepIdx> batch {};
-        {
-          py::gil_scoped_release release;
-          batch = ds_or_set.next_batch(batch_size);
-        }
-
-        if (batch.first == Exhausted) {
-          return py::none();
-        }
-
-        return py::cast(sbio::StepBatch<std::size_t> { batch.first, batch.last });
-      };
-    } else {
-      m_range = std::make_shared<typename DS_OR_SET::StepRange>(ds_or_set);
-      m_next = [&ds_or_set]() -> py::object {
-        StepIdx step {};
-        {
-          py::gil_scoped_release release;
-          step = ds_or_set.next();
-        }
-
-        if (step == Exhausted) {
-          return py::none();
-        }
-
-        return py::int_(static_cast<std::size_t>(step));
-      };
-    }
-  }
 } // namespace pysbio
 
 #endif // PYSBIO_PYDATASOURCE_HH

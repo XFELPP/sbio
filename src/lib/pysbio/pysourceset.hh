@@ -22,6 +22,8 @@
 
 #include "pysbio/pydatasource.hh"
 
+#include "pysbio/pyiteration.hh"
+
 #include "sbio/core/datasource.hh"
 #include "sbio/core/iteration.hh"
 
@@ -51,7 +53,7 @@
 namespace py = pybind11;
 
 namespace pysbio {
-  using PySourceSetV = std::variant<
+  using SourceSetV = std::variant<
     sbio::SourceSet<
       sbio::DataSource<
         sbio::SyncPOSIXIO,
@@ -104,7 +106,7 @@ namespace pysbio {
     auto build_inplace = [](auto&... srcs) -> std::unique_ptr<PySourceSet> {
       using Set = sbio::SourceSet<std::remove_cvref_t<decltype(srcs)>...>;
 
-      if constexpr (in_variant<Set, PySourceSetV>::value) {
+      if constexpr (in_variant<Set, SourceSetV>::value) {
         return std::make_unique<PySourceSet>(std::in_place_type<Set>, srcs...);
       } else {
         throw std::invalid_argument("Unsupported SourceSet combination!");
@@ -129,10 +131,11 @@ namespace pysbio {
     std::unique_ptr<ZipIterator> zip(const std::vector<py::object>& groups,
                                      bool batched);
 
-    const PySourceSetV& set() { return m_set; }
+    SourceSetV& set() { return m_set; }
+    const SourceSetV& set() const { return m_set; }
 
   private:
-    PySourceSetV m_set;
+    SourceSetV m_set;
   };
 } // namespace pysbio
 
