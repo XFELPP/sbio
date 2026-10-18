@@ -22,6 +22,7 @@
 #include "pysbio/io/pyio.hh"
 #include "pysbio/pybroker_group.hh"
 #include "pysbio/pydatasource.hh"
+#include "pysbio/pysourceset.hh"
 
 #include "sbio/core/types.hh"
 
@@ -95,6 +96,8 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::module_::import("sbio.brokers");
   py::module_::import("sbio.broker_groups");
   py::module_::import("sbio.datasources");
+
+  /// --- BrokerGroupWrapper --- ///
 
   // TODO: Try to rework these wrappers to remove dynamic_attr
   //       Instead, create the *classes* dynamically and attach the methods
@@ -179,6 +182,8 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
 
+  /// --- Batches, Steps, Iterators, and Zip --- ///
+
   using Batch = sbio::StepBatch<std::size_t>;
   py::classh<Batch>(pysbio_module, "StepBatch", "Contiguous steps [first, last).")
     .def(py::init<>())
@@ -252,6 +257,8 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def_property_readonly("num_fetches", &ZipIterator::num_fetches)
     .def("__enter__", [](ZipIterator& self) -> ZipIterator& { return self; })
     .def("__exit__", [](ZipIterator& self, py::args) { self.close(); });
+
+  /// --- PyDataSource --- ///
 
   py::classh<PyDataSource>(pysbio_module, "DataSource")
     .def(py::init<
@@ -328,6 +335,8 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       py::keep_alive<0, 1>(),
       "Iterate batches of steps, fetching once for all of the given groups.");
 
+  /// --- ContextWrapper --- ///
+
   py::classh<ContextWrapper>(pysbio_module,
                              "Context",
                              "Checks that an Execution policy can be used (build and "
@@ -350,6 +359,35 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
          "Create a DataSource for a run, using this Context (which it keeps alive).");
+
+  /// --- PySourceSet --- ///
+
+  py::classh<PySourceSet>(pysbio_module,
+                          "SourceSet",
+                          "Build a set of DataSources to iterate together.")
+    .def(py::init([](PyDataSource& ds_a, PyDataSource& ds_b) {
+      return make_source_set(ds_a.ds(), ds_b.ds());
+    }),
+         py::keep_alive<1, 2>(),
+         py::keep_alive<1, 3>())
+    .def("__iter__", [](PySourceSet& self) {
+      auto iterator_maker = [](auto& set) {
+        return py::make_iterator(set.begin(), set.end());
+      };
+
+      return std::visit(iterator_maker, self.set());
+    },
+      py::keep_alive<0, 1>())
+    .def("steps", [](PyDataSource& self) {
+      return self.steps(false, 0);
+    },
+      py::keep_alive<0, 1>())
+    .def("batches", [](PyDataSource& self, std::size_t batch_size) {
+      return self.steps(true, batch_size);
+    },
+      py::arg("batch_size") = 0,
+      py::keep_alive<0, 1>(),
+      "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).");
 
 #ifdef SBIO_HAS_MPI
   auto atexit = py::module_::import("atexit");

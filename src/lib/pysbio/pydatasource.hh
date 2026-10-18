@@ -66,8 +66,8 @@ namespace pysbio {
 
   class StepIterator {
   public:
-    template <class DS>
-    StepIterator(DS& ds, bool batched, std::size_t batch_size);
+    template <class DS_OR_SET>
+    StepIterator(DS_OR_SET& ds_or_set, bool batched, std::size_t batch_size);
 
     // No copy
     StepIterator(const StepIterator&) = delete;
@@ -181,8 +181,8 @@ namespace pysbio {
   class ContextWrapper {
   public:
     ContextWrapper(pysbio::ExecutionPolicy epolicy,
-              py::dict exec_cfg = py::dict(),
-              pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
+                   py::dict exec_cfg = py::dict(),
+                   pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
     bool ok() const;
     std::string error() const;
@@ -218,37 +218,41 @@ namespace pysbio {
     pysbio::ExecutionPolicy m_epolicy;
    };
 
-  template <class DS>
-  StepIterator::StepIterator(DS& ds, bool batched, std::size_t batch_size) {
-    using StepIdx = typename DS::StepIdxType;
-    constexpr StepIdx Exhausted { DS::DataFormat::ExhaustedSentinel };
+  template <class DS_OR_SET>
+  StepIterator::StepIterator(DS_OR_SET& ds_or_set,
+                             bool batched,
+                             std::size_t batch_size) {
+    using StepIdx = typename DS_OR_SET::StepIdxType;
+    constexpr StepIdx Exhausted { DS_OR_SET::DataFormat::ExhaustedSentinel };
 
     if (batched) {
-      m_range = std::make_shared<typename DS::BatchRange>(ds, batch_size);
-      m_next = [&ds, batch_size]() -> py::object {
+      m_range = std::make_shared<typename DS_OR_SET::BatchRange>(ds_or_set, batch_size);
+      m_next = [&ds_or_set, batch_size]() -> py::object {
         sbio::StepBatch<StepIdx> batch {};
         {
           py::gil_scoped_release release;
-          batch = ds.next_batch(batch_size);
+          batch = ds_or_set.next_batch(batch_size);
         }
 
         if (batch.first == Exhausted) {
           return py::none();
         }
+
         return py::cast(sbio::StepBatch<std::size_t> { batch.first, batch.last });
       };
     } else {
-      m_range = std::make_shared<typename DS::StepRange>(ds);
-      m_next = [&ds]() -> py::object {
+      m_range = std::make_shared<typename DS_OR_SET::StepRange>(ds_or_set);
+      m_next = [&ds_or_set]() -> py::object {
         StepIdx step {};
         {
           py::gil_scoped_release release;
-          step = ds.next();
+          step = ds_or_set.next();
         }
 
         if (step == Exhausted) {
           return py::none();
         }
+
         return py::int_(static_cast<std::size_t>(step));
       };
     }
