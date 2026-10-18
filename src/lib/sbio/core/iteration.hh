@@ -977,6 +977,8 @@ namespace sbio {
       return BatchRange(*this, batch_size);
     }
 
+    SBIO_HD const hd_std::tuple<Sources*...> sources() const { return m_sources; }
+
   private:
     /**
      * Reindex the DataSources which reached the common capacity.

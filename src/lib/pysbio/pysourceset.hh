@@ -118,7 +118,7 @@ namespace pysbio {
   public:
     template <class Set, class... Srcs>
     PySourceSet(std::in_place_type_t<Set> set, Srcs&... srcs)
-      : m_sources(set, srcs...)
+      : m_set(set, srcs...)
     {}
 
     std::size_t next();
@@ -126,13 +126,13 @@ namespace pysbio {
     std::unique_ptr<StepIterator> steps(bool batched,
                                         std::size_t batch_size);
 
-    //std::unique_ptr<ZipIterator> zip(const std::vector<py::object>& groups,
-    //                                 bool batched);
+    std::unique_ptr<ZipIterator> zip(const std::vector<py::object>& groups,
+                                     bool batched);
 
-    const PySourceSetV& set() { return m_sources; }
+    const PySourceSetV& set() { return m_set; }
 
   private:
-    PySourceSetV m_sources;
+    PySourceSetV m_set;
   };
 } // namespace pysbio
 

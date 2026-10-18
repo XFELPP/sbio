@@ -378,16 +378,26 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       return std::visit(iterator_maker, self.set());
     },
       py::keep_alive<0, 1>())
-    .def("steps", [](PyDataSource& self) {
+    .def("steps", [](PySourceSet& self) {
       return self.steps(false, 0);
     },
       py::keep_alive<0, 1>())
-    .def("batches", [](PyDataSource& self, std::size_t batch_size) {
+    .def("batches", [](PySourceSet& self, std::size_t batch_size) {
       return self.steps(true, batch_size);
     },
       py::arg("batch_size") = 0,
       py::keep_alive<0, 1>(),
-      "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).");
+      "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).")
+    .def("zip", [](PySourceSet& self, py::args groups) {
+      return self.zip(groups.cast<std::vector<py::object>>(), false);
+    },
+      py::keep_alive<0, 1>(),
+      "Iterate the steps, fetching once for all of the given groups (detectors).")
+    .def("zip_batches", [](PySourceSet& self, py::args groups) {
+      return self.zip(groups.cast<std::vector<py::object>>(), true);
+     },
+      py::keep_alive<0, 1>(),
+      "Iterate batches of steps, fetching once for all of the given groups.");
 
 #ifdef SBIO_HAS_MPI
   auto atexit = py::module_::import("atexit");
