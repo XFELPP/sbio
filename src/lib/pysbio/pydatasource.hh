@@ -96,7 +96,7 @@ namespace pysbio {
 
     std::unique_ptr<StepIterator> steps(bool batched, std::size_t batch_size);
 
-    std::unique_ptr<ZipIterator> zip(const std::vector<py::object>& groups,
+    std::unique_ptr<ZipIterator> zip(const std::vector<const BrokerGroupWrapper*>& groups,
                                      bool batched);
 
     DataSourceV& ds() { return m_ds; }

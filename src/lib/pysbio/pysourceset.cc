@@ -51,7 +51,7 @@ namespace pysbio {
     return std::visit(make, m_set);
   }
 
-  std::unique_ptr<ZipIterator> PySourceSet::zip(const std::vector<py::object>& groups,
+  std::unique_ptr<ZipIterator> PySourceSet::zip(const std::vector<const BrokerGroupWrapper*>& groups,
                                                 bool batched) {
     return make_zip(*this, groups, batched);
   }

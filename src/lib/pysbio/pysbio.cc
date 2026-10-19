@@ -326,12 +326,12 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       py::keep_alive<0, 1>(),
       "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).")
     .def("zip", [](PyDataSource& self, py::args groups) {
-      return self.zip(groups.cast<std::vector<py::object>>(), false);
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), false);
     },
       py::keep_alive<0, 1>(),
       "Iterate the steps, fetching once for all of the given groups (detectors).")
     .def("zip_batches", [](PyDataSource& self, py::args groups) {
-      return self.zip(groups.cast<std::vector<py::object>>(), true);
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), true);
      },
       py::keep_alive<0, 1>(),
       "Iterate batches of steps, fetching once for all of the given groups.");
@@ -390,12 +390,12 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       py::keep_alive<0, 1>(),
       "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).")
     .def("zip", [](PySourceSet& self, py::args groups) {
-      return self.zip(groups.cast<std::vector<py::object>>(), false);
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), false);
     },
       py::keep_alive<0, 1>(),
       "Iterate the steps, fetching once for all of the given groups (detectors).")
     .def("zip_batches", [](PySourceSet& self, py::args groups) {
-      return self.zip(groups.cast<std::vector<py::object>>(), true);
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), true);
      },
       py::keep_alive<0, 1>(),
       "Iterate batches of steps, fetching once for all of the given groups.");

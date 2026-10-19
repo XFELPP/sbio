@@ -117,11 +117,11 @@ namespace pysbio {
     ZipIterator(std::function<py::object()> next,
                 std::shared_ptr<void> range,
                 std::size_t num_fetches,
-                std::vector<py::object> keep_alive)
+                const std::vector<const BrokerGroupWrapper*>& wrappers)
       : m_next(std::move(next))
       , m_range(std::move(range))
       , m_num_fetches(num_fetches)
-      , m_keep_alive(std::move(keep_alive))
+      , m_keep_alive(std::move(wrappers))
     {}
 
     ZipIterator(const ZipIterator&) = delete;
@@ -136,20 +136,20 @@ namespace pysbio {
 
   private:
     std::function<py::object()> m_next {};
-    std::shared_ptr<void> m_range {};
+    std::shared_ptr<void> m_range {};        ///< Keep the range alive
     std::size_t m_num_fetches { 0 };
-    std::vector<py::object> m_keep_alive {}; ///< The zipped groups
+    std::vector<const BrokerGroupWrapper*> m_keep_alive {};
   };
 
   class PyDataSource;
   class PySourceSet;
 
-  std::unique_ptr<ZipIterator> make_zip(const PyDataSource& py_ds,
-                                        const std::vector<py::object>& py_groups,
-                                        bool batched);
+  template <class PySrc>
+  concept PySource =
+    std::is_same_v<PySrc, PyDataSource> || std::is_same_v<PySrc, PySourceSet>;
 
-  std::unique_ptr<ZipIterator> make_zip(const PySourceSet& py_set,
-                                        const std::vector<py::object>& py_groups,
+  std::unique_ptr<ZipIterator> make_zip(const PySource auto& py_src,
+                                        const std::vector<const BrokerGroupWrapper*>& py_groups,
                                         bool batched);
 } // namespace pysbio
 

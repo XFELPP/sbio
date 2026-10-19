@@ -68,98 +68,119 @@ namespace {
     std::optional<typename Range::ConstIterator> end {};
   };
 
-  template <class Set, std::size_t GrpIdx, std::size_t NumGroups, class... Groups>
-  std::unique_ptr<ZipIterator> unwrap_and_make_zip(Set& set,
-                                                   const std::vector<const BrokerGroupWrapper*>& wrappers,
-                                                   bool batched,
-                                                   std::vector<py::object> keep_alive,
-                                                   const Groups*... groups) {
+  template <class DS_OR_SET, class... Groups>
+  std::unique_ptr<ZipIterator> make_zip_iterator(DS_OR_SET& ds_or_set,
+                                                 const std::vector<const BrokerGroupWrapper*>& wrappers,
+                                                 bool batched,
+                                                 const Groups&... groups) {
+    auto make = [&] (auto RangeTag) -> std::unique_ptr<ZipIterator> {
+      using Range = typename decltype(RangeTag)::type;
+      using State = ZipState<Range>;
 
-    auto make_zip = [&](const Groups&... grps) -> std::unique_ptr<ZipIterator> {
-      auto make = [&] (auto RangeTag) -> std::unique_ptr<ZipIterator> {
-        using Range = typename decltype(RangeTag)::type;
-        using State = ZipState<Range>;
+      auto state { std::make_shared<State>(ds_or_set, groups...) };
 
-        auto state { std::make_shared<State>(set, grps...) };
-
-        auto next = [state, batched]() -> py::object {
-          {
-            // Fetching happens as the iterator moves
-            py::gil_scoped_release release;
-            if (!state->it) {
-              state->it.emplace(state->range.begin());
-              state->end.emplace(state->range.end());
-            } else {
-              ++(*state->it);
-            }
-          }
-
-          if (*state->it == *state->end) {
-            return py::none();
-          }
-
-          auto handle { **state->it };
-          if constexpr (requires { handle.batch(); }) {
-            pysbio::ZipBatch zbatch {
-              static_cast<std::size_t>(handle.first()),
-              static_cast<std::size_t>(handle.last()),
-              handle.status()
-            };
-
-            return py::cast(zbatch);
+      auto next = [state, batched]() -> py::object {
+        {
+          // Fetching happens as the iterator moves
+          py::gil_scoped_release release;
+          if (!state->it) {
+            state->it.emplace(state->range.begin());
+            state->end.emplace(state->range.end());
           } else {
-            pysbio::ZipStep zstep {
-              static_cast<std::size_t>(handle.step()),
-              handle.status()
-            };
-
-            return py::cast(zstep);
+            ++(*state->it);
           }
-        };
+        }
 
-        const std::size_t num_fetches { state->range.num_fetches() };
-        return std::make_unique<ZipIterator>(std::move(next),
-                                             std::move(state),
-                                             num_fetches,
-                                             std::move(keep_alive));
+        if (*state->it == *state->end) {
+          return py::none();
+        }
 
+        auto handle { **state->it };
+        if constexpr (requires { handle.batch(); }) {
+          pysbio::ZipBatch zbatch {
+            static_cast<std::size_t>(handle.first()),
+            static_cast<std::size_t>(handle.last()),
+            handle.status()
+          };
+
+          return py::cast(zbatch);
+        } else {
+          pysbio::ZipStep zstep {
+            static_cast<std::size_t>(handle.step()),
+            handle.status()
+          };
+
+          return py::cast(zstep);
+        }
       };
 
-      if (batched) {
-        return make(std::type_identity<sbio::ZippedBatchRange<Set, Groups...>> {});
-      }
+      const std::size_t num_fetches { state->range.num_fetches() };
+      return std::make_unique<ZipIterator>(std::move(next),
+                                           std::move(state),
+                                           num_fetches,
+                                           std::move(wrappers));
 
-      return make(std::type_identity<sbio::ZippedGroupRange<Set, Groups...>> {});
     };
 
+    if (batched) {
+      return make(std::type_identity<sbio::ZippedBatchRange<DS_OR_SET, Groups...>> {});
+    }
+
+    return make(std::type_identity<sbio::ZippedGroupRange<DS_OR_SET, Groups...>> {});
+  }
+
+  template <
+    bool IsSet,
+    class DS_OR_SET,
+    std::size_t GrpIdx,
+    std::size_t NumGroups,
+    class... Groups
+  >
+  std::unique_ptr<ZipIterator> unwrap_and_zip(DS_OR_SET& ds_or_set,
+                                              const std::vector<const BrokerGroupWrapper*>& wrappers,
+                                              bool batched,
+                                              const Groups*... groups) {
     if constexpr (GrpIdx < NumGroups) {
       std::unique_ptr<ZipIterator> out;
 
-      auto unwrap = [&](auto* ds) {
+      auto check_one = [&](auto* ds) {
+        using DS = std::remove_cvref_t<decltype(*ds)>;
         using Group = std::remove_cvref_t<decltype(ds->get_stream_group(""))>;
 
         const auto* grp { std::get_if<Group>(&wrappers[GrpIdx]->grp) };
-        out = unwrap_and_make_zip<Set, GrpIdx + 1, NumGroups>(const_cast<Set&>(set),
-                                                              wrappers,
-                                                              batched,
-                                                              keep_alive,
-                                                              groups...,
-                                                              grp);
+        if (is_datasource_group<DS, Group>(*ds,
+                                           const_cast<BrokerGroupWrapper&>(*wrappers[GrpIdx]))) {
+          out = unwrap_and_zip<IsSet, DS_OR_SET, GrpIdx + 1, NumGroups>(ds_or_set,
+                                                                        wrappers,
+                                                                        batched,
+                                                                        groups...,
+                                                                        grp);
+        }
       };
 
-      if constexpr (requires { set.sources(); }) {
-        auto unwrap_all = [&](auto*... ds) {
-          ( unwrap(ds), ... );
+      // Check the BrokerGroup belongs to the DataSource, or to one of the
+      // DataSources if using a SourceSet
+      if constexpr (IsSet) {
+        auto check_one_all_ds = [&](auto*... ds) {
+          ( check_one(ds), ... );
         };
 
-        std::apply(unwrap_all, set.sources());
+        std::apply(check_one_all_ds, ds_or_set.sources());
       } else {
-        unwrap(&set);
+        check_one(&ds_or_set);
+      }
+
+      if (!out) {
+        if constexpr (IsSet) {
+          throw py::type_error("Can only zip BrokerGroup's of the SourceSet's DataSources!");
+        } else {
+          throw py::type_error("Can only zip BrokerGroup's from the DataSource!");
+        }
       }
 
       return out;
     } else {
-      return make_zip(*groups...);
+      return make_zip_iterator(ds_or_set, wrappers, batched, *groups...);
     }
   }
 } // anonymous namespace
@@ -210,129 +231,40 @@ namespace pysbio {
     }
   }
 
-  std::unique_ptr<ZipIterator> make_zip(PyDataSource& py_ds,
-                                        const std::vector<py::object>& groups,
+  std::unique_ptr<ZipIterator> make_zip(const PySource auto& py_src,
+                                        const std::vector<const BrokerGroupWrapper*>& py_groups,
                                         bool batched) {
-    if (groups.empty() || groups.size() > ZipIterator::MaxGroups) {
+    if (py_groups.empty() || py_groups.size() > ZipIterator::MaxGroups) {
       throw std::invalid_argument("Can zip 1 to " + std::to_string(ZipIterator::MaxGroups) +
-                                  " groups (given " + std::to_string(groups.size()) + ")");
+                                  " groups (given " + std::to_string(py_groups.size()) + ")");
     }
 
-    std::vector<const BrokerGroupWrapper*> zipped;
-    auto dispatcher = [&](auto& ds) -> std::unique_ptr<ZipIterator> {
-      using DS = std::remove_cvref_t<decltype(ds)>;
-      using Group = std::remove_cvref_t<decltype(ds.get_stream_group(""))>;
+    using PySrcT = std::remove_cvref_t<decltype(py_src)>;
+    constexpr bool IsSet { std::is_same_v<PySrcT, PySourceSet> ? true : false };
 
-      for (const auto& obj : groups) {
-        auto& wrapper { obj.cast<BrokerGroupWrapper&>() };
+    auto dispatcher = [&](auto& src) -> std::unique_ptr<ZipIterator> {
+      using Src = std::remove_reference_t<decltype(src)>;
 
-        if (!is_datasource_group<DS, Group>(ds, wrapper)) {
-          throw py::type_error("Can only zip BrokerGroup's of the SourceSet's DataSources!");
-        }
-
-        zipped.push_back(&wrapper); // Use BrokerGroupWrapper since type-erased
-      }
-
-      switch (zipped.size()) {
+      switch (py_groups.size()) {
       case 1: {
-        return unwrap_and_make_zip<DS, 0, 1>(ds,
-                                             zipped,
-                                             batched,
-                                             groups);
+        return unwrap_and_zip<IsSet, Src, 0, 1>(src, py_groups, batched);
       }
       case 2: {
-        return unwrap_and_make_zip<DS, 0, 2>(ds,
-                                             zipped,
-                                             batched,
-                                             groups);
+        return unwrap_and_zip<IsSet, Src, 0, 2>(src, py_groups, batched);
       }
       case 3: {
-        return unwrap_and_make_zip<DS, 0, 3>(ds,
-                                             zipped,
-                                             batched,
-                                             groups);
+        return unwrap_and_zip<IsSet, Src, 0, 3>(src, py_groups, batched);
       }
       default: {
-        return unwrap_and_make_zip<DS, 0, 4>(ds,
-                                             zipped,
-                                             batched,
-                                             groups);
+        return unwrap_and_zip<IsSet, Src, 0, 4>(src, py_groups, batched);
       }
       }
     };
 
-    return std::visit(dispatcher, py_ds.ds());
-  }
-
-  std::unique_ptr<ZipIterator> make_zip(PySourceSet& py_set,
-                                        const std::vector<py::object>& groups,
-                                        bool batched) {
-    if (groups.empty() || groups.size() > ZipIterator::MaxGroups) {
-      throw std::invalid_argument("Can zip 1 to " + std::to_string(ZipIterator::MaxGroups) +
-                                  " groups (given " + std::to_string(groups.size()) + ")");
+    if constexpr (IsSet) {
+      return std::visit(dispatcher, py_src.set());
+    } else {
+      return std::visit(dispatcher, py_src.ds());
     }
-
-    std::vector<const BrokerGroupWrapper*> zipped;
-    auto dispatcher = [&](auto& set) -> std::unique_ptr<ZipIterator> {
-      using Set = std::remove_reference_t<decltype(set)>;
-
-      for (const auto& obj : groups) {
-        auto& wrapper { obj.cast<BrokerGroupWrapper&>() };
-
-        std::size_t i { 0 };
-        std::size_t ds_grp_idx { 0 };
-
-        auto set_idx_if_grp = [&](auto* ds) {
-          using DS = std::remove_cvref_t<decltype(*ds)>;
-          using Group = std::remove_cvref_t<decltype(ds->get_stream_group(""))>;
-          if (is_datasource_group<DS, Group>(*ds, wrapper)) {
-            ds_grp_idx = i + 1;
-          }
-
-          i++;
-        };
-
-        auto check_datasources = [&](auto*... ds) {
-          ( set_idx_if_grp(ds), ... );
-        };
-        std::apply(check_datasources, set.sources());
-
-        if (ds_grp_idx == 0) {
-          throw py::type_error("Can only zip BrokerGroup's of the SourceSet's DataSources!");
-        }
-
-        zipped.push_back(&wrapper); // Use BrokerGroupWrapper since type-erased
-      }
-
-      switch (zipped.size()) {
-      case 1: {
-        return unwrap_and_make_zip<Set, 0, 1>(set,
-                                              zipped,
-                                              batched,
-                                              groups);
-      }
-      case 2: {
-        return unwrap_and_make_zip<Set, 0, 2>(set,
-                                              zipped,
-                                              batched,
-                                              groups);
-      }
-      case 3: {
-        return unwrap_and_make_zip<Set, 0, 3>(set,
-                                              zipped,
-                                              batched,
-                                              groups);
-      }
-      default: {
-        return unwrap_and_make_zip<Set, 0, 4>(set,
-                                              zipped,
-                                              batched,
-                                              groups);
-      }
-      }
-    };
-
-    return std::visit(dispatcher, py_set.set());
   }
-
 } // namespace pysbio
