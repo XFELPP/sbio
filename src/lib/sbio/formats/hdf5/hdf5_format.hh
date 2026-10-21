@@ -1114,54 +1114,6 @@ namespace sbio {
           storage.template release_written<roles::Data, Id>(buf, total);
         };
         visit_ptn<Self>(ptn, fetch_range_for_pattern);
-
-        /*
-        visit_ptn<Self>(ptn, [&](auto P) {
-          constexpr std::size_t Id { decltype(P)::value };
-          if (count * step_bytes > storage.template size<roles::Data, Id>()) {
-            status = IOStatus::PayloadTruncatedError;
-            return;
-          }
-
-          auto* buf {
-            static_cast<char*>(
-              storage.template acquire<roles::Data, Id, ncarray::HostTag>(AcquireIntent::CallerMemorySpace))
-          };
-
-          for (std::size_t field_idx = 0; field_idx < num_fields && status == IOStatus::Success; ++field_idx) {
-            const auto& field { table->fields[field_idx] };
-            if (field.kind != kind_idx) {
-              continue;
-            }
-
-            // A field filling the whole step lays out exactly as on disk: merge adjacent rows
-            const bool packed { field.buf_offset == 0 && field.row_bytes == step_bytes };
-
-            for (std::uint64_t s = 0; s < count && status == IOStatus::Success;) {
-              const std::uint64_t addr { addrs[(base + s) * num_fields + field_idx] };
-              std::uint64_t run { 1 };
-              while (packed && s + run < count &&
-                     addrs[(base + s + run) * num_fields + field_idx] == addr + run * field.row_bytes) {
-                ++run;
-              }
-
-              const std::size_t len { static_cast<std::size_t>(run * field.row_bytes) };
-              const auto res { stream.read_at(buf + s * step_bytes + field.buf_offset, addr, len) };
-              if (res.status != IOStatus::Success) {
-                status = res.status;
-              } else if (res.bytes != len) {
-                status = IOStatus::TruncatedRead;
-              }
-
-              last = ByteRegion { addr, len, 0 };
-              s += run;
-            }
-          }
-
-          total = static_cast<std::size_t>(count * step_bytes);
-          storage.template release_written<roles::Data, Id>(buf, total);
-        });
-        */
       }
 
       storage.template release<roles::Index, 0>(const_cast<std::uint64_t*>(addrs));
