@@ -19,6 +19,11 @@
 
 #include "sbio/formats/hdf5/hdf5_format.hh"
 
+#include <spdlog/cfg/env.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
+#include <memory>
 #include <mutex>
 
 namespace sbio {
@@ -26,5 +31,21 @@ namespace sbio {
     static std::mutex h5_m;
 
     return h5_m;
+  }
+
+  spdlog::logger& hdf5_logger() {
+    static const std::shared_ptr<spdlog::logger> logger {
+      []() {
+        spdlog::cfg::load_env_levels("SBIO_LOG_LEVEL");
+        std::shared_ptr<spdlog::logger> existing { spdlog::get("sbio::HDF5") };
+        if (!existing) {
+          return spdlog::stdout_color_mt("sbio::HDF5");
+        } else {
+          return existing;
+        }
+      }()
+    };
+
+    return *logger;
   }
 } // namespace sbio
