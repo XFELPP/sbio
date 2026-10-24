@@ -91,6 +91,7 @@ namespace sbio {
     inline constexpr std::uint64_t NoAddr { ~std::uint64_t { 0 } };
     inline constexpr std::uint64_t VlenStrBytes { 64 };
     inline constexpr std::uint64_t MaxInnerRank { SBIO_MAX_NDIM };
+    inline constexpr std::size_t MaxFillBytes { 16 };
 
     /**
      * The layout of a single sbio step of an HDF5 dataset on disk.
@@ -106,6 +107,8 @@ namespace sbio {
       std::uint32_t num_tiles { 1 };                    ///< Chunks covering one step (0: materialized)
       std::uint64_t tile_bytes { 0 };                   ///< Bytes of one step inside one chunk
       bool contiguous { false };
+      std::array<std::uint8_t, MaxFillBytes> fill {};   ///< The fill value for one element (zero unless defined)
+      bool fill_zero { true };
 
       /**
        * Whether a single sbio step covers a contiguous region.
@@ -214,6 +217,55 @@ namespace sbio {
 
       out.num_tiles = static_cast<std::uint32_t>(tiles);
       return true;
+    }
+
+    /**
+     * Record a user-defined fill-value, if it was provided.
+     *
+     * @returns false if the user-defined fill value was provided by cannot be used.
+     *          E.g., too large.
+     */
+    inline bool read_fill_value(hid_t dcpl, hid_t type, StepLayout& lay) {
+      H5D_fill_value_t defined {};
+      if (H5Pfill_value_defined(dcpl, &defined) < 0 ||
+          defined != H5D_FILL_VALUE_USER_DEFINED) {
+        return true;
+      }
+
+      if (lay.elem_size > MaxFillBytes) {
+        return false;
+      }
+
+      std::array<std::uint8_t, MaxFillBytes> value {};
+      if (H5Pget_fill_value(dcpl, type, value.data()) < 0) {
+        return false;
+      }
+
+      lay.fill = value;
+      lay.fill_zero = true;
+      for (std::uint32_t b = 0; b < lay.elem_size; ++b) {
+        lay.fill_zero = lay.fill_zero && (value[b] == 0);
+      }
+
+      return true;
+    }
+
+    /**
+     * Fill nbytes into dst using the dataset's fill value.
+     */
+    inline void fill_bytes(char* dst, std::uint64_t nbytes, const StepLayout& lay) {
+      if (lay.fill_zero) {
+        std::memset(dst, 0, nbytes);
+        return;
+      }
+
+      const std::uint64_t elem_size { lay.elem_size };
+      std::memcpy(dst, lay.fill.data(), elem_size);
+      for (std::uint64_t done = elem_size; done < nbytes;) {
+        const std::uint64_t num { std::min(done, nbytes - done) };
+        std::memcpy(dst + done, dst, num);
+        done += num;
+      }
     }
 
     /**
@@ -329,6 +381,10 @@ namespace sbio {
                                 char* dst,
                                 Read&& read) {
       if (lay.whole_row()) {
+        if (tile_addrs[0] == NoAddr) {
+          fill_bytes(dst, lay.row_bytes(), lay);
+          return true;
+        }
         return read(tile_addrs[0], lay.row_bytes(), dst);
       }
 
@@ -337,7 +393,7 @@ namespace sbio {
         any_missing = any_missing || (tile_addrs[tile] == NoAddr);
       }
       if (any_missing) {
-        std::memset(dst, 0, lay.row_bytes());
+        fill_bytes(dst, lay.row_bytes(), lay);
       }
 
       const std::uint8_t rank { lay.inner_rank };
@@ -431,9 +487,6 @@ namespace sbio {
       StepLayout step {};             ///< On-disk layout of one step
       std::uint32_t slot_base { 0 };  ///< First Index slot (one per chunk piece)
       std::uint32_t mat_offset { 0 }; ///< Offset in a materialized row (step.num_tiles == 0)
-
-
-      //std::size_t fill_value { 0 }; ///< Fill value - can be read with H5Pget_fill_value. 0 is H5D_FILL_VALUE_DEFAULT
     };
 
     struct FieldTable {
@@ -685,6 +738,12 @@ namespace sbio {
                                      info.vlen_str,
                                      info.step);
 
+      // User-defined fill values
+      if (info.addressable && !info.vlen_str && !read_fill_value(dcpl, type, info.step)) {
+        // Cannot reproduce the user-defined fill-value
+        info.addressable = false;
+      }
+
       // For strings append the length to the shape
       if (is_str) {
         info.dims[info.rank] = info.str_len;
@@ -904,7 +963,7 @@ namespace sbio {
             // Not stepped with the frames, or not addressable (See HOOK)
             hdf5_logger().warn("Skipping {}: Storage not currently readable by sbio "
                                "(E.g. filtered/compressed, or multi-dimensional varlen "
-                               " strings)",
+                               " strings, or user-defined fill value is too large)",
                                path);
             continue;
           }
@@ -1545,8 +1604,10 @@ namespace sbio {
               for (std::uint64_t step = 0; step < count && status == IOStatus::Success;) {
                 const std::uint64_t addr { field_addrs[(base + step) * num_slots] };
                 if (addr == hdf5::NoAddr) {
-                  // For unallocated chunks fill
-                  std::memset(field_dst + step * step_bytes, 0, field.row_bytes);
+                  // For unallocated chunks fill (either 0, or user-defined value)
+                  hdf5::fill_bytes(field_dst + step * step_bytes,
+                                   field.row_bytes,
+                                   field.step);
                   ++step;
                   continue;
                 }
