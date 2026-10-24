@@ -219,7 +219,20 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("__int__", [](const ZipStep& self) { return self.step; })
     .def("__index__", [](const ZipStep& self) { return self.step; })
     .def("get",
-         [](const ZipStep& self, BrokerGroupWrapper& group, const char* alg, const char* field) {
+         [](const ZipStep& self, BrokerGroupWrapper& group, const char* field) {
+           if (self.status != sbio::IOStatus::Success) {
+             throw std::runtime_error("The step's fetch failed (see `status`).");
+           }
+           return group.resolve_data(self.step, field);
+         },
+         py::arg("group"),
+         py::arg("field"),
+         "The group's data for this step (the group must be one of the zipped groups).")
+    .def("get",
+         [](const ZipStep& self,
+            BrokerGroupWrapper& group,
+            const char* alg,
+            const char* field) {
            if (self.status != sbio::IOStatus::Success) {
              throw std::runtime_error("The step's fetch failed (see `status`).");
            }
@@ -237,7 +250,20 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("count", [](const ZipBatch& self) { return self.last - self.first; })
     .def("__len__", [](const ZipBatch& self) { return self.last - self.first; })
     .def("get",
-         [](const ZipBatch& self, BrokerGroupWrapper& group, const char* alg, const char* field) {
+         [](const ZipBatch& self, BrokerGroupWrapper& group, const char* field) {
+           if (self.status != sbio::IOStatus::Success) {
+             throw std::runtime_error("The batch's fetch failed (see `status`).");
+           }
+           return group.resolve_multi_data(self.first, self.last, field);
+         },
+         py::arg("group"),
+         py::arg("field"),
+         "The group's data for this batch (the group must be one of the zipped groups).")
+    .def("get",
+         [](const ZipBatch& self,
+            BrokerGroupWrapper& group,
+            const char* alg,
+            const char* field) {
            if (self.status != sbio::IOStatus::Success) {
              throw std::runtime_error("The batch's fetch failed (see `status`).");
            }
