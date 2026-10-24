@@ -170,8 +170,6 @@ namespace pysbio {
   }
 
   PyDataSource::PyDataSource(DataSourceV ds,
-                             std::string exp,
-                             unsigned run,
                              std::shared_ptr<ContextWrapper> context)
     : m_ds(std::move(ds))
     , m_context(std::move(context))
@@ -297,12 +295,7 @@ namespace pysbio {
       auto make = [&](const auto& ctx) -> DataSourceV {
         auto ds { ctx->template data_source<Format>() };
 
-        // TODO: Need to fix this for different constructors (Locators) -- CXITraits
-        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
-          load_file(ds, exp, evt_per_read, dgram_size);
-        } else {
-          load_run(ds, exp, run, evt_per_read, dgram_size);
-        }
+        load_run(ds, exp, run, evt_per_read, dgram_size);
 
         return DataSourceV { std::move(ds) };
       };
@@ -313,6 +306,35 @@ namespace pysbio {
     // Load before handing `exp` over (argument evaluation order is unspecified)
     DataSourceV ds { with_format(data_fmt, make_for_format) };
 
-    return PyDataSource(std::move(ds), std::move(exp), run, self);
+    return PyDataSource(std::move(ds), self);
+  }
+
+  PyDataSource ContextWrapper::data_source(const std::shared_ptr<ContextWrapper>& self,
+                                           std::string path,
+                                           int index_batch_size,
+                                           int max_buffer_size,
+                                           pysbio::FTraits data_fmt) {
+    if (!self->ok()) {
+      throw std::runtime_error("Invalid Context: " + self->error());
+    }
+
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+
+      auto make = [&](const auto& ctx) -> DataSourceV {
+        auto ds { ctx->template data_source<Format>() };
+
+        load_file(ds, path, index_batch_size, max_buffer_size);
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return std::visit(make, self->m_context);
+    };
+
+    // Load before handing `exp` over (argument evaluation order is unspecified)
+    DataSourceV ds { with_format(data_fmt, make_for_format) };
+
+    return PyDataSource(std::move(ds), self);
   }
 } // namespace pysbio

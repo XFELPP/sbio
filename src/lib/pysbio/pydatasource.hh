@@ -82,8 +82,6 @@ namespace pysbio {
                  pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
     PyDataSource(DataSourceV ds,
-                 std::string exp,
-                 unsigned run,
                  std::shared_ptr<ContextWrapper> context);
 
     const std::set<std::string>& available_groups() const {
@@ -134,6 +132,11 @@ namespace pysbio {
                                     unsigned run,
                                     int evt_per_read,
                                     int dgram_size,
+                                    pysbio::FTraits data_fmt);
+    static PyDataSource data_source(const std::shared_ptr<ContextWrapper>& self,
+                                    std::string path,
+                                    int index_batch_size,
+                                    int max_buffer_size,
                                     pysbio::FTraits data_fmt);
 
   private:

@@ -379,13 +379,42 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("has_env", &ContextWrapper::has_env, py::arg("key"))
     .def("set_env", &ContextWrapper::set_env, py::arg("key"), py::arg("value"))
     .def("data_source",
-         &ContextWrapper::data_source,
+         [](const std::shared_ptr<ContextWrapper>& self,
+            std::string exp,
+            unsigned run,
+            int evt_per_read,
+            int dgram_size,
+            pysbio::FTraits data_fmt) {
+           return ContextWrapper::data_source(self,
+                                              exp,
+                                              run,
+                                              evt_per_read,
+                                              dgram_size,
+                                              data_fmt);
+         },
          py::arg("exp"),
          py::arg("run"),
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
-         "Create a DataSource for a run, using this Context (which it keeps alive).");
+         "Create a DataSource for a run, using this Context (which it keeps alive).")
+    .def("data_source",
+         [](const std::shared_ptr<ContextWrapper>& self,
+            std::string path,
+            int index_batch_size,
+            int max_buffer_size,
+            pysbio::FTraits data_fmt) {
+           return ContextWrapper::data_source(self,
+                                              path,
+                                              index_batch_size,
+                                              max_buffer_size,
+                                              data_fmt);
+         },
+         py::arg("path"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         "Create a DataSource for a file, using this Context (which it keeps alive).");
 
   /// --- PySourceSet --- ///
 
