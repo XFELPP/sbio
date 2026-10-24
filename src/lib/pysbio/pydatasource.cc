@@ -175,7 +175,9 @@ namespace pysbio {
                              std::shared_ptr<ContextWrapper> context)
     : m_ds(std::move(ds))
     , m_context(std::move(context))
-  {}
+  {
+    enumerate_group_names();
+  }
 
   py::object PyDataSource::group(py::module& m, const char* name) {
     // TODO: This is quite kludgy because it goes back and forth between sbio det,

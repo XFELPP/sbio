@@ -426,7 +426,7 @@ namespace sbio {
      */
     template <std::size_t MaxSegments = 128>
     SBIO_HD inline BrokerGroup<BrokerType, FTraits, MaxSegments>
-    get_stream_group(const char* name) {
+    get_stream_group(const char* name) const {
       using GroupTopologyType = GroupTopology<BrokerType, MaxSegments>;
 
       auto topo =

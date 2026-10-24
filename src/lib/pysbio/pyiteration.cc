@@ -267,4 +267,14 @@ namespace pysbio {
       return std::visit(dispatcher, py_src.ds());
     }
   }
+
+  template std::unique_ptr<ZipIterator>
+  make_zip<PyDataSource>(const PyDataSource&,
+                         const std::vector<const BrokerGroupWrapper*>& py_groups,
+                         bool);
+
+  template std::unique_ptr<ZipIterator>
+  make_zip<PySourceSet>(const PySourceSet&,
+                        const std::vector<const BrokerGroupWrapper*>& py_groups,
+                        bool);
 } // namespace pysbio
