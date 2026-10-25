@@ -38,13 +38,8 @@ struct CXISpec {
     "/entry_1/result_1",
   };
 
-  // TODO: Example... setup real ones
-  static constexpr std::array<const char*, 4> StaticPaths {
-    "/entry_1/instrument_1/detector_1/distance",
-    "/entry_1/instrument_1/detector_1/x_pixel_size",
-    "/entry_1/instrument_1/detector_1/y_pixel_size",
-    "/entry_1/instrument_1/source_1/energy",
-  };
+  // TODO: Don't know if I have anything to put here...
+  static constexpr std::array<const char*, 0> StaticPaths {};
 };
 
 using CXITraits = HDF5Format<CXISpec>;
