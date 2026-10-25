@@ -40,21 +40,45 @@
 namespace sbio {
   // --- Specializations for locator traits --- //
 
+  /**
+   * CXI files use a generic file naming pattern of: {directory}/{prefix}[-{tag}].{ext}
+   *
+   * A secondary constructor constructs a prefix from an experiment and run using
+   * the format: `{exp}-{run}` without formatting (e.g. zero padding) on the run
+   * number.
+   */
   template <>
   struct LocatorParametersFor<PathPatternLocator, CXITraits> {
-    // TODO: Just do a single prefix? Specialize by facility/experiment?
     struct Type {
-      FixedName<CXITraits::MaxNameSize> experiment;
-      unsigned run;
+      FixedName<1024> directory {};                ///< Root directory for output files
+      FixedName<CXITraits::MaxNameSize> prefix {}; ///< The filename prefix
+      FixedName<CXITraits::MaxNameSize> tag {};    ///< Additional tag appended to prefix (e.g. sample)
+      FixedName<CXITraits::MaxNameSize> ext {};    ///< Filename extension
 
-      Type(std::string_view exp, unsigned run_)
-        : experiment(exp)
-        , run(run_)
+      Type(std::string_view dir,
+           std::string_view prefix_,
+           std::string_view tag_ = {},
+           std::string_view ext_ = "cxi")
+        : directory(dir)
+        , prefix(prefix_)
+        , tag(tag_)
+        , ext(ext_)
+      {}
+
+      Type(//std::string_view dir,
+           std::string_view exp,
+           unsigned run,
+           std::string_view tag_ = {},
+           std::string_view ext_ = "cxi")
+        : Type("", std::string(exp) + "-" + std::to_string(run), tag_, ext_)
+        // : Type(dir, std::string(exp) + "-" + std::to_string(run), tag_, ext_)
       {}
 
       static constexpr auto get_metadata() {
-        return std::make_tuple(make_named_member("exp", &Type::experiment),
-                               make_named_member("run", &Type::run));
+        return std::make_tuple(make_named_member("directory", &Type::directory),
+                               make_named_member("prefix", &Type::prefix),
+                               make_named_member("tag", &Type::tag),
+                               make_named_member("ext", &Type::ext));
       }
     };
   };
@@ -67,13 +91,11 @@ namespace sbio {
 
     static constexpr std::size_t VariantCount { CXITraits::StreamTypes::size() };
 
-    // TODO: Need to setup real ones...
-    static constexpr std::array<EnvPatternArg, 1> env_args {{
-      { "root", "SIT_PSDM_DATA", "/sdf/data/lcls/ds" }
-    }};
+    // Unaware of any env vars used generally for CXI production
+    // static constexpr std::array<EnvPatternArg, 0> env_args {{}};
 
     static constexpr std::array<const char*, VariantCount> role_patterns {{
-      "{root}/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}",
+      "{directory}/{prefix}",
     }};
 
     /**
@@ -86,19 +108,73 @@ namespace sbio {
      */
     static std::size_t id_chain_order(std::string_view filename) {
       const auto dot { filename.rfind('.') };
-      std::size_t end { dot == std::string_view::npos ? filename.size() : dot };
-      std::size_t begin { end };
-      while (begin > 0 && filename[begin - 1] >= '0' && filename[begin - 1] <= '9') {
-        --begin;
+      const auto underscore { filename.rfind('_', dot) };
+
+      if (dot == std::string_view::npos        ||
+          underscore == std::string_view::npos ||
+          underscore + 1 >= dot) {
+        return 0;
       }
 
       std::size_t id { 0 };
-      std::from_chars(filename.data() + begin, filename.data() + end, id);
-      return id;
+      const auto res {
+        std::from_chars(filename.data() + underscore + 1, filename.data() + dot, id)
+      };
+      if (res.ec == std::errc() && res.ptr == filename.data() + dot) {
+        return id;
+      }
+
+      return 0;
     }
 
-    static std::size_t accepts(std::string_view filename, const Parameters&) {
-      return filename.ends_with(".cxi");
+    /**
+     * Check whether the filename matches: {prefix}[-tag][_N]{.ext}
+     *
+     * @note This is ignoring the fact that there may be a VDS (likely the case).
+     *       VDS not currently handled - the actual underlying files will be read
+     *       in order.
+     */
+    static std::size_t accepts(std::string_view filename, const Parameters& params) {
+      const std::string_view prefix { params.prefix.c_str() };
+      const std::string_view tag { params.tag.c_str() };
+      const std::string_view ext { params.ext.c_str() };
+
+      std::string_view rest { filename.substr(prefix.size()) };
+
+      // Inspect for [-tag] presence
+      if (!tag.empty()) {
+        if (rest.size() < tag.size() + 1     ||
+            rest[0] != '-'                   ||
+            rest.substr(1, tag.size()) != tag) {
+          return false;
+        }
+
+        rest.remove_prefix(tag.size() + 1);
+      }
+
+      // Verify [_N] rank suffix
+      if (!rest.empty() && rest[0] == '_') {
+        std::size_t n { 1 };
+        while (n < rest.size() && rest[n] >= '0' && rest[n] <= '9') {
+          ++n;
+        }
+
+        if (n == 1) {
+          // File with `_` but no number following it.
+          return false;
+        }
+
+        rest.remove_prefix(n);
+      }
+
+      // Check the extension matches
+      if (rest.size() == ext.size() + 1 &&
+          rest[0] == '.'                &&
+          rest.substr(1) == ext) {
+        return true;
+      }
+
+      return false;
     }
   };
 
