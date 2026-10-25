@@ -63,6 +63,10 @@ namespace sbio {
 
     static constexpr std::size_t VariantCount { XTC1Traits::StreamTypes::size() };
 
+    static constexpr std::size_t NumPatterns { 2 };
+
+    using PatternArray = std::array<const char*, VariantCount>;
+
     /**
      * Streams at or above this number are written by IOC recorders.
      *
@@ -87,13 +91,15 @@ namespace sbio {
      * @todo Setup support for multiple sets of patterns to account for these two
      *       possibilities.
      */
-    static constexpr std::array<const char*, VariantCount> role_patterns {{
-      "{root}/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}",
-      "{root}/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}"
-
-      // The following patterns are waiting on multiple pattern set support:
-      // "{root}/{exp:.3}/{exp}/xtc/smalldata/e",
-      // "{root}/{exp:.3}/{exp}/xtc/e"
+    static constexpr std::array<PatternArray, NumPatterns> role_patterns {{
+      {
+        "{root}/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}",
+        "{root}/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}"
+      },
+      {
+        "{root}/{exp:.3}/{exp}/xtc/smalldata/e",
+        "{root}/{exp:.3}/{exp}/xtc/e"
+      }
     }};
 
     static std::size_t id_stream(std::string_view filename) {

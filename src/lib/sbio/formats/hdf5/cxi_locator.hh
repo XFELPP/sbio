@@ -65,13 +65,11 @@ namespace sbio {
         , ext(ext_)
       {}
 
-      Type(//std::string_view dir,
-           std::string_view exp,
+      Type(std::string_view exp,
            unsigned run,
            std::string_view tag_ = {},
            std::string_view ext_ = "cxi")
         : Type("", std::string(exp) + "-" + std::to_string(run), tag_, ext_)
-        // : Type(dir, std::string(exp) + "-" + std::to_string(run), tag_, ext_)
       {}
 
       static constexpr auto get_metadata() {
@@ -91,11 +89,21 @@ namespace sbio {
 
     static constexpr std::size_t VariantCount { CXITraits::StreamTypes::size() };
 
-    // Unaware of any env vars used generally for CXI production
-    // static constexpr std::array<EnvPatternArg, 0> env_args {{}};
+    static constexpr std::size_t NumPatterns { 2 };
 
-    static constexpr std::array<const char*, VariantCount> role_patterns {{
-      "{directory}/{prefix}",
+    using PatternArray = std::array<const char*, VariantCount>;
+
+    // Generally there aren't environment variables for CXI.
+    // But, for LCLS, can use SIT_PSDM_DATA, and an additional variable to
+    // define the directory instead of passing directly.
+    static constexpr std::array<EnvPatternArg, 2> env_args {{
+      { "root", "SIT_PSDM_DATA", "/sdf/data/lcls/ds" },
+      { "cxi_dir", "SBIO_CXI_DIR", "results" }
+    }};
+
+    static constexpr std::array<PatternArray, NumPatterns> role_patterns {{
+      { "{directory}/{prefix}" },
+      { "{root}/{cxi_dir}/{prefix}" }
     }};
 
     /**

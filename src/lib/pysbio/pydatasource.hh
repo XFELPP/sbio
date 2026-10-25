@@ -68,7 +68,19 @@ namespace pysbio {
                  int evt_per_read,
                  int dgram_size,
                  pysbio::FTraits data_fmt = pysbio::FTraits::XTC2,
-                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPI,
+                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPIThreaded,
+                 py::dict exec_cfg = py::dict(),
+                 pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
+
+    // Search for multiple files using a directory/prefix/tag/ext combo
+    PyDataSource(std::string directory,
+                 std::string prefix,
+                 int index_batch_size,
+                 int max_buffer_size,
+                 std::string tag = {},
+                 std::string ext = "cxi",
+                 pysbio::FTraits data_fmt = pysbio::FTraits::CXI,
+                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPIThreaded,
                  py::dict exec_cfg = py::dict(),
                  pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
@@ -77,7 +89,7 @@ namespace pysbio {
                  int index_batch_size,
                  int max_buffer_size,
                  pysbio::FTraits data_fmt = pysbio::FTraits::CXI,
-                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPI,
+                 pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPIThreaded,
                  py::dict exec_cfg = py::dict(),
                  pysbio::IOPolicy io_policy = pysbio::IOPolicy::SyncPOSIX);
 
@@ -132,6 +144,14 @@ namespace pysbio {
                                     unsigned run,
                                     int evt_per_read,
                                     int dgram_size,
+                                    pysbio::FTraits data_fmt);
+    static PyDataSource data_source(const std::shared_ptr<ContextWrapper>& self,
+                                    std::string directory,
+                                    std::string prefix,
+                                    int index_batch_size,
+                                    int max_buffer_size,
+                                    std::string tag,
+                                    std::string ext,
                                     pysbio::FTraits data_fmt);
     static PyDataSource data_source(const std::shared_ptr<ContextWrapper>& self,
                                     std::string path,

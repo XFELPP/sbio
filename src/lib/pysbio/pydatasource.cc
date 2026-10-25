@@ -75,6 +75,26 @@ namespace {
   }
 
   template <class DS>
+  void load_at_prefix(DS& ds,
+                      const std::string& directory,
+                      const std::string& prefix,
+                      int index_batch_size,
+                      int max_buffer_size,
+                      const std::string& tag,
+                      const std::string& ext) {
+    typename DS::StreamConfig cfg;
+    cfg.index_batch_size = index_batch_size;
+    cfg.max_buffer_size = max_buffer_size;
+
+    ds.template load_source_with<sbio::PathPatternLocator>(cfg,
+                                                           directory,
+                                                           prefix,
+                                                           tag,
+                                                           ext);
+    ds.discover_metadata();
+  }
+
+  template <class DS>
   void load_file(DS& ds,
                  const std::string& path,
                  int index_batch_size,
@@ -109,6 +129,53 @@ namespace pysbio {
 
         load_run(ds, exp, run, evt_per_read, dgram_size);
 
+        return DataSourceV { std::move(ds) };
+      };
+
+      return with_policy(epolicy, make_for_policy);
+    };
+
+    m_ds = with_format(data_fmt, make_for_format);
+
+    // Get a list of BrokerGroups (load_run runs discover_metadata)
+    enumerate_group_names();
+  }
+
+  // Search for multiple files using a directory/prefix/tag/ext combo
+  PyDataSource::PyDataSource(std::string directory,
+                             std::string prefix,
+                             int index_batch_size,
+                             int max_buffer_size,
+                             std::string tag,
+                             std::string ext,
+                             pysbio::FTraits data_fmt,
+                             pysbio::ExecutionPolicy epolicy,
+                             py::dict exec_cfg,
+                             pysbio::IOPolicy io_policy)
+  {
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+      auto make_for_policy = [&](auto PolicyTag) -> DataSourceV {
+        using Policy = typename decltype(PolicyTag)::type;
+
+        ensure_parallel_environment<Policy>();
+        DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
+
+#if defined(SBIO_HAS_HDF5)
+        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
+          load_at_prefix(ds,
+                         directory,
+                         prefix,
+                         index_batch_size,
+                         max_buffer_size,
+                         tag,
+                         ext);
+        } else {
+          throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+        }
+#else
+        throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+#endif
         return DataSourceV { std::move(ds) };
       };
 
@@ -296,6 +363,52 @@ namespace pysbio {
         auto ds { ctx->template data_source<Format>() };
 
         load_run(ds, exp, run, evt_per_read, dgram_size);
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return std::visit(make, self->m_context);
+    };
+
+    // Load before handing `exp` over (argument evaluation order is unspecified)
+    DataSourceV ds { with_format(data_fmt, make_for_format) };
+
+    return PyDataSource(std::move(ds), self);
+  }
+
+  PyDataSource ContextWrapper::data_source(const std::shared_ptr<ContextWrapper>& self,
+                                           std::string directory,
+                                           std::string prefix,
+                                           int index_batch_size,
+                                           int max_buffer_size,
+                                           std::string tag,
+                                           std::string ext,
+                                           pysbio::FTraits data_fmt) {
+    if (!self->ok()) {
+      throw std::runtime_error("Invalid Context: " + self->error());
+    }
+
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+
+      auto make = [&](const auto& ctx) -> DataSourceV {
+        auto ds { ctx->template data_source<Format>() };
+
+#if defined(SBIO_HAS_HDF5)
+        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
+          load_at_prefix(ds,
+                         directory,
+                         prefix,
+                         index_batch_size,
+                         max_buffer_size,
+                         tag,
+                         ext);
+        } else {
+          throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+        }
+#else
+        throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+#endif
 
         return DataSourceV { std::move(ds) };
       };

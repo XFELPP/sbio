@@ -61,6 +61,33 @@ Args:
 
     io_policy (pysbio.IOPolicy): The IO policy to use (POSIX, cuFile, etc).)a";
 
+  static constexpr const char* dir_prefix_ds_doc = R"a(Create a datasource for CXI data only.
+
+    Searches for files under: `{directory}/{prefix}[-{tag}].{ext}`.
+
+    This locator mechanism is only available for CXI reading currently.
+
+Args:
+    directory (str): The root path to the directory where CXI files are written.
+
+    prefix (str): The filename prefix for the CXI files.
+
+    index_batch_size (int): The number of step offsets to index in one go.
+
+    max_buffer_size (int): The maximum size for a single data buffer.
+
+    tag (str): An optional tag that is appended to the prefix with a hyphen. Default: none.
+
+    ext (str): The filename extension. Default: cxi.
+
+    data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
+
+    epolicy (pysbio.ExecutionPolicy): The Execution policy to use (Serial, MPI, Threaded, etc.)
+
+    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).
+
+    io_policy (pysbio.IOPolicy): The IO policy to use (POSIX, cuFile, etc).)a";
+
   static constexpr const char* file_ds_doc = R"a(Create a datasource for reading XT1/XTC2, or CXI data.
 
 Args:
@@ -303,10 +330,33 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
-         py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
          py::arg("exec_cfg") = py::dict(),
          py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
          xtc_ds_doc)
+    .def(py::init<
+           std::string,
+           std::string,
+           int,
+           int,
+           std::string,
+           std::string,
+           pysbio::FTraits,
+           pysbio::ExecutionPolicy,
+           py::dict,
+           pysbio::IOPolicy
+         >(),
+         py::arg("directory"),
+         py::arg("prefix"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("tag") = "",
+         py::arg("ext") = "cxi",
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
+         py::arg("exec_cfg") = py::dict(),
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
+         dir_prefix_ds_doc)
     .def(py::init<
            std::string,
            int,
@@ -320,7 +370,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_buffer_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::CXI,
-         py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
          py::arg("exec_cfg") = py::dict(),
          py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
          file_ds_doc)
@@ -398,6 +448,32 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
          "Create a DataSource for a run, using this Context (which it keeps alive).")
+    .def("data_source",
+         [](const std::shared_ptr<ContextWrapper>& self,
+            std::string directory,
+            std::string prefix,
+            int index_batch_size,
+            int max_buffer_size,
+            std::string tag,
+            std::string ext,
+            pysbio::FTraits data_fmt) {
+           return ContextWrapper::data_source(self,
+                                              directory,
+                                              prefix,
+                                              index_batch_size,
+                                              max_buffer_size,
+                                              tag,
+                                              ext,
+                                              data_fmt);
+         },
+         py::arg("directory"),
+         py::arg("prefix"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("tag") = "",
+         py::arg("ext") = "cxi",
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         "Create a DataSource for a file, using this Context (which it keeps alive).")
     .def("data_source",
          [](const std::shared_ptr<ContextWrapper>& self,
             std::string path,
