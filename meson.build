@@ -431,7 +431,13 @@ endif # MPI builds
 
 #### HDF5 setup
 if sbio_build_hdf5
-    hdf5_dep = dependency('hdf5', language: 'c', version: '>=1.14.0', required: false)
+    hdf5_dep = dependency(
+        'hdf5',
+        language: 'c',
+        version: '>=1.14.0',
+        default_options: ['default_library=static'],
+        required: false
+    )
     if not hdf5_dep.found()
         cmake = import('cmake')
         hdf5_opts = cmake.subproject_options()
@@ -447,8 +453,13 @@ if sbio_build_hdf5
                     'HDF5_BUILD_CPP_LIB': 'OFF',
                     'HDF5_BUILD_TOOLS': 'OFF',
                     'HDF5_BUILD_FORTRAN': 'OFF',
-                    'HDF5_BUILD_STATIC_LIBS': 'OFF',
-                    'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    # 'HDF5_BUILD_STATIC_LIBS': 'OFF',
+                    # 'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    # Didn't seem to be needed. But add just in case
+                    'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
+                    'BUILD_SHARED_LIBS': 'OFF',
+                    'BUILD_STATIC_LIBS': 'ON',
+                    'CMAKE_LINK_DEPENDS_USE_LINKER': 'OFF',
                     'HDF5_BUILD_EXAMPLES': 'OFF',
                     'HDF5_BUILD_TESTS': 'OFF',
                     # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
@@ -461,8 +472,13 @@ if sbio_build_hdf5
                     'HDF5_BUILD_CPP_LIB': 'OFF',
                     'HDF5_BUILD_TOOLS': 'OFF',
                     'HDF5_BUILD_FORTRAN': 'OFF',
-                    'HDF5_BUILD_STATIC_LIBS': 'OFF',
-                    'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    # 'HDF5_BUILD_STATIC_LIBS': 'OFF',
+                    # 'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    # Didn't seem to be needed. But add just in case
+                    'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
+                    'BUILD_SHARED_LIBS': 'OFF',
+                    'BUILD_STATIC_LIBS': 'ON',
+                    'CMAKE_LINK_DEPENDS_USE_LINKER': 'OFF',
                     'HDF5_BUILD_EXAMPLES': 'OFF',
                     'HDF5_BUILD_TESTS': 'OFF',
                     # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
@@ -478,10 +494,11 @@ if sbio_build_hdf5
 
         hdf5_proj = cmake.subproject('hdf5', options: hdf5_opts)
 
-        message('HDF5 targets: ' + ', '.join(hdf5_proj.target_list()))
+        # hdf5_c_dep = hdf5_proj.dependency('hdf5-shared')
+        # # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-shared')
 
-        hdf5_c_dep = hdf5_proj.dependency('hdf5-shared')
-        # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-shared')
+        hdf5_c_dep = hdf5_proj.dependency('hdf5-static')
+        # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-static')
 
         hdf5_dep = declare_dependency(
             # dependencies: [hdf5_c_dep, hdf5_cpp_dep],
