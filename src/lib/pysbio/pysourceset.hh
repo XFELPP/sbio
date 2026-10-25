@@ -45,52 +45,159 @@
 
 #include <pybind11/pybind11.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <memory>
+#include <numeric>
 #include <type_traits>
 #include <variant>
 
 namespace py = pybind11;
 
 namespace pysbio {
+  namespace {
+#if defined(SBIO_HAS_HDF5)
+    using CXISerial = sbio::DataSource<
+      sbio::SyncPOSIXIO,
+      sbio::SerialExecution,
+      sbio::CXITraits
+    >;
+    using CXIParallel = sbio::DataSource<
+      sbio::SyncPOSIXIO,
+      sbio::MPIThreadedExecution,
+      sbio::CXITraits
+    >;
+#endif
+#if defined(SBIO_HAS_XTC1)
+    using XTC1Serial = sbio::DataSource<
+      sbio::SyncPOSIXIO,
+      sbio::SerialExecution,
+      sbio::XTC1Traits
+    >;
+    using XTC1Parallel = sbio::DataSource<
+      sbio::SyncPOSIXIO,
+      sbio::MPIThreadedExecution,
+      sbio::XTC1Traits
+    >;
+#endif
+#if defined(SBIO_HAS_XTC2)
+    using XTC2Serial = sbio::DataSource<
+      sbio::SyncPOSIXIO,
+      sbio::SerialExecution,
+      sbio::XTC2Traits
+    >;
+    using XTC2Parallel = sbio::DataSource<
+      sbio::SyncPOSIXIO,
+      sbio::MPIThreadedExecution,
+      sbio::XTC2Traits
+    >;
+#endif
+  } // anonymous namespace
+
+  // NOTE: The order here MUST match the order of the DataSource variant
+  //       since .index() is used to sort before creating the set
+  //       (To reduce the number of instnatiations - order doesn't matter)
+  // With all 3 data formats, the order is currently: CXI, XTC1, XTC2
+  // --> See pysbio/policies.hh for the `DataFormats` order.
   using SourceSetV = std::variant<
-    sbio::SourceSet<
-      sbio::DataSource<
-        sbio::SyncPOSIXIO,
-        sbio::MPIThreadedExecution,
-        sbio::XTC1Traits
-      >,
-      sbio::DataSource<
-        sbio::SyncPOSIXIO,
-        sbio::MPIThreadedExecution,
-        sbio::XTC2Traits
-      >
-    >,
-    sbio::SourceSet<
-      sbio::DataSource<
-        sbio::SyncPOSIXIO,
-        sbio::MPIThreadedExecution,
-        sbio::XTC1Traits
-      >,
-      sbio::DataSource<
-        sbio::SyncPOSIXIO,
-        sbio::MPIThreadedExecution,
-        sbio::CXITraits
-      >
-    >,
-    sbio::SourceSet<
-      sbio::DataSource<
-        sbio::SyncPOSIXIO,
-        sbio::MPIThreadedExecution,
-        sbio::XTC2Traits
-      >,
-      sbio::DataSource<
-        sbio::SyncPOSIXIO,
-        sbio::MPIThreadedExecution,
-        sbio::CXITraits
-      >
-    >
+#if defined(SBIO_HAS_HDF5) && defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
+
+    // Serial same format
+    sbio::SourceSet<CXISerial, CXISerial>,
+    sbio::SourceSet<XTC1Serial, XTC1Serial>,
+    sbio::SourceSet<XTC2Serial, XTC2Serial>,
+
+    // Serial cross-format
+    sbio::SourceSet<CXISerial, XTC1Serial>,
+    sbio::SourceSet<CXISerial, XTC2Serial>,
+    sbio::SourceSet<XTC1Serial, XTC2Serial>,
+
+    // Parallel same-format
+    sbio::SourceSet<CXIParallel, CXIParallel>,
+    sbio::SourceSet<XTC1Parallel, XTC1Parallel>,
+    sbio::SourceSet<XTC2Parallel, XTC2Parallel>,
+
+    // Parallel cross-format
+    sbio::SourceSet<CXIParallel, XTC1Parallel>,
+    sbio::SourceSet<CXIParallel, XTC2Parallel>,
+    sbio::SourceSet<XTC1Parallel, XTC2Parallel>
+
+#elif defined(SBIO_HAS_HDF5) && defined(SBIO_HAS_XTC1)
+
+    // Serial same format
+    sbio::SourceSet<CXISerial, CXISerial>,
+    sbio::SourceSet<XTC1Serial, XTC1Serial>,
+
+    // Serial cross-format
+    sbio::SourceSet<CXISerial, XTC1Serial>,
+
+    // Parallel same format
+    sbio::SourceSet<CXIParallel, CXIParallel>,
+    sbio::SourceSet<XTC1Parallel, XTC1Parallel>,
+
+    // Parallel cross-format
+    sbio::SourceSet<CXIParallel, XTC1Parallel>
+
+#elif defined(SBIO_HAS_HDF5) && defined(SBIO_HAS_XTC2)
+
+    // Serial same format
+    sbio::SourceSet<CXISerial, CXISerial>,
+    sbio::SourceSet<XTC2Serial, XTC2Serial>,
+
+    // Serial cross-format
+    sbio::SourceSet<CXISerial, XTC2Serial>,
+
+    // Parallel same format
+    sbio::SourceSet<CXIParallel, CXIParallel>,
+    sbio::SourceSet<XTC2Parallel, XTC2Parallel>,
+
+    // Parallel cross-format
+    sbio::SourceSet<CXIParallel, XTC2Parallel>
+
+#elif defined(SBIO_HAS_XTC1) && defined(SBIO_HAS_XTC2)
+
+    // Serial same format
+    sbio::SourceSet<XTC1Serial, XTC1Serial>,
+    sbio::SourceSet<XTC2Serial, XTC2Serial>,
+
+    // Serial cross-format
+    sbio::SourceSet<XTC1Serial, XTC2Serial>,
+
+    // Parallel same format
+    sbio::SourceSet<XTC1Parallel, XTC1Parallel>,
+    sbio::SourceSet<XTC2Parallel, XTC2Parallel>,
+
+    // Parallel cross-format
+    sbio::SourceSet<XTC1Parallel, XTC2Parallel>
+
+#elif defined(SBIO_HAS_HDF5)
+
+    // Serial same format
+    sbio::SourceSet<CXISerial, CXISerial>,
+
+    // Parallel cross-format
+    sbio::SourceSet<CXIParallel, CXIParallel>
+
+#elif defined(SBIO_HAS_XTC1)
+
+    // Serial same format
+    sbio::SourceSet<XTC1Serial, XTC1Serial>,
+
+    // Parallel cross-format
+    sbio::SourceSet<XTC1Parallel, XTC1Parallel>
+
+#elif defined(SBIO_HAS_XTC2)
+
+    // Serial same format
+    sbio::SourceSet<XTC2Serial, XTC2Serial>,
+
+    // Parallel cross-format
+    sbio::SourceSet<XTC2Parallel, XTC2Parallel>
+
+#endif
   >;
+
   template <class T, class Var>
   struct in_variant : std::false_type {};
 
@@ -103,17 +210,36 @@ namespace pysbio {
 
   template <class... PySources>
   std::unique_ptr<PySourceSet> make_source_set(PySources&... py_sources) {
-    auto build_inplace = [](auto&... srcs) -> std::unique_ptr<PySourceSet> {
-      using Set = sbio::SourceSet<std::remove_cvref_t<decltype(srcs)>...>;
+    using SrcV = std::common_type_t<PySources...>;
 
-      if constexpr (in_variant<Set, SourceSetV>::value) {
-        return std::make_unique<PySourceSet>(std::in_place_type<Set>, srcs...);
-      } else {
-        throw std::invalid_argument("Unsupported SourceSet combination!");
-      }
+    constexpr std::size_t NumSrcs { sizeof...(PySources) };
+
+    std::array<std::size_t, NumSrcs> order {};
+    std::iota(order.begin(), order.end(), 0);
+
+    std::array<std::size_t, NumSrcs> var_indices { py_sources.index()... };
+
+    std::sort(order.begin(), order.end(), [&](auto a, auto b) {
+      return var_indices[a] < var_indices[b];
+    });
+
+    const std::array<SrcV*, NumSrcs> py_srcs_ptr { &py_sources... };
+
+    auto canonicalize = [&] <std::size_t... Idxs> (std::index_sequence<Idxs...>) {
+      auto build_inplace = [](auto&... srcs) -> std::unique_ptr<PySourceSet> {
+        using Set = sbio::SourceSet<std::remove_cvref_t<decltype(srcs)>...>;
+
+        if constexpr (in_variant<Set, SourceSetV>::value) {
+          return std::make_unique<PySourceSet>(std::in_place_type<Set>, srcs...);
+        } else {
+          throw std::invalid_argument("Unsupported SourceSet combination!");
+        }
+      };
+
+      return std::visit(build_inplace, *py_srcs_ptr[order[Idxs]]...);
     };
 
-    return std::visit(build_inplace, py_sources...);
+    return canonicalize(std::make_index_sequence<NumSrcs> {});
   }
 
   class PySourceSet {
