@@ -159,6 +159,11 @@ namespace sbio {
         }
       }
 
+      // TODO: Consider how accepting a set of streams should work. I.e., should
+      //       partial matches count as valid (only one of two variants found, e.g.)
+      // TODO: Think on general sanitizing and preventing unnecessary sweeps.
+      //       E.g. empty parameters leading to invalid directories. Or getting into
+      //       a full directory scan of `/` and so on.
       StreamMap<VariantCount> streams;
       for (std::size_t p = 0; p < NumPatterns; ++p) {
         if (!streams.empty()) {

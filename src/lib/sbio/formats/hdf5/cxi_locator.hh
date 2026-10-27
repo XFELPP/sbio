@@ -54,22 +54,26 @@ namespace sbio {
       FixedName<CXITraits::MaxNameSize> prefix {}; ///< The filename prefix
       FixedName<CXITraits::MaxNameSize> tag {};    ///< Additional tag appended to prefix (e.g. sample)
       FixedName<CXITraits::MaxNameSize> ext {};    ///< Filename extension
+      bool per_rank { true };                      ///< Read files written per rank with `_N` suffixes
 
       Type(std::string_view dir,
            std::string_view prefix_,
            std::string_view tag_ = {},
-           std::string_view ext_ = "cxi")
+           std::string_view ext_ = "cxi",
+           bool per_rank_ = true)
         : directory(dir)
         , prefix(prefix_)
         , tag(tag_)
         , ext(ext_)
+        , per_rank(per_rank_)
       {}
 
       Type(std::string_view exp,
            unsigned run,
            std::string_view tag_ = {},
-           std::string_view ext_ = "cxi")
-        : Type("", std::string(exp) + "-" + std::to_string(run), tag_, ext_)
+           std::string_view ext_ = "cxi",
+           bool per_rank_ = true)
+        : Type("", std::string(exp) + "-" + std::to_string(run), tag_, ext_, per_rank_)
       {}
 
       static constexpr auto get_metadata() {
@@ -109,31 +113,12 @@ namespace sbio {
     /**
      * All files are given stream 0.
      */
-    static std::size_t id_stream(std::string_view filename) { return 0; }
+    static std::size_t id_stream(std::string_view filename) { return file_index(filename); }
 
     /**
      * Setup the chain order from the trailing numbers before `.cxi`.
      */
-    static std::size_t id_chain_order(std::string_view filename) {
-      const auto dot { filename.rfind('.') };
-      const auto underscore { filename.rfind('_', dot) };
-
-      if (dot == std::string_view::npos        ||
-          underscore == std::string_view::npos ||
-          underscore + 1 >= dot) {
-        return 0;
-      }
-
-      std::size_t id { 0 };
-      const auto res {
-        std::from_chars(filename.data() + underscore + 1, filename.data() + dot, id)
-      };
-      if (res.ec == std::errc() && res.ptr == filename.data() + dot) {
-        return id;
-      }
-
-      return 0;
-    }
+    static std::size_t id_chain_order(std::string_view filename) { return 0; }
 
     /**
      * Check whether the filename matches: {prefix}[-tag][_N]{.ext}
@@ -161,7 +146,14 @@ namespace sbio {
       }
 
       // Verify [_N] rank suffix
-      if (!rest.empty() && rest[0] == '_') {
+      const bool has_index { !rest.empty() && rest[0] == '_' };
+      if (has_index != params.per_rank) {
+        // Currently only allow reading of `_N` rank-suffixed files. Or single file only
+        // Prevents reading each individual, in addition to a collected VDS as well
+        return false;
+      }
+
+      if (has_index) {
         std::size_t n { 1 };
         while (n < rest.size() && rest[n] >= '0' && rest[n] <= '9') {
           ++n;
@@ -183,6 +175,27 @@ namespace sbio {
       }
 
       return false;
+    }
+  private:
+    static std::size_t file_index(std::string_view filename) {
+      const auto dot { filename.rfind('.') };
+      const auto underscore { filename.rfind('_', dot) };
+
+      if (dot == std::string_view::npos        ||
+          underscore == std::string_view::npos ||
+          underscore + 1 >= dot) {
+        return 0;
+      }
+
+      std::size_t id { 0 };
+      const auto res {
+        std::from_chars(filename.data() + underscore + 1, filename.data() + dot, id)
+      };
+      if (res.ec == std::errc() && res.ptr == filename.data() + dot) {
+        return id;
+      }
+
+      return 0;
     }
   };
 
