@@ -798,7 +798,7 @@ namespace sbio {
           }
 
           advance_chunk_if_done(n_stream);
-          const IOStatus status { m_data_streams[n_stream].index_stream() };
+          IOStatus status { m_data_streams[n_stream].index_stream() };
 
           // Continue through empty chunks in the chain (i.e. files/streams w/ no steps)
           while (status == IOStatus::ZeroBytesRead                &&

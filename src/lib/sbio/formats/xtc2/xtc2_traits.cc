@@ -117,6 +117,72 @@ namespace {
 
     inv.finalize();
   }
+
+  SBIO_HD inline const sbio::XTC2::Name* get_name_at(const std::uint32_t gid,
+                                                     const std::uint32_t nid,
+                                                     const std::uint32_t inv_idx,
+                                                     const MetadataInventory<XTC2Traits>& inv) {
+    auto pred = [&](const auto& entry) {
+      const auto& meta { entry.descriptor.format_meta };
+
+      return meta.names_id == nid && meta.field_idx == inv_idx;
+    };
+
+    const auto* xtc2_meta { inv.lookup_meta_in_group_by(gid, pred) };
+    if (xtc2_meta != nullptr) {
+      return &(xtc2_meta->field_name);
+    }
+
+    return nullptr;
+  }
+
+  SBIO_HD inline XTC2::DataResult resolve_pointer(const MetadataInventory<XTC2Traits>& inv,
+                                                  void* buffer,
+                                                  const std::uint32_t gid,
+                                                  const std::uint32_t sd_offset,
+                                                  const std::uint32_t nid,
+                                                  const std::uint32_t f_idx) {
+    auto* sd =
+      reinterpret_cast<XTC2::ShapesData*>(reinterpret_cast<char*>(buffer) + sd_offset);
+
+    const auto& shapes = sd->shapes();
+
+    std::size_t byte_offset { 0 };
+    std::uint32_t shape_idx { 0 };
+    for (uint32_t i = 0; i < f_idx; ++i) {
+      const XTC2::Name* field_name { get_name_at(gid, nid, i, inv) };
+      if (field_name == nullptr) {
+        return XTC2::DataResult(nullptr);
+      }
+      if (field_name->rank() == 0) {
+        byte_offset += XTC2::DTypeSize[static_cast<uint8_t>(field_name->type())];
+      } else {
+        byte_offset +=
+          shapes.get(shape_idx++).size(const_cast<XTC2::Name&>(*field_name));
+      }
+    }
+
+    const auto* target { get_name_at(gid, nid, f_idx, inv) };
+    if (target == nullptr) {
+      return XTC2::DataResult(nullptr);
+    }
+
+    XTC2::DataResult res(sd->data().payload() + byte_offset);
+    res.rank = target->rank();
+    res.dtype = target->type();
+    if (res.rank == 0) {
+      res.size = XTC2::DTypeSize[static_cast<std::uint8_t>(target->type())];
+    } else {
+      const auto& s = shapes.get(shape_idx);
+      res.size = s.size(const_cast<XTC2::Name&>(*target));
+      const std::uint32_t* shape_ptr = s.shape();
+      for (size_t i = 0; i < res.rank; ++i) {
+        res.shape[i] = shape_ptr[i];
+      }
+    }
+
+    return res;
+  }
 } // anonymous namespace
 
 namespace sbio {
@@ -144,7 +210,6 @@ namespace sbio {
 
     std::uint32_t nid { xtc2_meta.names_id };
     std::uint32_t f_idx { xtc2_meta.field_idx };
-    const XTC2::Name* field_schema { &(xtc2_meta.field_name) };
 
     // Try starting from the last cached offset (if there)
     // Fallback on the offset recorded during discovery phase
@@ -192,7 +257,7 @@ namespace sbio {
     }
 
     XTC2::DataResult xtc2_res =
-      XTC2::resolve_xtc2_pointer(buffer, sd_offset, field_schema, nid, f_idx);
+      resolve_pointer(inv, buffer, entry->key.group_id, sd_offset, nid, f_idx);
 
     DataResult res {
       xtc2_res.data,
