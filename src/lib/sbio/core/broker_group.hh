@@ -504,17 +504,19 @@ namespace sbio {
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
 
-      ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                  read_cb,
-                                                  num_brokers,
-                                                  get_data_cb,
-                                                  num_segments);
+      const IOStatus status {
+        ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                    read_cb,
+                                                    num_brokers,
+                                                    get_data_cb,
+                                                    num_segments)
+      };
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
 
       CompositeDataResult<MemTag> composite {
         ptr_table,
-        this->num_segments(),
+        status == IOStatus::Success ? this->num_segments() : 0,
         1,
         ref_res.rank,
         ref_res.shape,
@@ -626,15 +628,17 @@ namespace sbio {
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
 
-      ExecutionPolicy::template get_data<FTraits>(step_idx,
-                                                  read_cb,
-                                                  num_brokers,
-                                                  get_data_cb,
-                                                  num_segments);
+      const IOStatus status {
+        ExecutionPolicy::template get_data<FTraits>(step_idx,
+                                                    read_cb,
+                                                    num_brokers,
+                                                    get_data_cb,
+                                                    num_segments)
+      };
 
       CompositeDataResult<MemTag> composite {
         ptr_tbl,
-        this->num_segments(),
+        status == IOStatus::Success ? this->num_segments() : 0,
         1,
         ref_res.rank,
         ref_res.shape,
@@ -894,17 +898,19 @@ namespace sbio {
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
 
-      ExecutionPolicy::template get_data_steps<FTraits>(steps,
-                                                        read_cb,
-                                                        num_brokers,
-                                                        get_data_cb,
-                                                        num_segments);
+      const IOStatus status {
+        ExecutionPolicy::template get_data_steps<FTraits>(steps,
+                                                          read_cb,
+                                                          num_brokers,
+                                                          get_data_cb,
+                                                          num_segments)
+      };
 
       const void** ptr_table { const_cast<const void**>(ptr_tbl) };
 
       CompositeDataResult<MemTag> composite {
         ptr_table,
-        this->num_segments(),
+        status == IOStatus::Success ? this->num_segments() : 0,
         count,
         ref_res.rank,
         ref_res.shape,
@@ -999,15 +1005,17 @@ namespace sbio {
       std::size_t num_brokers { this->num_stream_brokers() };
       std::size_t num_segments { this->num_segments() };
 
-      ExecutionPolicy::template get_data_steps<FTraits>(steps,
-                                                        read_cb,
-                                                        num_brokers,
-                                                        get_data_cb,
-                                                        num_segments);
+      const IOStatus status {
+        ExecutionPolicy::template get_data_steps<FTraits>(steps,
+                                                          read_cb,
+                                                          num_brokers,
+                                                          get_data_cb,
+                                                          num_segments)
+      };
 
       CompositeDataResult<MemTag> composite {
         ptr_tbl,
-        this->num_segments(),
+        status == IOStatus::Success ? this->num_segments() : 0,
         count,
         ref_res.rank,
         ref_res.shape,

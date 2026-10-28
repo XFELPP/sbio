@@ -44,6 +44,18 @@
 #endif
 
 namespace sbio {
+  namespace impl {
+    /// Whether a format's metadata (and index state) is per chunk, so each new chunk is rediscovered.
+    template <typename FTraits>
+    constexpr bool rediscovers_per_chunk() {
+      if constexpr (requires { FTraits::RediscoverPerChunk; }) {
+        return static_cast<bool>(FTraits::RediscoverPerChunk);
+      } else {
+        return false;
+      }
+    }
+  } // namespace impl
+
   /**
    * Base class tag for a data-format implementation.
    *

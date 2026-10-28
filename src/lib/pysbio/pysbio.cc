@@ -22,6 +22,8 @@
 #include "pysbio/io/pyio.hh"
 #include "pysbio/pybroker_group.hh"
 #include "pysbio/pydatasource.hh"
+#include "pysbio/pyiteration.hh"
+#include "pysbio/pysourceset.hh"
 
 #include "sbio/core/types.hh"
 
@@ -40,7 +42,7 @@ namespace py = pybind11;
 using namespace pysbio;
 
 namespace {
-  static constexpr const char* ds_doc = R"a(Create a datasource for reading XTC1 or XTC2 data.
+  static constexpr const char* xtc_ds_doc = R"a(Create a datasource for reading XTC1 or XTC2 data.
 
 Args:
     exp (str): The LCLS experiment.
@@ -50,6 +52,50 @@ Args:
     events_per_read (int): The number of event offsets to index on each attempt.
 
     max_dgram_size (int): The maximum size of a Datagram to accept.
+
+    data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
+
+    epolicy (pysbio.ExecutionPolicy): The Execution policy to use (Serial, MPI, Threaded, etc.)
+
+    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).
+
+    io_policy (pysbio.IOPolicy): The IO policy to use (POSIX, cuFile, etc).)a";
+
+  static constexpr const char* dir_prefix_ds_doc = R"a(Create a datasource for CXI data only.
+
+    Searches for files under: `{directory}/{prefix}[-{tag}].{ext}`.
+
+    This locator mechanism is only available for CXI reading currently.
+
+Args:
+    directory (str): The root path to the directory where CXI files are written.
+
+    prefix (str): The filename prefix for the CXI files.
+
+    index_batch_size (int): The number of step offsets to index in one go.
+
+    max_buffer_size (int): The maximum size for a single data buffer.
+
+    tag (str): An optional tag that is appended to the prefix with a hyphen. Default: none.
+
+    ext (str): The filename extension. Default: cxi.
+
+    data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
+
+    epolicy (pysbio.ExecutionPolicy): The Execution policy to use (Serial, MPI, Threaded, etc.)
+
+    exec_cfg (dict): Configuration for the Execution policy (fields depend on selection).
+
+    io_policy (pysbio.IOPolicy): The IO policy to use (POSIX, cuFile, etc).)a";
+
+  static constexpr const char* file_ds_doc = R"a(Create a datasource for reading XT1/XTC2, or CXI data.
+
+Args:
+    path (str): The path to the XTC1/XTC2, or CXI file.
+
+    index_batch_size (int): The number of step offsets to index in one go.
+
+    max_buffer_size (int): The maximum size for a single data buffer.
 
     data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
 
@@ -79,34 +125,92 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
   py::module_::import("sbio.broker_groups");
   py::module_::import("sbio.datasources");
 
+  /// --- BrokerGroupWrapper --- ///
+
   // TODO: Try to rework these wrappers to remove dynamic_attr
   //       Instead, create the *classes* dynamically and attach the methods
   py::classh<BrokerGroupWrapper>(pysbio_module, "BrokerGroupWrapper", py::dynamic_attr())
     .def_property_readonly("group_type", &BrokerGroupWrapper::get_detector_type)
+    .def_property_readonly("group_fields", &BrokerGroupWrapper::group_fields)
     .def_property_readonly("serial_number", &BrokerGroupWrapper::get_serial_number)
     .def("get_data",
-         &BrokerGroupWrapper::get_data,
+         [](BrokerGroupWrapper& self,
+            std::size_t step,
+            const char* alg,
+            const char* field) {
+           return self.get_data(step, alg, field);
+         },
          py::arg("step"),
          py::arg("alg"),
          py::arg("field"))
+    .def("get_data",
+         [](BrokerGroupWrapper& self, std::size_t step, const char* field) {
+           return self.get_data(step, field);
+         },
+         py::arg("step"),
+         py::arg("field"))
     .def("get_multi_data",
-         &BrokerGroupWrapper::get_multi_data,
+         [](BrokerGroupWrapper& self,
+            std::initializer_list<std::size_t> steps,
+            const char* alg,
+            const char* field) {
+           return self.get_multi_data(steps, alg, field);
+         },
          py::arg("steps"),
          py::arg("alg"),
          py::arg("field"))
+    .def("get_multi_data",
+         [](BrokerGroupWrapper& self,
+            std::initializer_list<std::size_t> steps,
+            const char* field) {
+           return self.get_multi_data(steps, field);
+         },
+         py::arg("steps"),
+         py::arg("field"))
     .def("resolve_data",
-         &BrokerGroupWrapper::resolve_data,
+         [](BrokerGroupWrapper& self,
+            std::size_t step,
+            const char* alg,
+            const char* field) {
+           return self.resolve_data(step, alg, field);
+         },
          py::arg("step"),
          py::arg("alg"),
          py::arg("field"))
+    .def("resolve_data",
+         [](BrokerGroupWrapper& self,
+            std::size_t step,
+            const char* field) {
+           return self.resolve_data(step, field);
+         },
+         py::arg("step"),
+         py::arg("field"))
     .def("resolve_multi_data",
-         &BrokerGroupWrapper::resolve_multi_data,
+         [](BrokerGroupWrapper& self,
+            std::size_t first,
+            std::size_t last,
+            const char* alg,
+            const char* field) {
+           return self.resolve_multi_data(first, last, alg, field);
+         },
          py::arg("first"),
          py::arg("last"),
          py::arg("alg"),
+         py::arg("field"))
+    .def("resolve_multi_data",
+         [](BrokerGroupWrapper& self,
+            std::size_t first,
+            std::size_t last,
+            const char* field) {
+           return self.resolve_multi_data(first, last, field);
+         },
+         py::arg("first"),
+         py::arg("last"),
          py::arg("field"));
 
   py::classh<AlgWrapper>(pysbio_module, "AlgWrapper", py::dynamic_attr());
+
+  /// --- Batches, Steps, Iterators, and Zip --- ///
 
   using Batch = sbio::StepBatch<std::size_t>;
   py::classh<Batch>(pysbio_module, "StepBatch", "Contiguous steps [first, last).")
@@ -142,7 +246,20 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("__int__", [](const ZipStep& self) { return self.step; })
     .def("__index__", [](const ZipStep& self) { return self.step; })
     .def("get",
-         [](const ZipStep& self, BrokerGroupWrapper& group, const char* alg, const char* field) {
+         [](const ZipStep& self, BrokerGroupWrapper& group, const char* field) {
+           if (self.status != sbio::IOStatus::Success) {
+             throw std::runtime_error("The step's fetch failed (see `status`).");
+           }
+           return group.resolve_data(self.step, field);
+         },
+         py::arg("group"),
+         py::arg("field"),
+         "The group's data for this step (the group must be one of the zipped groups).")
+    .def("get",
+         [](const ZipStep& self,
+            BrokerGroupWrapper& group,
+            const char* alg,
+            const char* field) {
            if (self.status != sbio::IOStatus::Success) {
              throw std::runtime_error("The step's fetch failed (see `status`).");
            }
@@ -160,7 +277,20 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("count", [](const ZipBatch& self) { return self.last - self.first; })
     .def("__len__", [](const ZipBatch& self) { return self.last - self.first; })
     .def("get",
-         [](const ZipBatch& self, BrokerGroupWrapper& group, const char* alg, const char* field) {
+         [](const ZipBatch& self, BrokerGroupWrapper& group, const char* field) {
+           if (self.status != sbio::IOStatus::Success) {
+             throw std::runtime_error("The batch's fetch failed (see `status`).");
+           }
+           return group.resolve_multi_data(self.first, self.last, field);
+         },
+         py::arg("group"),
+         py::arg("field"),
+         "The group's data for this batch (the group must be one of the zipped groups).")
+    .def("get",
+         [](const ZipBatch& self,
+            BrokerGroupWrapper& group,
+            const char* alg,
+            const char* field) {
            if (self.status != sbio::IOStatus::Success) {
              throw std::runtime_error("The batch's fetch failed (see `status`).");
            }
@@ -182,6 +312,8 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("__enter__", [](ZipIterator& self) -> ZipIterator& { return self; })
     .def("__exit__", [](ZipIterator& self, py::args) { self.close(); });
 
+  /// --- PyDataSource --- ///
+
   py::classh<PyDataSource>(pysbio_module, "DataSource")
     .def(py::init<
            std::string,
@@ -198,10 +330,51 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
-         py::arg("epolicy") = pysbio::ExecutionPolicy::MPI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
          py::arg("exec_cfg") = py::dict(),
          py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
-         ds_doc)
+         xtc_ds_doc)
+    .def(py::init<
+           std::string,
+           std::string,
+           int,
+           int,
+           std::string,
+           std::string,
+           pysbio::FTraits,
+           pysbio::ExecutionPolicy,
+           py::dict,
+           pysbio::IOPolicy
+         >(),
+         py::arg("directory"),
+         py::arg("prefix"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("tag") = "",
+         py::arg("ext") = "cxi",
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
+         py::arg("exec_cfg") = py::dict(),
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
+         dir_prefix_ds_doc)
+    .def(py::init<
+           std::string,
+           int,
+           int,
+           pysbio::FTraits,
+           pysbio::ExecutionPolicy,
+           py::dict,
+           pysbio::IOPolicy
+         >(),
+         py::arg("path"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
+         py::arg("exec_cfg") = py::dict(),
+         py::arg("io_policy") = pysbio::IOPolicy::SyncPOSIX,
+         file_ds_doc)
+    .def_property_readonly("available_groups", &PyDataSource::available_groups)
     .def("group", [&](PyDataSource& self, const char* name) {
       return self.group(pysbio_module, name);
     },
@@ -229,15 +402,17 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
       py::keep_alive<0, 1>(),
       "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).")
     .def("zip", [](PyDataSource& self, py::args groups) {
-      return self.zip(groups.cast<std::vector<py::object>>(), false);
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), false);
     },
       py::keep_alive<0, 1>(),
       "Iterate the steps, fetching once for all of the given groups (detectors).")
     .def("zip_batches", [](PyDataSource& self, py::args groups) {
-      return self.zip(groups.cast<std::vector<py::object>>(), true);
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), true);
      },
       py::keep_alive<0, 1>(),
       "Iterate batches of steps, fetching once for all of the given groups.");
+
+  /// --- ContextWrapper --- ///
 
   py::classh<ContextWrapper>(pysbio_module,
                              "Context",
@@ -254,13 +429,107 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def("has_env", &ContextWrapper::has_env, py::arg("key"))
     .def("set_env", &ContextWrapper::set_env, py::arg("key"), py::arg("value"))
     .def("data_source",
-         &ContextWrapper::data_source,
+         [](const std::shared_ptr<ContextWrapper>& self,
+            std::string exp,
+            unsigned run,
+            int evt_per_read,
+            int dgram_size,
+            pysbio::FTraits data_fmt) {
+           return ContextWrapper::data_source(self,
+                                              exp,
+                                              run,
+                                              evt_per_read,
+                                              dgram_size,
+                                              data_fmt);
+         },
          py::arg("exp"),
          py::arg("run"),
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
-         "Create a DataSource for a run, using this Context (which it keeps alive).");
+         "Create a DataSource for a run, using this Context (which it keeps alive).")
+    .def("data_source",
+         [](const std::shared_ptr<ContextWrapper>& self,
+            std::string directory,
+            std::string prefix,
+            int index_batch_size,
+            int max_buffer_size,
+            std::string tag,
+            std::string ext,
+            pysbio::FTraits data_fmt) {
+           return ContextWrapper::data_source(self,
+                                              directory,
+                                              prefix,
+                                              index_batch_size,
+                                              max_buffer_size,
+                                              tag,
+                                              ext,
+                                              data_fmt);
+         },
+         py::arg("directory"),
+         py::arg("prefix"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("tag") = "",
+         py::arg("ext") = "cxi",
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         "Create a DataSource for a file, using this Context (which it keeps alive).")
+    .def("data_source",
+         [](const std::shared_ptr<ContextWrapper>& self,
+            std::string path,
+            int index_batch_size,
+            int max_buffer_size,
+            pysbio::FTraits data_fmt) {
+           return ContextWrapper::data_source(self,
+                                              path,
+                                              index_batch_size,
+                                              max_buffer_size,
+                                              data_fmt);
+         },
+         py::arg("path"),
+         py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
+         py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("data_fmt") = pysbio::FTraits::CXI,
+         "Create a DataSource for a file, using this Context (which it keeps alive).");
+
+  /// --- PySourceSet --- ///
+
+  py::classh<PySourceSet>(pysbio_module,
+                          "SourceSet",
+                          "Build a set of DataSources to iterate together.")
+    .def(py::init([](PyDataSource& ds_a, PyDataSource& ds_b) {
+      return make_source_set(ds_a.ds(), ds_b.ds());
+    }),
+         py::keep_alive<1, 2>(),
+         py::keep_alive<1, 3>())
+    .def("__iter__", [](PySourceSet& self) {
+      auto iterator_maker = [](auto& set) {
+        return py::make_iterator(set.begin(), set.end());
+      };
+
+      return std::visit(iterator_maker, self.set());
+    },
+      py::keep_alive<0, 1>())
+    .def("steps", [](PySourceSet& self) {
+      return self.steps(false, 0);
+    },
+      py::keep_alive<0, 1>())
+    .def("batches", [](PySourceSet& self, std::size_t batch_size) {
+      return self.steps(true, batch_size);
+    },
+      py::arg("batch_size") = 0,
+      py::keep_alive<0, 1>(),
+      "Iterate contiguous batches of steps (at most batch_size, or max_batch_size).")
+    .def("zip", [](PySourceSet& self, py::args groups) {
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), false);
+    },
+      py::keep_alive<0, 1>(),
+      "Iterate the steps, fetching once for all of the given groups (detectors).")
+    .def("zip_batches", [](PySourceSet& self, py::args groups) {
+      return self.zip(groups.cast<std::vector<const BrokerGroupWrapper*>>(), true);
+     },
+      py::keep_alive<0, 1>(),
+      "Iterate batches of steps, fetching once for all of the given groups.");
 
 #ifdef SBIO_HAS_MPI
   auto atexit = py::module_::import("atexit");

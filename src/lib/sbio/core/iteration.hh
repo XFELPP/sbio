@@ -928,6 +928,23 @@ namespace sbio {
       hd_std::size_t m_batch_size;
     };
 
+    SBIO_HD Iterator begin() { return Iterator(*this, next()); }
+    SBIO_HD ConstIterator begin() const { return ConstIterator(*this, next()); }
+
+    SBIO_HD Iterator end() {
+      return Iterator(*this, DataFormat::ExhaustedSentinel);
+    }
+    SBIO_HD ConstIterator end() const {
+      return ConstIterator(*this, DataFormat::ExhaustedSentinel);
+    }
+
+    SBIO_HD ConstIterator cbegin() const {
+      return ConstIterator(*this, next());
+    }
+    SBIO_HD ConstIterator cend() const {
+      return ConstIterator(*this, DataFormat::ExhaustedSentinel);
+    }
+
     using StepRange = RangeImpl<SourceSet, false>;
     using ConstStepRange = RangeImpl<const SourceSet, false>;
 
@@ -959,6 +976,8 @@ namespace sbio {
     SBIO_HD ConstBatchRange cbatches(hd_std::size_t batch_size = 0) const {
       return BatchRange(*this, batch_size);
     }
+
+    SBIO_HD const hd_std::tuple<Sources*...> sources() const { return m_sources; }
 
   private:
     /**

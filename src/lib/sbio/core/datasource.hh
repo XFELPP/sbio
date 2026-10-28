@@ -426,7 +426,7 @@ namespace sbio {
      */
     template <std::size_t MaxSegments = 128>
     SBIO_HD inline BrokerGroup<BrokerType, FTraits, MaxSegments>
-    get_stream_group(const char* name) {
+    get_stream_group(const char* name) const {
       using GroupTopologyType = GroupTopology<BrokerType, MaxSegments>;
 
       auto topo =
@@ -798,7 +798,17 @@ namespace sbio {
           }
 
           advance_chunk_if_done(n_stream);
-          const IOStatus status { m_data_streams[n_stream].index_stream() };
+          IOStatus status { m_data_streams[n_stream].index_stream() };
+
+          // Continue through empty chunks in the chain (i.e. files/streams w/ no steps)
+          while (status == IOStatus::ZeroBytesRead                &&
+                 n_stream < m_pending_chunks.size()               &&
+                 !m_pending_chunks[n_stream].empty()              &&
+                 m_data_streams[n_stream].catalog().chunk_complete) {
+            advance_chunk_if_done(n_stream);
+            status = m_data_streams[n_stream].index_stream();
+          }
+
           if (status == IOStatus::Success) {
             add_indexed_steps(n_stream);
           } else {
@@ -831,7 +841,16 @@ namespace sbio {
 
       for (std::size_t n_stream = 0; n_stream < m_num_data_streams; ++n_stream) {
         advance_chunk_if_done(n_stream);
-        IOStatus status = m_data_streams[n_stream].index_stream();
+        IOStatus status { m_data_streams[n_stream].index_stream() };
+
+        // Continue through empty chunks in the chain (i.e. files/streams w/ no steps)
+        while (status == IOStatus::ZeroBytesRead                &&
+               n_stream < m_pending_chunks.size()               &&
+               !m_pending_chunks[n_stream].empty()              &&
+               m_data_streams[n_stream].catalog().chunk_complete) {
+          advance_chunk_if_done(n_stream);
+          status = m_data_streams[n_stream].index_stream();
+        }
 
         if (status != IOStatus::Success) {
           failed = true;

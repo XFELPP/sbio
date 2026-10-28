@@ -1,3 +1,4 @@
+subdir('hdf5')
 subdir('xtc1')
 subdir('xtc2')
 subdir('random')

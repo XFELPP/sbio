@@ -169,6 +169,8 @@ namespace sbio {
      */
     static constexpr bool UsesGenericIndex { HasGenericIndex<FTraits> };
 
+    static constexpr bool RediscoversPerChunk { impl::rediscovers_per_chunk<FTraits>() };
+
     // Check that IOPolicy and EPolicy are compatible
     static_assert(has_capabilities(io_capabilities<IO>(),
                                    EPolicy::template required_io_capabilities<IO>()),
@@ -417,6 +419,7 @@ namespace sbio {
      * @returns The IOStatus of opening the next chunk.
      */
     inline IOStatus advance_chunk(const GenericStreamConfig<FTraits>& next) {
+      bool reopened { false };
       for (std::size_t r = 0; r < m_config.VariantCount; ++r) {
         const auto& res { next.resources[r] };
         const bool given { res.type != StreamResourceType::Path || res.handle.path[0] != '\0' };
@@ -432,10 +435,21 @@ namespace sbio {
 
         m_config.resources[r] = res;
         m_indexing_cursor.next_offset[r] = 0;
+        reopened = true;
       }
 
       m_config.identity.chain_id = next.identity.chain_id;
       m_catalog.chunk_complete = false;
+
+      if constexpr (RediscoversPerChunk) {
+        if (reopened) {
+          // Format index state and metadata belong to the previous chunk's file.
+          // The catalog (ordinals, cumulative counts) is kept, so steps keep counting on.
+          m_indexing_cursor.format = {};
+          m_metadata_inv = StreamMetadata {};
+          return discover_metadata();
+        }
+      }
 
       return IOStatus::Success;
     }

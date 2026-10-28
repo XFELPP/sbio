@@ -26,7 +26,8 @@
 namespace pysbio {
   enum class FTraits : std::uint8_t {
     XTC1 = 0,
-    XTC2 = 1
+    XTC2 = 1,
+    CXI  = 2
   };
 
   /**

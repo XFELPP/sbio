@@ -57,9 +57,22 @@ namespace sbio {
   struct PathPatternLocatorTraits {
     using Parameters = LocatorParameters_t<PathPatternLocator, FTraits>;
 
+    /**
+     * The number of Stream variants found by the locator.
+     */
     static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
 
-    static constexpr std::array<const char*, VariantCount> role_patterns {};
+    /**
+     * The number of *sets* of patterns the locator will try.
+     *
+     * Each set has a pattern for each of the variants located. If there are more
+     * than a single set, they will be tried in the order they are defined.
+     */
+    static constexpr std::size_t NumPatterns { 1 };
+
+    using PatternArray = std::array<const char*, VariantCount>;
+
+    static constexpr std::array<PatternArray, NumPatterns> role_patterns {};
 
     /**
      * Given a filename, determine the stream identifier number.
@@ -135,6 +148,8 @@ namespace sbio {
 
       constexpr std::size_t VariantCount { LocatorTraits<FTraits>::provides_variants::size() };
 
+      constexpr std::size_t NumPatterns { LocatorTraits<FTraits>::NumPatterns };
+
       // Arguments from the environment (e.g. the data root)
       using LTraits = PathPatternLocatorTraits<FTraits>;
       std::vector<std::pair<std::string, std::string>> env_values;
@@ -144,60 +159,70 @@ namespace sbio {
         }
       }
 
+      // TODO: Consider how accepting a set of streams should work. I.e., should
+      //       partial matches count as valid (only one of two variants found, e.g.)
+      // TODO: Think on general sanitizing and preventing unnecessary sweeps.
+      //       E.g. empty parameters leading to invalid directories. Or getting into
+      //       a full directory scan of `/` and so on.
       StreamMap<VariantCount> streams;
-      for (std::size_t r = 0; r < VariantCount; ++r) {
-        std::string base_pattern = format_parameter_string(patterns[r], params, env_values);
-
-        fs::path prefix_path(base_pattern);
-        fs::path parent_dir { prefix_path.parent_path() };
-        std::string prefix_filename { prefix_path.filename().string() };
-
-        if (!fs::exists(parent_dir)) {
-          continue;
+      for (std::size_t p = 0; p < NumPatterns; ++p) {
+        if (!streams.empty()) {
+          // Only continue with subsequent pattern sets if streams have not been found.
+          break;
         }
+        for (std::size_t r = 0; r < VariantCount; ++r) {
+          std::string role_pattern { patterns[p][r] };
+          std::string base_pattern = format_parameter_string(role_pattern, params, env_values);
 
-        for (const auto& entry : fs::directory_iterator(parent_dir)) {
-          std::string path_str { entry.path().string() };
-          std::string filename { entry.path().filename().string() };
+          fs::path prefix_path(base_pattern);
+          fs::path parent_dir { prefix_path.parent_path() };
+          std::string prefix_filename { prefix_path.filename().string() };
 
-          bool accepted { filename.find(prefix_filename) == 0 };
-          if constexpr (requires { LTraits::accepts(std::string_view {}, params); }) {
-            accepted = accepted && LTraits::accepts(filename, params);
+          if (!fs::exists(parent_dir)) {
+            continue;
           }
 
-          if (accepted) {
-            auto stream_id { PathPatternLocatorTraits<FTraits>::id_stream(filename) };
-            auto chain_id { PathPatternLocatorTraits<FTraits>::id_chain_order(filename) };
+          for (const auto& entry : fs::directory_iterator(parent_dir)) {
+            std::string path_str { entry.path().string() };
+            std::string filename { entry.path().filename().string() };
 
-            streams[stream_id][chain_id][r] = path_str;
+            bool accepted { filename.find(prefix_filename) == 0 };
+            if constexpr (requires { LTraits::accepts(std::string_view {}, params); }) {
+              accepted = accepted && LTraits::accepts(filename, params);
+            }
+
+            if (accepted) {
+              auto stream_id { PathPatternLocatorTraits<FTraits>::id_stream(filename) };
+              auto chain_id { PathPatternLocatorTraits<FTraits>::id_chain_order(filename) };
+
+              streams[stream_id][chain_id][r] = path_str;
+            }
           }
         }
       }
 
+      // Have a chain of StreamBrokers that will run sequentially
       for (const auto& [stream_id, stream_chain_map] : streams) {
-        // Have a chain of StreamBrokers that will run sequentially
-        for (const auto& [stream_id, stream_chain_map] : streams) {
-          // The map is ordered by chain id with the chain's chunks, in order
-          std::vector<GenericStreamConfig<FTraits>> chunks;
-          for (const auto& [chain_id, role_paths] : stream_chain_map) {
-            auto cfg { base_cfg };
-            cfg.identity.stream_id = stream_id;
-            cfg.identity.chain_id = chain_id;
+        // The map is ordered by chain id with the chain's chunks, in order
+        std::vector<GenericStreamConfig<FTraits>> chunks;
+        for (const auto& [chain_id, role_paths] : stream_chain_map) {
+          auto cfg { base_cfg };
+          cfg.identity.stream_id = stream_id;
+          cfg.identity.chain_id = chain_id;
 
-            for (std::size_t r = 0; r < VariantCount; ++r) {
-              // A role without a file in this chunk keeps the previous
-              // chunk's (e.g. the single SMD of an XTC2 run)
-              cfg.resources[r] =
-                role_paths[r].empty()
-                  ? StreamResource{}
-                  : StreamResource::from_path(role_paths[r].c_str());
-            }
-
-            chunks.push_back(cfg);
+          for (std::size_t r = 0; r < VariantCount; ++r) {
+            // A role without a file in this chunk keeps the previous
+            // chunk's (e.g. the single SMD of an XTC2 run)
+            cfg.resources[r] =
+              role_paths[r].empty()
+                ? StreamResource{}
+                : StreamResource::from_path(role_paths[r].c_str());
           }
 
-          ds.add_data_chain(chunks.data(), chunks.size());
+          chunks.push_back(cfg);
         }
+
+        ds.add_data_chain(chunks.data(), chunks.size());
       }
 
       return ds.num_data_streams() > 0;

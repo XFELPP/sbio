@@ -912,7 +912,9 @@ namespace sbio {
                        const ClockTime& clock,
                        const TimeStamp& stamp)
         : m_clock(clock)
-        , m_stamp(stamp, ((type & m_seqtype) << v_seqtype) | ((service & m_service) << v_service))
+        , m_stamp(stamp,
+                  ((static_cast<std::uint32_t>(type) & static_cast<std::uint32_t>(m_seqtype)) << v_seqtype) |
+                  ((static_cast<unsigned>(service) & static_cast<unsigned>(m_service)) << v_service))
       {}
 
       SBIO_HD Sequence& operator=(const Sequence& input) {

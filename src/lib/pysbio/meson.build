@@ -7,7 +7,9 @@ if build_python_opt
         [
             'pybroker_group.cc',
             'pydatasource.cc',
+            'pyiteration.cc',
             'pysbio.cc',
+            'pysourceset.cc',
             'utilities.cc',
         ],
         install: true,
@@ -25,6 +27,8 @@ installed_py_bindings_headers = [
     'policies.hh',
     'pybroker_group.hh',
     'pydatasource.hh',
+    'pyiteration.hh',
+    'pysourceset.hh',
     'utilities.hh',
 ]
 
