@@ -435,7 +435,7 @@ if sbio_build_hdf5
         'hdf5',
         language: 'c',
         version: '>=1.14.0',
-        default_options: ['default_library=static'],
+        # default_options: ['default_library=static'],
         required: false
     )
     if not hdf5_dep.found()
@@ -455,10 +455,12 @@ if sbio_build_hdf5
                     'HDF5_BUILD_FORTRAN': 'OFF',
                     # 'HDF5_BUILD_STATIC_LIBS': 'OFF',
                     # 'HDF5_BUILD_SHARED_LIBS': 'ON',
-                    # Didn't seem to be needed. But add just in case
-                    'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
-                    'BUILD_SHARED_LIBS': 'OFF',
-                    'BUILD_STATIC_LIBS': 'ON',
+                    # Didn't seem to be needed (for static). But add just in case
+                    # 'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
+                    # 'BUILD_SHARED_LIBS': 'OFF',
+                    # 'BUILD_STATIC_LIBS': 'ON',
+                    'BUILD_SHARED_LIBS': 'ON',
+                    'BUILD_STATIC_LIBS': 'OFF',
                     'CMAKE_LINK_DEPENDS_USE_LINKER': 'OFF',
                     'HDF5_BUILD_EXAMPLES': 'OFF',
                     'HDF5_BUILD_TESTS': 'OFF',
@@ -474,10 +476,12 @@ if sbio_build_hdf5
                     'HDF5_BUILD_FORTRAN': 'OFF',
                     # 'HDF5_BUILD_STATIC_LIBS': 'OFF',
                     # 'HDF5_BUILD_SHARED_LIBS': 'ON',
-                    # Didn't seem to be needed. But add just in case
-                    'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
-                    'BUILD_SHARED_LIBS': 'OFF',
-                    'BUILD_STATIC_LIBS': 'ON',
+                    # Didn't seem to be needed (for static). But add just in case
+                    # 'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
+                    # 'BUILD_SHARED_LIBS': 'OFF',
+                    # 'BUILD_STATIC_LIBS': 'ON',
+                    'BUILD_SHARED_LIBS': 'ON',
+                    'BUILD_STATIC_LIBS': 'OFF',
                     'CMAKE_LINK_DEPENDS_USE_LINKER': 'OFF',
                     'HDF5_BUILD_EXAMPLES': 'OFF',
                     'HDF5_BUILD_TESTS': 'OFF',
@@ -492,13 +496,16 @@ if sbio_build_hdf5
         #     hdf5_opts.append_compile_args('cpp', '-Wno-missing-include-dirs')
         # endif
 
+        # Set install so it goes to the same place as the other libs and then the
+        # auditwheel/delvewheel etc scripts can find it easily for packaging.
+        hdf5_opts.set_install(true)
         hdf5_proj = cmake.subproject('hdf5', options: hdf5_opts)
 
-        # hdf5_c_dep = hdf5_proj.dependency('hdf5-shared')
-        # # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-shared')
+        hdf5_c_dep = hdf5_proj.dependency('hdf5-shared')
+        # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-shared')
 
-        hdf5_c_dep = hdf5_proj.dependency('hdf5-static')
-        # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-static')
+        # hdf5_c_dep = hdf5_proj.dependency('hdf5-static')
+        # # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-static')
 
         hdf5_dep = declare_dependency(
             # dependencies: [hdf5_c_dep, hdf5_cpp_dep],

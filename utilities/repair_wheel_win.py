@@ -5,7 +5,7 @@ import glob
 import re
 import subprocess
 import zipfile
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 def update_pc_in_repaired_wheel(whl_path: str):
@@ -23,7 +23,8 @@ def update_pc_in_repaired_wheel(whl_path: str):
             f
             for f in z.namelist()
             if re.search(
-                r"(?<!py)(dev)?(sbio|xtc)[a-zA-Z0-9_.\-]*\.lib", os.path.basename(f)
+                r"(?<!py)(dev)?(hdf5|mpi|sbio|xtc)[a-zA-Z0-9_.\-]*\.lib",
+                os.path.basename(f),
             )
         ]
 
@@ -61,6 +62,19 @@ def update_pc_in_repaired_wheel(whl_path: str):
                     else:
                         zout.writestr(item, zin.read(item.filename))
         os.replace(temp_whl, whl_path)
+
+
+def extra_lib_dirs(
+    search_root: str, lib_ptns: Tuple[str, ...] = ("libhdf5*",)
+) -> List[str]:
+    lib_dirs: List[str] = []
+    for ptn in lib_ptns:
+        for path in glob.glob(os.path.join(search_root, "**", ptn), recursive=True):
+            lib_dir: str = os.path.dirname(os.path.abspath(path))
+            if lib_dir not in lib_dirs:
+                lib_dirs.append(lib_dir)
+
+    return lib_dirs
 
 
 def main():
@@ -121,7 +135,12 @@ def main():
             ]
         )
 
-    delvewheel_search_path: str = f"{lib_dir};{bin_dir}"
+    install_dir: str = os.path.join(
+        os.environ.get("GITHUB_WORKSPACE", os.getcwd()), "install"
+    )
+
+    elib_dirs: List[str] = extra_lib_dirs(search_root=install_dir)
+    delvewheel_search_path: str = ";".join([lib_dir, bin_dir] + elib_dirs)
     try:
         import ncarray
 
