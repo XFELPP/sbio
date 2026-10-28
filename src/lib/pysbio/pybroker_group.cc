@@ -65,7 +65,9 @@ namespace pysbio {
                                                    StepIdx step) {
 
             py::gil_scoped_release release;
-            return det.get_data(step, alg.c_str(), field.c_str());
+            return with_request_keys<SGT>(alg.c_str(), field.c_str(), [&](auto... keys) {
+              return det.get_data(step, keys...);
+            });
           };
 
           auto py_data_getter = py::cpp_function(cpp_data_getter, py::is_method(py_alg));
@@ -85,71 +87,38 @@ namespace pysbio {
     return py_det;
   }
 
-  py::object BrokerGroupWrapper::get_data(std::size_t step,
-                                          const char* alg,
-                                          const char* field) {
-    auto getter = [&](auto& grp) -> py::object {
-      auto inner = [&]() {
-        py::gil_scoped_release release;
-        return grp.get_data(step, alg, field);
-      };
+  void BrokerGroupWrapper::init_group_fields() {
 
-      auto arr { inner() };
-      return py::cast(std::move(arr));
+    auto fill_fields = [&](auto& grp) {
+      if (grp.num_stream_brokers() > 0) {
+        auto* broker { grp.stream_brokers()[0] };
+
+        using BrokerType = std::decay_t<decltype(*broker)>;
+        using InventoryType = typename BrokerType::StreamMetadata;
+
+        const auto& inv { const_cast<const InventoryType&>(broker->metadata()) };
+        for (const auto& inv_grp : inv.groups()) {
+          const auto& grp_key { inv_grp.key };
+          if (grp_key.group_type == grp.group_type() &&
+              grp_key.group_name == grp.group_name()) {
+            std::uint32_t gid { inv_grp.group_id };
+
+            for (const auto& inv_field : inv.fields()) {
+              // The mapping is flat, need to compare the field's group ID
+              if (inv_field.key.group_id == gid) {
+                std::vector<std::string> full_lookup_keys;
+                for (std::size_t i = 0; i < inv.KeyCount; ++i) {
+                  full_lookup_keys.push_back(inv_field.key.keys[i]);
+                }
+
+                m_fields.push_back(full_lookup_keys);
+              }
+            }
+          }
+        }
+      }
     };
 
-    return std::visit(getter, this->grp);
-  }
-
-  py::object BrokerGroupWrapper::get_multi_data(std::initializer_list<std::size_t> steps,
-                                                const char* alg,
-                                                const char* field) {
-    auto getter = [&](auto& grp) {
-      auto inner = [&]() {
-        py::gil_scoped_release release;
-        return grp.get_multi_data(steps, alg, field);
-      };
-
-      auto arr { inner() };
-
-      return py::cast(std::move(arr));
-    };
-
-    return std::visit(getter, this->grp);
-  }
-
-  py::object BrokerGroupWrapper::resolve_data(std::size_t step,
-                                              const char* alg,
-                                              const char* field) {
-    auto getter = [&](auto& grp) {
-      auto inner = [&]() {
-        py::gil_scoped_release release;
-        return grp.resolve_data(step, alg, field);
-      };
-
-      auto arr { inner() };
-
-      return py::cast(std::move(arr));
-    };
-
-    return std::visit(getter, this->grp);
-  }
-
-  py::object BrokerGroupWrapper::resolve_multi_data(std::size_t first,
-                                                    std::size_t last,
-                                                    const char* alg,
-                                                    const char* field) {
-    auto getter = [&](auto& grp) {
-      auto inner = [&]() {
-        py::gil_scoped_release release;
-        return grp.resolve_multi_data(first, last, alg, field);
-      };
-
-      auto arr { inner() };
-
-      return py::cast(std::move(arr));
-    };
-
-    return std::visit(getter, this->grp);
+    std::visit(fill_fields, this->grp);
   }
 } // namespace pysbio

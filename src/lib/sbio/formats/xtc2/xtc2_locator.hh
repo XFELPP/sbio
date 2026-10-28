@@ -66,11 +66,20 @@ namespace sbio {
 
     static constexpr std::size_t VariantCount { XTC2Traits::StreamTypes::size() };
 
-    // Must update this to use SIT_PSDM_DATA
-    // Need Locator to understand env var syntax then?
-    static constexpr std::array<const char*, VariantCount> role_patterns {{
-      "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}",
-      "/sdf/data/lcls/ds/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}"
+    static constexpr std::size_t NumPatterns { 1 };
+
+    using PatternArray = std::array<const char*, VariantCount>;
+
+    // The data root is SIT_PSDM_DATA (the Context's override, or the process environment)
+    static constexpr std::array<EnvPatternArg, 1> env_args {{
+      { "root", "SIT_PSDM_DATA", "/sdf/data/lcls/ds" }
+    }};
+
+    static constexpr std::array<PatternArray, NumPatterns> role_patterns {{
+      {
+        "{root}/{exp:.3}/{exp}/xtc/smalldata/{exp}-r{run:04d}",
+        "{root}/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}"
+      }
     }};
 
     static std::size_t id_stream(std::string_view filename) {

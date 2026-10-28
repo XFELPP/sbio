@@ -117,8 +117,13 @@ namespace sbio {
       SBIO_HD inline void add_detector(XTC1::Xtc* xtc, std::uint32_t offset) {
         const Src& src { xtc->src };
 
+        // The run control's configuration (scan values) is updated at each
+        // BeginCalibCycle. It is the "scan detector" of XTC1, and the only
+        // Control level Xtc that is registered.
+        const bool is_control { xtc->contains.id() == TypeId::Id_ControlConfig };
+
         // Skip non-detector/non-BLD levels
-        if (src.level() != Level::Source && src.level() != Level::Reporter) {
+        if (src.level() != Level::Source && src.level() != Level::Reporter && !is_control) {
           return;
         }
 
@@ -140,12 +145,14 @@ namespace sbio {
 
         if (alias_it != m_alias_map.end() && !alias_it->second.empty()) {
           primary_name = alias_it->second; // e.g., "epix10k2M"
+        } else if (is_control) {
+          primary_name = "ControlData"; // As named by psana
         } else {
           primary_name = format_src_fullname(src); // e.g., "EBeam" or "MfxEndstation.0:Epix10ka2M.0"
         }
 
         // Segment number is the lowest byte of the physical source ID
-        std::uint32_t segment { src.phy() & 0xFF };
+        std::uint32_t segment { is_control ? 0 : src.phy() & 0xFF };
         safe_strncpy(m_detectors[name_id].name, primary_name.c_str(), XTC1::MaxNameSize);
         safe_strncpy(m_detectors[name_id].type, type_name, XTC1::MaxNameSize);
         m_detectors[name_id].segment = segment;
@@ -153,13 +160,17 @@ namespace sbio {
         m_sd_offsets_discovered[name_id] = offset;
         m_src_logs[name_id] = src.log();
         m_src_phys[name_id] = src.phy();
+        m_src_names[name_id] = is_control ? primary_name : format_src_fullname(src);
+        m_types[name_id] = xtc->contains;
 
         // Register fields from the schema registry
         auto* schema = find_schema(type, version);
         if (schema != nullptr) {
           // For BLD do not use offsets stored from lookup of the Configure transition
           // Force resolution based on the type via full traversal of the L1Accept XTCs
-          bool is_bld { (src.level() == Level::Reporter) };
+          // Likewise, the run control's configuration is found by type at each
+          // BeginCalibCycle
+          bool is_bld { (src.level() == Level::Reporter) || is_control };
 
           for (std::uint32_t f_idx = 0; f_idx < schema->fields.size(); ++f_idx) {
             const auto& field { schema->fields[f_idx] };
@@ -190,7 +201,7 @@ namespace sbio {
                 bool duplicate { false };
 
                 for (const auto& existing : m_fields[name_id]) {
-                  if (existing.name == field.name.data()) {
+                  if (field.name == existing.name) {
                     duplicate = true;
                     break;
                   }
@@ -202,6 +213,7 @@ namespace sbio {
                                                  field.dtype,
                                                  f_idx,
                                                  false,
+                                                 true,
                                                  schema->event_type);
                 }
               }
@@ -248,12 +260,20 @@ namespace sbio {
       SBIO_HD inline const std::map<std::uint32_t, std::uint32_t>&
       src_phys() const { return m_src_phys; }
 
+      SBIO_HD inline const std::map<std::uint32_t, std::string>&
+      src_names() const { return m_src_names; }
+
+      SBIO_HD inline const std::map<std::uint32_t, TypeId>&
+      types() const { return m_types; }
+
     private:
       std::map<std::uint32_t, XTC1::XtcDetectorDescr> m_detectors;
       std::map<std::uint32_t, std::vector<XTC1::XtcFieldDescr>> m_fields;
       std::map<std::uint32_t, std::uint32_t> m_sd_offsets_discovered;
       std::map<std::uint32_t, std::uint32_t> m_src_logs;
       std::map<std::uint32_t, std::uint32_t> m_src_phys;
+      std::map<std::uint32_t, std::string> m_src_names; // Full source names (e.g. CxiDs1.0:Jungfrau.0)
+      std::map<std::uint32_t, TypeId> m_types;          // Types of the Xtcs in the Configure transition
       // Holds alias mappings: Src -> DAQ Alias
       std::map<std::pair<Level::Type, std::uint32_t>, std::string> m_alias_map;
       // Map to check if a detector has already been registered

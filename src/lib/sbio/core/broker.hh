@@ -169,6 +169,8 @@ namespace sbio {
      */
     static constexpr bool UsesGenericIndex { HasGenericIndex<FTraits> };
 
+    static constexpr bool RediscoversPerChunk { impl::rediscovers_per_chunk<FTraits>() };
+
     // Check that IOPolicy and EPolicy are compatible
     static_assert(has_capabilities(io_capabilities<IO>(),
                                    EPolicy::template required_io_capabilities<IO>()),
@@ -321,32 +323,7 @@ namespace sbio {
         for (std::size_t r = 0; r < m_config.VariantCount; ++r) {
           const auto& res { m_config.resources[r] };
 
-          IOStatus status { IOStatus::OpenFailed };
-          switch (res.type) {
-          case StreamResourceType::Path: {
-            status = m_streams[r].connect(res.handle.path);
-            break;
-          }
-#ifdef _WIN32
-          case StreamResourceType::WindowsHandle: {
-            status = m_streams[r].connect(static_cast<HANDLE>(res.handle.win_handle));
-            break;
-          }
-#else
-          case StreamResourceType::FileDescriptor: {
-            status = m_streams[r].connect(res.handle.fd);
-            break;
-          }
-#endif // _WIN32
-          //case StreamResourceType::MemoryRegion: {
-          //  status = m_streams[r].connect(res.handle.memory.ptr,
-          //                                res.handle.memory.size);
-          //  break;
-          //}
-          default: {
-            return IOStatus::FunctionUnavailable;
-          }
-          }
+          IOStatus status { connect_resource(r, res) };
 
           if (status != IOStatus::Success) {
             return status;
@@ -422,6 +399,59 @@ namespace sbio {
       }
 
       return status;
+    }
+
+    /**
+     * Move on to the next chunk of a chain.
+     *
+     * The Storage, metadata and the catalog are kept. The ordinals continue, and
+     * steps carried over for alignment remain. Roles whose resource changes are
+     * reopened and scanned from their start. For roles whose resource is unchanged
+     * (or not given), their Stream and position are kept. (e.g. the single SMD of
+     * an XTC2 run).
+     *
+     * @note The previous chunk's steps can no longer be read.
+     *
+     * @todo Consider whether to handle going back to previous chunks if/when
+     *       bidirectional iterator support is added.
+     *
+     * @param[in] next The configuration of the next chunk.
+     * @returns The IOStatus of opening the next chunk.
+     */
+    inline IOStatus advance_chunk(const GenericStreamConfig<FTraits>& next) {
+      bool reopened { false };
+      for (std::size_t r = 0; r < m_config.VariantCount; ++r) {
+        const auto& res { next.resources[r] };
+        const bool given { res.type != StreamResourceType::Path || res.handle.path[0] != '\0' };
+        if (!given || same_resource(res, m_config.resources[r])) {
+          continue;
+        }
+
+        m_streams[r] = Stream<IO, FTraits> {}; // Closes the previous chunk
+        const IOStatus status { connect_resource(r, res) };
+        if (status != IOStatus::Success) {
+          return status;
+        }
+
+        m_config.resources[r] = res;
+        m_indexing_cursor.next_offset[r] = 0;
+        reopened = true;
+      }
+
+      m_config.identity.chain_id = next.identity.chain_id;
+      m_catalog.chunk_complete = false;
+
+      if constexpr (RediscoversPerChunk) {
+        if (reopened) {
+          // Format index state and metadata belong to the previous chunk's file.
+          // The catalog (ordinals, cumulative counts) is kept, so steps keep counting on.
+          m_indexing_cursor.format = {};
+          m_metadata_inv = StreamMetadata {};
+          return discover_metadata();
+        }
+      }
+
+      return IOStatus::Success;
     }
 
     /**
@@ -712,6 +742,28 @@ namespace sbio {
     SBIO_HD inline const GenericStreamConfig<DataFormat>& config() const { return m_config; }
 
     /**
+     * Visit the indexed steps of a kind, in order.
+     *
+     * Only the steps of the current index batch are visited (including a step carried
+     * over from the previous batch).
+     *
+     * @param[in] kind The kind of steps to visit.
+     * @param[in] fn Called as `fn(ordinal, order_key)` for each step.
+     */
+    template <class Fn>
+    requires UsesGenericIndex
+    inline void visit_steps(typename FTraits::StepKind kind, Fn&& fn) {
+      StorageView<SBStorageType, EPolicy> sv(m_storage);
+      const auto* rows { acquire_rows(sv) };
+
+      for (hd_std::uint32_t r { m_catalog.first_row[kind_idx(kind)] }; r != NoRow; r = rows[r].next_of_kind) {
+        fn(rows[r].ordinal, rows[r].order_key);
+      }
+
+      sv.template release<roles::Index, index_ids::Steps>(const_cast<StepOffset<FTraits>*>(rows));
+    }
+
+    /**
      * Configure the Broker with a set of metadata.
      *
      * Under some Execution policies, not all Brokers will necessarily move through
@@ -746,7 +798,8 @@ namespace sbio {
                                m_catalog.cummulative_steps,
                                m_catalog.num_rows,
                                m_catalog.first_row,
-                               m_catalog.last_row);
+                               m_catalog.last_row,
+                               m_catalog.chunk_complete);
       }
     }
 
@@ -755,8 +808,11 @@ namespace sbio {
     StreamBroker(StreamBroker&& other) noexcept = default;
     StreamBroker& operator=(StreamBroker&& other) noexcept = default;
 
-    // TODO: Needs to implement some sortable index (mostly for Chronological mode)
-    SBIO_HD std::uint32_t stream_idx() const { return 0; }
+    // The stream's identifier (e.g. from its filename), set by the Locator: sorts the
+    // StreamBrokers (mostly for Chronological mode)
+    SBIO_HD std::uint32_t stream_idx() const {
+      return static_cast<std::uint32_t>(m_config.identity.stream_id);
+    }
 
     SBIO_HD inline StreamCatalog<FTraits>& catalog() noexcept {
       return m_catalog;
@@ -823,6 +879,53 @@ namespace sbio {
     IndexingCursor<FTraits> m_indexing_cursor {};
 
   private:
+    /**
+     * Connect and open the Stream of role `r` to selected resource.
+     */
+    SBIO_HD inline IOStatus connect_resource(std::size_t r, const StreamResource& res) {
+      switch (res.type) {
+      case StreamResourceType::Path: {
+        return m_streams[r].connect(res.handle.path);
+        break;
+      }
+#ifdef _WIN32
+      case StreamResourceType::WindowsHandle: {
+        return m_streams[r].connect(static_cast<HANDLE>(res.handle.win_handle));
+        break;
+      }
+#else
+      case StreamResourceType::FileDescriptor: {
+        return m_streams[r].connect(res.handle.fd);
+        break;
+      }
+#endif // _WIN32
+      //case StreamResourceType::MemoryRegion: {
+      //  status = m_streams[r].connect(res.handle.memory.ptr,
+      //                                res.handle.memory.size);
+      //  break;
+      //}
+      default: {
+        return IOStatus::FunctionUnavailable;
+      }
+      }
+    }
+
+    SBIO_HD static bool same_resource(const StreamResource& res_a,
+                                      const StreamResource& res_b) {
+      if (res_a.type != res_b.type) {
+        return false;
+      }
+      if (res_a.type == StreamResourceType::Path) {
+        return hd_std::strcmp(res_a.handle.path, res_b.handle.path) == 0;
+      }
+#ifdef _WIN32
+      if (res_a.type == StreamResourceType::WindowsHandle) {
+        return res_a.handle.win_handle == res_b.handle.win_handle;
+      }
+#endif
+      return res_a.handle.fd == res_b.handle.fd;
+    }
+
     template <typename KindT>
     SBIO_HD static constexpr hd_std::size_t kind_idx(KindT kind) {
       return static_cast<hd_std::size_t>(kind);
@@ -970,6 +1073,16 @@ namespace sbio {
           }
 
           const auto kind { *kind_opt };
+          if constexpr (requires {
+              { FTraits::starts_chunk(unit, m_metadata_inv) } -> std::convertible_to<bool>;
+            }) {
+            if (m_catalog.num_rows > carried_rows && FTraits::starts_chunk(unit, m_metadata_inv)) {
+              m_catalog.chunk_complete = true;
+              at_end = true;
+              break;
+            }
+          }
+
           const auto k { kind_idx(kind) };
           const auto r { static_cast<hd_std::uint32_t>(m_catalog.num_rows++) };
 
@@ -979,6 +1092,9 @@ namespace sbio {
           step.prev_of_kind = m_catalog.last_row[k];
           step.step_kind = kind;
           step.ordinal = m_catalog.cummulative_steps[k];
+          if constexpr (requires { { FTraits::order_key(unit) } -> std::convertible_to<hd_std::uint64_t>; }) {
+            step.order_key = FTraits::order_key(unit);
+          }
 
           if (m_catalog.last_row[k] != NoRow) {
             rows[m_catalog.last_row[k]].next_of_kind = r;
@@ -1004,6 +1120,10 @@ namespace sbio {
           }
         }
         pos += used;
+      }
+
+      if (pos >= stream.file_size()) {
+        m_catalog.chunk_complete = true; // End of the indexed file
       }
 
       m_catalog.index_epoch++;

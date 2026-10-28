@@ -27,26 +27,52 @@
 #include <fmt/format.h>
 
 #include <array>
+#include <concepts>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace fs = std::filesystem;
 
 namespace sbio {
   struct PathPatternLocator;
 
+  /**
+   * A path pattern argument whose value comes from the environment.
+   */
+  struct EnvPatternArg {
+    const char* name;     ///< The argument's name in the pattern (e.g. "root")
+    const char* env_var;  ///< The environment variable providing the value
+    const char* fallback; ///< The value if the variable is not set
+  };
+
   template <typename FTraits>
   struct PathPatternLocatorTraits {
     using Parameters = LocatorParameters_t<PathPatternLocator, FTraits>;
 
+    /**
+     * The number of Stream variants found by the locator.
+     */
     static constexpr std::size_t VariantCount { FTraits::StreamTypes::size() };
 
-    static constexpr std::array<const char*, VariantCount> role_patterns {};
+    /**
+     * The number of *sets* of patterns the locator will try.
+     *
+     * Each set has a pattern for each of the variants located. If there are more
+     * than a single set, they will be tried in the order they are defined.
+     */
+    static constexpr std::size_t NumPatterns { 1 };
+
+    using PatternArray = std::array<const char*, VariantCount>;
+
+    static constexpr std::array<PatternArray, NumPatterns> role_patterns {};
 
     /**
      * Given a filename, determine the stream identifier number.
@@ -76,6 +102,28 @@ namespace sbio {
      * @returns A numeric identifier for the stream's position in a sequence/chain.
      */
     static std::size_t id_chain_order(std::string_view filename) { return 0; }
+
+    /**
+     * Pattern arguments taken from the environment.
+     *
+     * Each entry adds the argument `name` to the role patterns, with the value of the
+     * environment variable `env_var` (or `fallback` if unset). The environment is the
+     * DataSource's (a Context's overrides, then the process environment).
+     *
+     * E.g. `{ "root", "SIT_PSDM_DATA", "/sdf/data/lcls/ds" }` allows patterns like
+     * `"{root}/{exp:.3}/{exp}/xtc/{exp}-r{run:04d}"`.
+     */
+    static constexpr std::array<EnvPatternArg, 0> env_args {};
+
+    /**
+     * Whether a file matching a role's pattern (as a prefix) belongs to the source.
+     *
+     * Allows filtering files a prefix cannot, e.g. a run number that follows a
+     * part of the filename that is not known in advance.
+     *
+     * @returns Whether to use the file.
+     */
+    static bool accepts(std::string_view filename, const Parameters& params) { return true; }
   };
 
   struct PathPatternLocator {
@@ -100,61 +148,117 @@ namespace sbio {
 
       constexpr std::size_t VariantCount { LocatorTraits<FTraits>::provides_variants::size() };
 
-      StreamMap<VariantCount> streams;
-      for (std::size_t r = 0; r < VariantCount; ++r) {
-        std::string base_pattern = format_parameter_string(patterns[r], params);
+      constexpr std::size_t NumPatterns { LocatorTraits<FTraits>::NumPatterns };
 
-        fs::path prefix_path(base_pattern);
-        fs::path parent_dir { prefix_path.parent_path() };
-        std::string prefix_filename { prefix_path.filename().string() };
-
-        if (!fs::exists(parent_dir)) {
-          continue;
+      // Arguments from the environment (e.g. the data root)
+      using LTraits = PathPatternLocatorTraits<FTraits>;
+      std::vector<std::pair<std::string, std::string>> env_values;
+      if constexpr (requires { LTraits::env_args; }) {
+        for (const auto& arg : LTraits::env_args) {
+          env_values.emplace_back(arg.name, environment_value(ds, arg.env_var, arg.fallback));
         }
+      }
 
-        for (const auto& entry : fs::directory_iterator(parent_dir)) {
-          std::string path_str { entry.path().string() };
-          std::string filename { entry.path().filename().string() };
+      // TODO: Consider how accepting a set of streams should work. I.e., should
+      //       partial matches count as valid (only one of two variants found, e.g.)
+      // TODO: Think on general sanitizing and preventing unnecessary sweeps.
+      //       E.g. empty parameters leading to invalid directories. Or getting into
+      //       a full directory scan of `/` and so on.
+      StreamMap<VariantCount> streams;
+      for (std::size_t p = 0; p < NumPatterns; ++p) {
+        if (!streams.empty()) {
+          // Only continue with subsequent pattern sets if streams have not been found.
+          break;
+        }
+        for (std::size_t r = 0; r < VariantCount; ++r) {
+          std::string role_pattern { patterns[p][r] };
+          std::string base_pattern = format_parameter_string(role_pattern, params, env_values);
 
-          if (filename.find(prefix_filename) == 0) {
-            auto stream_id { PathPatternLocatorTraits<FTraits>::id_stream(filename) };
-            auto chain_id { PathPatternLocatorTraits<FTraits>::id_chain_order(filename) };
+          fs::path prefix_path(base_pattern);
+          fs::path parent_dir { prefix_path.parent_path() };
+          std::string prefix_filename { prefix_path.filename().string() };
 
-            streams[stream_id][chain_id][r] = path_str;
+          if (!fs::exists(parent_dir)) {
+            continue;
+          }
+
+          for (const auto& entry : fs::directory_iterator(parent_dir)) {
+            std::string path_str { entry.path().string() };
+            std::string filename { entry.path().filename().string() };
+
+            bool accepted { filename.find(prefix_filename) == 0 };
+            if constexpr (requires { LTraits::accepts(std::string_view {}, params); }) {
+              accepted = accepted && LTraits::accepts(filename, params);
+            }
+
+            if (accepted) {
+              auto stream_id { PathPatternLocatorTraits<FTraits>::id_stream(filename) };
+              auto chain_id { PathPatternLocatorTraits<FTraits>::id_chain_order(filename) };
+
+              streams[stream_id][chain_id][r] = path_str;
+            }
           }
         }
       }
 
+      // Have a chain of StreamBrokers that will run sequentially
       for (const auto& [stream_id, stream_chain_map] : streams) {
-        if (stream_chain_map.size() == 1) {
-          // Have one single StreamBroker to construct
+        // The map is ordered by chain id with the chain's chunks, in order
+        std::vector<GenericStreamConfig<FTraits>> chunks;
+        for (const auto& [chain_id, role_paths] : stream_chain_map) {
           auto cfg { base_cfg };
-          const auto& role_paths { stream_chain_map.begin()->second };
+          cfg.identity.stream_id = stream_id;
+          cfg.identity.chain_id = chain_id;
 
           for (std::size_t r = 0; r < VariantCount; ++r) {
-            cfg.resources[r] = StreamResource::from_path(role_paths[r].c_str());
+            // A role without a file in this chunk keeps the previous
+            // chunk's (e.g. the single SMD of an XTC2 run)
+            cfg.resources[r] =
+              role_paths[r].empty()
+                ? StreamResource{}
+                : StreamResource::from_path(role_paths[r].c_str());
           }
 
-          ds.add_data_stream(cfg);
-        } else {
-          // Have a chain of StreamBrokers that will run sequentially
-          // TODO: Need to work out the StreamBrokerChain mechanism.
+          chunks.push_back(cfg);
         }
+
+        ds.add_data_chain(chunks.data(), chunks.size());
       }
 
       return ds.num_data_streams() > 0;
     }
 
     template <typename Params>
-    static auto format_parameter_string(std::string_view fmt_string, Params& params) {
+    static auto format_parameter_string(std::string_view fmt_string,
+                                        Params& params,
+                                        const std::vector<std::pair<std::string, std::string>>& extra = {}) {
       auto meta { Params::get_metadata() };
 
       constexpr auto tuple_size { std::tuple_size_v<decltype(meta)> };
 
       fmt::dynamic_format_arg_store<fmt::format_context> store;
       add_tuple_to_store(params, meta, store, std::make_index_sequence<tuple_size>{});
+      for (const auto& [name, value] : extra) {
+        store.push_back(fmt::arg(name.c_str(), value));
+      }
 
       return fmt::vformat(fmt_string, store);
+    }
+
+    /**
+     * An environment variable as seen by a DataSource.
+     *
+     * Uses the DataSource's environment (e.g. with a Context's overrides) if it has
+     * one, otherwise the process environment.
+     */
+    template <typename DS>
+    static std::string environment_value(const DS& ds, const char* key, const char* fallback) {
+      if constexpr (requires { { ds.env(key, fallback) } -> std::convertible_to<std::string>; }) {
+        return ds.env(key, fallback);
+      } else {
+        const char* value { std::getenv(key) };
+        return value != nullptr ? std::string(value) : std::string(fallback);
+      }
     }
 
   private:

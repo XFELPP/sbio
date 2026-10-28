@@ -276,10 +276,19 @@ namespace sbio {
       }
       if (xtc->contains.id() == XTC1::TypeId::Id_Xtc) {
         // It's a container Xtc: traverse its children
+        // Each child's offset is past hte container's header and its preceding siblings
         int remaining { xtc->sizeofPayload() };
         auto* subxtc { reinterpret_cast<XTC1::Xtc*>(xtc->payload()) };
-        while (remaining > 0) {
-          inspect_xtc1(subxtc, collector, current_offset + sizeof(XTC1::Xtc));
+        std::uint32_t child_offset {
+          current_offset + static_cast<std::uint32_t>(sizeof(XTC1::Xtc))
+        };
+        while (remaining >= static_cast<int>(sizeof(XTC1::Xtc))) {
+          if (subxtc->extent < sizeof(XTC1::Xtc)) {
+            break; // Corrupt XTC
+          }
+
+          inspect_xtc1(subxtc, collector, child_offset);
+          child_offset += subxtc->extent;
           remaining -= subxtc->extent;
           subxtc = subxtc->next();
         }

@@ -272,12 +272,8 @@ namespace sbio {
       SBIO_HD void plan_group() {
         const auto& group { *hd_std::get<G>(m_groups) };
 
-        using Group = hd_std::remove_cvref_t<decltype(group)>;
-        constexpr bool Chronological {
-          Group::DataFormat::PartitioningStrategy == StreamPartitioningStrategy::Chronological
-        };
-        // Chronological groups fetch a single, step-dependent, StreamBroker.
-        const hd_std::size_t num_brokers { Chronological ? 1 : group.num_stream_brokers() };
+        // For Chronological groups, only the StreamBroker holding a step fetches it
+        const hd_std::size_t num_brokers { group.num_stream_brokers() };
 
         for (hd_std::size_t b = 0; b < num_brokers; ++b) {
           bool shared { false };
@@ -932,6 +928,23 @@ namespace sbio {
       hd_std::size_t m_batch_size;
     };
 
+    SBIO_HD Iterator begin() { return Iterator(*this, next()); }
+    SBIO_HD ConstIterator begin() const { return ConstIterator(*this, next()); }
+
+    SBIO_HD Iterator end() {
+      return Iterator(*this, DataFormat::ExhaustedSentinel);
+    }
+    SBIO_HD ConstIterator end() const {
+      return ConstIterator(*this, DataFormat::ExhaustedSentinel);
+    }
+
+    SBIO_HD ConstIterator cbegin() const {
+      return ConstIterator(*this, next());
+    }
+    SBIO_HD ConstIterator cend() const {
+      return ConstIterator(*this, DataFormat::ExhaustedSentinel);
+    }
+
     using StepRange = RangeImpl<SourceSet, false>;
     using ConstStepRange = RangeImpl<const SourceSet, false>;
 
@@ -963,6 +976,8 @@ namespace sbio {
     SBIO_HD ConstBatchRange cbatches(hd_std::size_t batch_size = 0) const {
       return BatchRange(*this, batch_size);
     }
+
+    SBIO_HD const hd_std::tuple<Sources*...> sources() const { return m_sources; }
 
   private:
     /**

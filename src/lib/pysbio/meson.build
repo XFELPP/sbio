@@ -7,7 +7,9 @@ if build_python_opt
         [
             'pybroker_group.cc',
             'pydatasource.cc',
+            'pyiteration.cc',
             'pysbio.cc',
+            'pysourceset.cc',
             'utilities.cc',
         ],
         install: true,
@@ -18,6 +20,41 @@ if build_python_opt
         build_rpath: py_to_lib_install_rpath,
         # link_args: py_mod_link_args,
     )
+
+    if sbio_has_cuda
+        # Provide the stub for Linux
+        if host_machine.system() == 'linux'
+            fs = import('fs')
+            nvcc_bin = find_program('nvcc')
+            nvcc_path = nvcc_bin.full_path()
+
+            cuda_root = fs.parent(fs.parent(nvcc_path))
+
+            # Check `lib64/stubs` and `lib/stubs` for driver stub
+            cuda_stub_lib = cuda_root / 'lib64/stubs/libcuda.so'
+            if not fs.exists(cuda_stub_lib)
+                cuda_stub_lib = cuda_root / 'lib/stubs/libcuda.so'
+            endif
+
+            # For conda environments it's generally under targets
+            if not fs.exists(cuda_stub_lib)
+                cuda_stub_lib = cuda_root / 'targets/x86_64-linux/lib/stubs/libcuda.so'
+            endif
+
+            if fs.exists(cuda_stub_lib)
+                message('**** Installing libcuda stub library: ' + cuda_stub_lib + ' ****')
+
+                install_data(
+                    cuda_stub_lib,
+                    install_dir: py3.get_install_dir() / 'sbio/core/stubs'
+                )
+            else
+                # The stub must be provided to prevent issues for CUDA-enabled builds
+                # for users running without the CUDA driver (CPU-only mode).
+                error('Cannot find CUDA driver stub (libcuda.so) from CUDA root: ' + cuda_root)
+            endif
+        endif # Linux guard
+    endif # sbio_has_cuda
 endif # build_python_opt
 
 installed_py_bindings_headers = [
@@ -25,6 +62,8 @@ installed_py_bindings_headers = [
     'policies.hh',
     'pybroker_group.hh',
     'pydatasource.hh',
+    'pyiteration.hh',
+    'pysourceset.hh',
     'utilities.hh',
 ]
 

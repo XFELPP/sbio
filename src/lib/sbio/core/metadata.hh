@@ -365,7 +365,13 @@ namespace sbio {
       GroupEntry entry;
       entry.key.group_name = name;
       entry.key.group_type = type;
+#ifdef _WIN32
+      const char* grp_ptrs[sizeof...(grp_meta) + 1] = {
+        static_cast<const char*>(grp_meta)..., nullptr
+      };
+#else
       const char* grp_ptrs[] = { static_cast<const char*>(grp_meta)... };
+#endif
       for (hd_std::size_t k = 0; k < GroupKeys::count; ++k) {
         entry.key.extra_metadata[k] = grp_ptrs[k];
       }
@@ -523,6 +529,96 @@ namespace sbio {
     }
 
     /**
+     * @brief Return a descriptor for the requested data using a user predicate.
+     *
+     * Using a user-supplied predicate, lookup the corresponding FieldEntry.
+     *
+     * @tparam Pred The predicate type. Called as a `Pred(const FieldEntry&) -> bool`
+     * @param[in] pred The predicate function for lookup.
+     * @returns The entry if found, or nullptr otherwise.
+     */
+    template <class Pred>
+    SBIO_HD inline const FieldEntry* lookup_by(Pred&& pred) const {
+      for (const auto& entry : m_fields) {
+        if (pred(entry)) {
+          return &entry;
+        }
+      }
+
+      return nullptr;
+    }
+
+    /**
+     * @brief Retrieve FieldEntry using a user predicate, only searching within a group.
+     *
+     * @note This is like `lookup_by`, except it only applies within a single group's
+     *       fields. This is a contiguous traversal after finalization.
+     *
+     * Using a user-supplied predicate, lookup the corresponding FieldEntry.
+     *
+     * @tparam Pred The predicate type. Called as a `Pred(const FieldEntry&) -> bool`
+     * @param[in] gid The group ID to search the fields of.
+     * @param[in] pred The predicate function for lookup.
+     * @returns The entry if found, or nullptr otherwise.
+     */
+    template <class Pred>
+    SBIO_HD inline const FieldEntry* lookup_in_group_by(hd_std::uint32_t gid,
+                                                        Pred&& pred) const {
+      FieldKey start {};
+      start.group_id = gid;
+      auto it { impl::hd_lower_bound(m_fields, start) };
+      for (; it != m_fields.end() && it->key.group_id == gid; ++it) {
+        if (pred(*it)) {
+          return &(*it);
+        }
+      }
+
+      return nullptr;
+    }
+
+    /**
+     * @brief Return the entry's format specific metadata based on a user-predicate.
+     *
+     * Using a user-supplied predicate, lookup the corresponding FieldEntry and then
+     * retrieve the requested FormatMetadata.
+     *
+     * @tparam Pred The predicate type. Called as a `Pred(const FieldEntry&) -> bool`
+     * @param[in] pred The predicate function for lookup.
+     * @returns The FormatMetadata if found, or nullptr otherwise.
+     */
+    template <class Pred>
+    SBIO_HD inline const FormatMetadata* lookup_meta_by(Pred&& pred) const {
+      const FieldEntry* entry { lookup_by(hd_std::forward<Pred>(pred)) };
+      if (entry != nullptr) {
+        return &(entry->descriptor.format_meta);
+      }
+
+      return nullptr;
+    }
+
+    /**
+     * @brief Search within one group, by user predicate, for a FieldEntry's metadata.
+     *
+     * @note This is like `lookup_meta_by`, except it only applies within a single
+     *       group's fields. This is a contiguous traversal after finalization.
+     *
+     * @tparam Pred The predicate type. Called as a `Pred(const FieldEntry&) -> bool`
+     * @param[in] gid The group ID to search the fields of.
+     * @param[in] pred The predicate function for lookup.
+     * @returns The FormatMetadata if found, or nullptr otherwise.
+     */
+    template <class Pred>
+    SBIO_HD inline const FormatMetadata* lookup_meta_in_group_by(hd_std::uint32_t gid,
+                                                                 Pred&& pred) const {
+      const FieldEntry* entry { lookup_in_group_by(gid, hd_std::forward<Pred>(pred)) };
+      if (entry != nullptr) {
+        return &(entry->descriptor.format_meta);
+      }
+
+      return nullptr;
+    }
+
+    /**
      * @brief The identifier of a field entry (position in the inventory.)
      *
      * The identifier is stable as long as the inventory is not rebuilt.
@@ -582,6 +678,11 @@ namespace sbio {
         return FTraits::entry_matches(*this, entry_no, name_query, ptn);
       } else {
         if (entry_no >= m_groups.size()) {
+          return false;
+        }
+
+        // A group is read with the access pattern that it was registered with
+        if (m_groups[entry_no].access_ptn != static_cast<hd_std::uint8_t>(ptn)) {
           return false;
         }
 

@@ -23,6 +23,9 @@
 
 #include "sbio/util/string.hh"
 
+#ifdef SBIO_HAS_HDF5
+#include "sbio/formats/hdf5/cxi_spec.hh"
+#endif
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -51,8 +54,70 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
                                    "Enumerators for selecting data formats.")
     .value("XTC1", pysbio::FTraits::XTC1)
     .value("XTC2", pysbio::FTraits::XTC2)
+    .value("CXI", pysbio::FTraits::CXI)
     .export_values()
     .finalize();
+
+#ifdef SBIO_HAS_HDF5
+
+  py::native_enum<sbio::CXITraits::DataAccessPtn>(ftraits_module,
+                                                  "CXIDataAccessPtn",
+                                                  "enum.Enum",
+                                                  "Enumerators for access styles of CXI data.")
+    .value("Frames", sbio::CXITraits::DataAccessPtn::Frames)
+    .value("PerStep", sbio::CXITraits::DataAccessPtn::PerStep)
+    .export_values()
+    .finalize();
+
+  pysbio::impl::bind_stream_config<sbio::CXITraits>(ftraits_module, "CXIStreamConfig");
+
+  // TODO: Need to bind DataRequest for XTC1 and XTC2 (not the special ones?)
+  py::classh<sbio::CXITraits::DataRequest>(ftraits_module, "CXIDataRequest")
+    .def(py::init<const char*, const char*, const char*>())
+    .def(py::init<const char*, const char*>())
+    .def_property("detector_type",
+                  [](const sbio::CXITraits::DataRequest& self) -> std::string {
+                    return self.group_type;
+                  },
+                  [](sbio::CXITraits::DataRequest& self, const std::string& val) {
+                    self.group_type = val;
+                  })
+    .def_property("detector_name",
+                  [](const sbio::CXITraits::DataRequest& self) -> std::string {
+                    return self.group_name;
+                  },
+                  [](sbio::CXITraits::DataRequest& self, const std::string& val) {
+                    self.group_name = val;
+                  })
+    .def_readwrite("segment_number", &sbio::CXITraits::DataRequest::segment_number)
+    .def_property("dataset",
+                  [](const sbio::CXITraits::DataRequest& self) -> std::string {
+                    return self["dataset"];
+                  },
+                  [](sbio::CXITraits::DataRequest& self, const std::string& val) {
+                    self.set<"dataset">(val.c_str());
+                  });
+
+  py::classh<sbio::DataResult>(ftraits_module, "CXIDataResult")
+    .def(py::init<>())
+    .def_readwrite("data", &sbio::DataResult::data)
+    .def_readwrite("size", &sbio::DataResult::size)
+    .def_readwrite("rank", &sbio::DataResult::rank)
+    .def_property("shape",
+                  [](const sbio::DataResult& self) {
+                    return std::vector(self.shape.data(), self.shape.data() + self.rank);
+                  },
+                  [](sbio::DataResult& self, const std::vector<ssize_t> shape) {
+                    if (shape.size() < self.rank) {
+                      throw std::runtime_error("Provided shape is smaller than the rank!");
+                    }
+                    for (std::size_t i = 0; i < self.rank; ++i) {
+                      self.shape[i] = static_cast<std::uint32_t>(shape[i]);
+                    }
+                  })
+    .def_readwrite("dtype", &sbio::DataResult::dtype);
+
+#endif // SBIO_HAS_HDF5
 
 #ifdef SBIO_HAS_XTC1
 
@@ -63,42 +128,36 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .value("L1Accept", sbio::XTC1Traits::DataAccessPtn::L1Accept)
     .value("SlowUpdate", sbio::XTC1Traits::DataAccessPtn::SlowUpdate)
     .value("BeginStep", sbio::XTC1Traits::DataAccessPtn::BeginStep)
-    .export_values()
+    //.export_values()
+    // Values don't export because of clash with the XTC2 version
     .finalize();
 
   pysbio::impl::bind_stream_config<sbio::XTC1Traits>(ftraits_module, "XTC1StreamConfig");
 
   py::classh<sbio::XTC1Traits::DataRequest>(ftraits_module, "XTC1DataRequest")
-    .def(py::init<const char*, const char*, const char*, const char*>())
+    .def(py::init<const char*, const char*, const char*>())
     .def(py::init<const char*, const char*>())
     .def_property("detector_type",
                   [](const sbio::XTC1Traits::DataRequest& self) -> std::string {
-                    return self.detector_type;
+                    return self.group_type;
                   },
                   [](sbio::XTC1Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.detector_type, val.c_str(), sbio::XTC1::MaxNameSize);
+                    self.group_type = val;
                   })
     .def_property("detector_name",
                   [](const sbio::XTC1Traits::DataRequest& self) -> std::string {
-                    return self.detector_name;
+                    return self.group_name;
                   },
                   [](sbio::XTC1Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.detector_name, val.c_str(), sbio::XTC1::MaxNameSize);
+                    self.group_name = val;
                   })
     .def_readwrite("segment_number", &sbio::XTC1Traits::DataRequest::segment_number)
-    .def_property("alg_name",
-                  [](const sbio::XTC1Traits::DataRequest& self) -> std::string {
-                    return self.alg_name;
-                  },
-                  [](sbio::XTC1Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.alg_name, val.c_str(), sbio::XTC1::MaxNameSize);
-                  })
     .def_property("field_name",
                   [](const sbio::XTC1Traits::DataRequest& self) -> std::string {
-                    return self.field_name;
+                    return self["field"];
                   },
                   [](sbio::XTC1Traits::DataRequest& self, const std::string& val) {
-                    sbio::safe_strncpy(self.field_name, val.c_str(), sbio::XTC1::MaxNameSize);
+                    self.set<"field">(val.c_str());
                   });
 
   py::classh<sbio::XTC1::DataResult>(ftraits_module, "XTC1DataResult")

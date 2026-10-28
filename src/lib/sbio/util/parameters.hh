@@ -172,11 +172,24 @@ namespace sbio {
 #endif
 
     // --- C-string comparison --- //
-    SBIO_HD inline bool operator==(const char* str) const {
-      if (str) {
-        return hd_std::strcmp(storage.data(), str) == 0 ? true : false;
+    SBIO_HD inline constexpr bool operator==(const char* str) const {
+      if (!str) {
+        return false;
       }
-      return false;
+
+      // Ugh... cannot use strcmp for Windows....
+      hd_std::size_t i { 0 };
+      for (; i < N; ++i) {
+        if (storage[i] != str[i]) {
+          return false;
+        }
+
+        if (storage[i] == '\0') {
+          return true;
+        }
+      }
+
+      return str[i] == '\0';
     }
   };
 

@@ -21,6 +21,7 @@
 #define SBIO_CORE_TOPOLOGY_HH
 
 #include "sbio/core/broker.hh"
+#include "sbio/core/chronology.hh"
 #include "sbio/core/types.hh"
 #include "sbio/util/string.hh"
 
@@ -157,6 +158,35 @@ namespace sbio {
     StepMapping step_mapping { StepMapping::PerKind };
     DataAccessPtn align_ptn{}; ///< Pattern whose steps define the group's steps when AlignTo is used
 
+    /**
+     * The number of logical segments (e.g. detector panels).
+     *
+     * @note For a Chronological format, each StreamBroker holds every segment,
+     *       but for a given segment, only 1 of those StreamBrokers will have it.
+     *       In that case, `segments` holds one SegmentRef per StreamBroker, and
+     *       the logical_slot is the logical segment. Otherwise, each SegmentRef
+     *       is a logical segment.
+     */
+    hd_std::size_t num_logical_segments { 0 };
+
+    /**
+     * The order of steps across the StreamBrokers.
+     *
+     * @note For Chronological formats only.
+     *
+     * Owned by the DataSource. If not set, steps are dealt round-robin to the
+     * StreamBrokers.
+     */
+    const ChronologicalOrder* chronology { nullptr };
+
+    /**
+     * The DataSource's StreamBrokers (the ChronologicalOrder counts StreamBrokers by
+     * their position among these).
+     */
+    BrokerType* source_brokers { nullptr };
+
+    static constexpr hd_std::size_t NoSegment { static_cast<hd_std::size_t>(-1) };
+
     SBIO_HD bool empty() const { return num_segments == 0; }
 
     // --- Construction --- //
@@ -185,6 +215,20 @@ namespace sbio {
         }
         if (b == num_stream_brokers) {
           set_stream_broker(b, broker, ptn);
+        }
+      }
+
+      count_logical_segments();
+    }
+
+    /**
+     * Count the logical segments, from the SegmentRefs' logical slots.
+     */
+    SBIO_HD void count_logical_segments() {
+      num_logical_segments = 0;
+      for (hd_std::size_t n = 0; n < num_segments; ++n) {
+        if (segments[n].logical_slot + 1 > num_logical_segments) {
+          num_logical_segments = segments[n].logical_slot + 1;
         }
       }
     }
@@ -309,16 +353,36 @@ namespace sbio {
           sorted_segments[j] = tmp_segments[final_segment_indices[j]];
 
           sorted_segments[j].logical_slot = j;
-          if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
-            sorted_segments[j].format_segment_id = 0;
+        }
+
+        if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
+          // Every StreamBroker holds all of the segments: the logical slot of a
+          // segment is its position among the distinct segment identifiers
+          for (hd_std::size_t j = 0; j < n_segments_found; ++j) {
+            hd_std::uint32_t slot { 0 };
+            for (hd_std::size_t k = 0; k < n_segments_found; ++k) {
+              bool counted { false };
+              for (hd_std::size_t m = 0; m < k; ++m) {
+                counted = counted ||
+                  sorted_segments[m].format_segment_id == sorted_segments[k].format_segment_id;
+              }
+
+              if (!counted && sorted_segments[k].format_segment_id < sorted_segments[j].format_segment_id) {
+                ++slot;
+              }
+            }
+            sorted_segments[j].logical_slot = slot;
           }
         }
       }
 
-      return GroupTopology<BrokerType, MaxSegments>(name,
-                                                    final_type,
-                                                    sorted_segments,
-                                                    n_segments_found);
+      GroupTopology<BrokerType, MaxSegments> topology(name,
+                                                      final_type,
+                                                      sorted_segments,
+                                                      n_segments_found);
+      topology.source_brokers = brokers;
+
+      return topology;
     }
 
 
@@ -369,7 +433,9 @@ namespace sbio {
     SBIO_HD const SegmentRef<BrokerType>& active_segment(hd_std::size_t step_idx,
                                                          hd_std::size_t broker_no) const {
       if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
-        auto active_broker_idx { step_idx % num_segments };
+        hd_std::size_t active_broker_idx { 0 };
+        hd_std::size_t ordinal { 0 };
+        locate(step_idx, active_broker_idx, ordinal);
 
         auto* broker { stream_brokers[active_broker_idx] };
         for (const auto& seg : segments) {
@@ -407,7 +473,9 @@ namespace sbio {
     SBIO_HD BrokerType* active_stream_broker(hd_std::size_t step_idx,
                                              hd_std::size_t broker_no) {
       if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
-        auto active_broker_idx { step_idx % num_segments };
+        hd_std::size_t active_broker_idx { 0 };
+        hd_std::size_t ordinal { 0 };
+        locate(step_idx, active_broker_idx, ordinal);
 
         return stream_brokers[active_broker_idx];
       } else {
@@ -432,7 +500,9 @@ namespace sbio {
     SBIO_HD const DataAccessPtn& active_access_ptn(hd_std::size_t step_idx,
                                                    hd_std::size_t broker_no) {
       if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
-        auto active_broker_idx { step_idx % num_segments };
+        hd_std::size_t active_broker_idx { 0 };
+        hd_std::size_t ordinal { 0 };
+        locate(step_idx, active_broker_idx, ordinal);
 
         return broker_access_ptns[active_broker_idx];
       } else {
@@ -467,13 +537,97 @@ namespace sbio {
       // function to the FormatTraits specifications if it becomes necessary.
       // That call/interface would then be hidden here.
       if constexpr (strategy == StreamPartitioningStrategy::Chronological) {
-        return static_cast<hd_std::size_t>(step_idx / num_segments);
+        hd_std::size_t active_broker_idx { 0 };
+        hd_std::size_t ordinal { 0 };
+        locate(step_idx, active_broker_idx, ordinal);
+
+        return ordinal;
       } else {
         // No remapping required, so this is a no-op for the SubDivide strategy
         return static_cast<hd_std::size_t>(step_idx);
       }
     }
 
+    /**
+     * Find which StreamBroker holds a step, and the corresponding ordinal there.
+     *
+     * @note This applies to Chronological formats only.
+     *
+     * The group's steps are those of its access pattern, or of the pattern it aligns to.
+     * Steps of the format's distributed kind (`ChronologicalKind`) are spread over the
+     * StreamBrokers.
+     *
+     * @note Other kinds of steps are in every StreamBroker, and then the first is
+     *       used.
+     *
+     * @param[in] step_idx The group's step.
+     * @param[out] broker_no The StreamBroker (position in `stream_brokers`).
+     * @param[out] ordinal The step's ordinal in that StreamBroker.
+     * @returns Whether the step could be located.
+     */
+    SBIO_HD bool locate(hd_std::size_t step_idx,
+                        hd_std::size_t& broker_no,
+                        hd_std::size_t& ordinal) const {
+      broker_no = 0;
+      ordinal = step_idx;
+
+      if constexpr (requires { DataFormat::ChronologicalKind; }) {
+        const DataAccessPtn space {
+          step_mapping == StepMapping::AlignTo ? align_ptn : segments[0].access_ptn
+        };
+        if (DataFormat::kind_for_ptn(space) != DataFormat::ChronologicalKind) {
+          return true; // In every StreamBroker
+        }
+      }
+
+      if (num_stream_brokers == 0) {
+        return false;
+      }
+
+#ifndef __CUDA_ARCH__
+      if (chronology != nullptr) {
+        ChronologicalOrder::Location loc {};
+        if (!chronology->locate(step_idx, loc)) {
+          return false;
+        }
+
+        // The DataSource's StreamBroker number, try to find it in this group
+        for (hd_std::size_t b = 0; b < num_stream_brokers; ++b) {
+          if (source_brokers != nullptr && stream_brokers[b] == source_brokers + loc.broker) {
+            broker_no = b;
+            ordinal = static_cast<hd_std::size_t>(loc.ordinal);
+            return true;
+          }
+        }
+        return false; // The group has no segment in that StreamBroker
+      }
+#endif // __CUDA_ARCH__
+
+      // Without an order, the steps are dealt round-robin
+      broker_no = step_idx % num_stream_brokers;
+      ordinal = step_idx / num_stream_brokers;
+      return true;
+    }
+
+    /**
+     * The SegmentRef for a logical segment in a StreamBroker.
+     *
+     * @note This applies to Chronological formats only.
+     *
+     * @param[in] broker_no The StreamBroker (position in `stream_brokers`).
+     * @param[in] logical The logical segment.
+     * @returns The SegmentRef's position in `segments`, or NoSegment if the StreamBroker
+     *          does not have the segment.
+     */
+    SBIO_HD hd_std::size_t segment_index_for(hd_std::size_t broker_no,
+                                             hd_std::size_t logical) const {
+      for (hd_std::size_t n = 0; n < num_segments; ++n) {
+        if (segments[n].broker == stream_brokers[broker_no] && segments[n].logical_slot == logical) {
+          return n;
+        }
+      }
+      return NoSegment;
+    }
 
     // --- Direct getters/setters --- //
     SBIO_HD const SegmentRef<BrokerType>& segment(hd_std::size_t seg_no) const {

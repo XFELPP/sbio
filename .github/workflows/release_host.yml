@@ -68,7 +68,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install meson ninja
-          python -m pip install "ncarray==0.7.6+host" --extra-index-url https://pypi.xfelpp.org/host/
+          python -m pip install "ncarray==0.7.7+host" --extra-index-url https://pypi.xfelpp.org/host/
           $env:PKG_CONFIG_PATH = "$(nca-pkg-config --pkg-config-path):$env:PKG_CONFIG_PATH"
 
           meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=auto -Dbuildtype=release --prefix="$((Get-Location).Path)\install"
@@ -86,11 +86,32 @@ jobs:
           export PYTHONPATH="$HOME/Library/Python/3.10/lib/python/site-packages:/opt/homebrew/lib/python3.10/site-packages:$PYTHONPATH"
           export PYTHON="/opt/homebrew/opt/python@3.10/bin/python3.10"
           ccache -z
-          python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.6+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
+          python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.7+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
+
+          # For some reason ncarray 0.7.7 had a problem with RPATH in macOS. Maybe meson 1.12.1?
+          # Hack for now... Just need to pickup libeagereval.1.dylib which is in ncarray/core
+          export LIBRARY_PATH="/opt/homebrew/lib/python3.10/site-packages/ncarray/core:${LIBRARY_PATH}"
+          export DYLD_LIBRARY_PATH="/opt/homebrew/lib/python3.10/site-packages/ncarray/core:${DYLD_LIBRARY_PATH}"
+
           export PKG_CONFIG_PATH="$(nca-pkg-config --pkg-config-path):${PKG_CONFIG_PATH}"
+
+          # Build MPICH first - make sure to set libdir.
+          # Cannot build into the sbio project... or it will ignore it.
+          export SBIO_MPI_PREFIX="${RUNNER_TEMP}/mpich-install"
+          meson subprojects download mpich
+          meson setup mpibuild subprojects/mpich-5.0.1 --prefix="${SBIO_MPI_PREFIX}" --libdir=lib -Dbuildtype=release
+          meson compile -C mpibuild
+          meson install -C mpibuild
+          export PATH="${SBIO_MPI_PREFIX}/bin:${PATH}"
+          export PKG_CONFIG_PATH="${SBIO_MPI_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+
           meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=mpich -Dbuildtype=release --prefix=$(pwd)/install
           meson compile -C builddir
           meson install -C builddir
+
+          # Sigh.... AND now have to repackage.
+          (cd "${SBIO_MPI_PREFIX}" && find . -type f -o -type l) > install/.mpich-files
+          cp -a "${SBIO_MPI_PREFIX}/." install/
 
       - name: Build libsbio (Linux)
         if: runner.os == 'Linux'
@@ -107,13 +128,26 @@ jobs:
               apk add --no-cache autoconf automake libtool m4 perl make gcc g++ linux-headers musl-dev bash
           fi
           /opt/python/cp310-cp310/bin/pip install meson ninja
-          /opt/python/cp310-cp310/bin/python -m pip install "ncarray==0.7.6+host" --extra-index-url https://pypi.xfelpp.org/host/
+          /opt/python/cp310-cp310/bin/python -m pip install "ncarray==0.7.7+host" --extra-index-url https://pypi.xfelpp.org/host/
           export PATH="/opt/python/cp310-cp310/bin:$PATH"
           export PKG_CONFIG_PATH="$(nca-pkg-config --pkg-config-path):${PKG_CONFIG_PATH}"
+
+          # Build MPICH first - make sure to set libdir.
+          # Cannot build into the sbio project... or it will ignore it.
+          export SBIO_MPI_PREFIX="${RUNNER_TEMP}/mpich-install"
+          meson subprojects download mpich
+          meson setup mpibuild subprojects/mpich-5.0.1 --prefix="${SBIO_MPI_PREFIX}" --libdir=lib -Dbuildtype=release
+          meson compile -C mpibuild
+          meson install -C mpibuild
+          export PATH="${SBIO_MPI_PREFIX}/bin:${PATH}"
+          export PKG_CONFIG_PATH="${SBIO_MPI_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+
           meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=mpich -Dbuildtype=release --prefix=$(pwd)/install
           meson compile -C builddir
           meson install -C builddir
 
+          # Sigh.... AND now have to repackage.
+          cp -a "${SBIO_MPI_PREFIX}/." install/
 
       - name: Create Lib Release Tarball
         shell: bash
@@ -121,7 +155,7 @@ jobs:
           tar -czvf libsbio_${{ github.ref_name }}-host_${{ matrix.target }}.tar.gz -C install .
 
       - name: Upload Core Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a              # v7.0.1
         with:
           name: libsbio_${{ github.ref_name }}-host_${{ matrix.target }}
           path: libsbio_${{ github.ref_name }}-host_${{ matrix.target }}.tar.gz
@@ -206,6 +240,15 @@ jobs:
           mkdir -p install
           tar -xzvf core/*.tar.gz -C install
 
+      - name: Recreate MPICH prefix (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # Because of all the crappy workaround MPICH has paths that are pointing
+          # to the $RUNNER_TEMP/mpich-install....
+          mkdir -p "$RUNNER_TEMP/mpich-install"
+          (cd "$GITHUB_WORKSPACE/install" && tar -cf - -T .mpich-files) | tar -xf - -C "$RUNNER_TEMP/mpich-install"
+
       - name: Extract libsbio (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -249,6 +292,11 @@ jobs:
           CIBW_CACHE_PATH: ".cibw_cache"
           SYSTEM_VERSION_COMPAT: "0"
           PreferredToolArchitecture: "x64"
+          # macOS problems due to Rosetta.
+          CIBW_CONFIG_SETTINGS_MACOS: >-
+            setup-args=-Dbuild_core=false
+            setup-args=-Dbuildtype=release
+            setup-args=--cross-file=${{ github.workspace }}/utilities/cibw_config/macos_cross_tools.ini
 
       - name: Build 3.9 through 3.13 wheels
         uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55                    # v4.1.0
@@ -297,14 +345,20 @@ jobs:
           sudo apt update
           sudo apt install -y cmake ninja-build
 
+      - name: Update Version for Variant
+        shell: bash
+        run: |
+          python -c "import re; p = 'meson.build'; c = open(p).read(); open(p, 'w').write(re.sub(r\"version:\s*'([0-9]+\.[0-9]+\.[0-9]+)'\", r\"version: '\1+host'\", c))"
+
+      # HDF5 CMake fails with MPI so just turn it off for sdist
       - name: Build sdist
         run: |
           python -m pip install build
-          python -m build --sdist
+          python -m build --sdist -Csetup-args=-Dbuild_mpi=none
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a              # v7.0.1
         with:
-          name: cibw-sdist
+          name: cibw-host-sdist
           path: dist/*.tar.gz
 
   create_release_and_publish_to_pypi:

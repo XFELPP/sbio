@@ -277,13 +277,13 @@ namespace sbio {
           return;
         }
 
-        char* p { strndup(s, token - s) };
+        const std::size_t len { static_cast<std::size_t>(token - s) };
         for (unsigned i = 0; i < static_cast<unsigned>(NumberOf); ++i) {
-          if (strcmp(p, name(static_cast<Type>(i))) == 0) {
+          const char* n { name(static_cast<Type>(i)) };
+          if (strncmp(s, n, len) == 0 && n[len] == '\0') {
             m_value = (vsn << 16) | i;
           }
         }
-        free(p);
       }
 
       SBIO_HD inline Type id() const { return static_cast<Type>(m_value & 0xFFFF); }
@@ -540,6 +540,7 @@ namespace sbio {
         sizeof(std::int64_t),
         sizeof(float),
         sizeof(double),
+        sizeof(char),         // CHARSTR
         sizeof(std::int32_t), // ENUMVAL
         sizeof(std::int32_t)  // ENUMDICT
     };
@@ -782,7 +783,8 @@ namespace sbio {
         return *this;
       }
       SBIO_HD inline bool operator>(const ClockTime& t) const {
-        return (m_high > t.m_high) || (m_high || t.m_high && m_low > t.m_low);
+        //return (m_high > t.m_high) || (m_high || t.m_high && m_low > t.m_low);
+        return (m_high > t.m_high) || (m_high == t.m_high && m_low > t.m_low);
       }
       SBIO_HD inline bool operator==(const ClockTime& t) const {
         return (m_high == t.m_high) && (m_low == t.m_low);
@@ -910,7 +912,9 @@ namespace sbio {
                        const ClockTime& clock,
                        const TimeStamp& stamp)
         : m_clock(clock)
-        , m_stamp(stamp, ((type & m_seqtype) << v_seqtype) | ((service & m_service) << v_service))
+        , m_stamp(stamp,
+                  ((static_cast<std::uint32_t>(type) & static_cast<std::uint32_t>(m_seqtype)) << v_seqtype) |
+                  ((static_cast<unsigned>(service) & static_cast<unsigned>(m_service)) << v_service))
       {}
 
       SBIO_HD Sequence& operator=(const Sequence& input) {
@@ -1048,15 +1052,24 @@ namespace sbio {
       std::uint32_t m_rank;
     };
 
-    SBIO_HD SBIO_API DataResult resolve_xtc_pointer(void* buffer,
-                                                    std::uint32_t sd_offset,
-                                                    const Name* field_schema,
-                                                    std::uint32_t nid,
-                                                    std::uint32_t f_idx,
-                                                    std::uint32_t evt_type_id = 0,
-                                                    const void* inv = nullptr,
-                                                    std::uint32_t src_log = 0,
-                                                    std::uint32_t src_phy = 0);
+    /**
+     * Resolve a field of a leaf Xtc into a pointer, shape and type.
+     *
+     * The field is looked up by name in the schema for the Xtc's own type and version.
+     * Shapes and offsets that depend on configuration values are resolved from the
+     * detector's configuration Xtc (from the Configure transition).
+     *
+     * @param[in] xtc The leaf Xtc holding the field.
+     * @param[in] field_name The name of the field.
+     * @param[in] field_idx_hint The field's index in the schema seen at Configure. It is
+     *            checked against the name, so may be stale.
+     * @param[in] config_xtc The detector's configuration Xtc, or nullptr.
+     * @returns The resolved field. `data` is nullptr if it could not be resolved.
+     */
+    SBIO_HD SBIO_API DataResult resolve_xtc_pointer(const Xtc* xtc,
+                                                    const char* field_name,
+                                                    std::uint32_t field_idx_hint = 0,
+                                                    const Xtc* config_xtc = nullptr);
 
     SBIO_HD SBIO_API const Xtc* find_xtc_by_type(const Xtc* xtc,
                                                  TypeId::Type target,

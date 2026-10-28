@@ -2,7 +2,7 @@ project(
     'sbio',
     'c',
     'cpp',
-    version: '0.2.0',
+    version: '0.3.0',
     meson_version: '>=1.10.0',
     default_options: [
         'c_std=c17',
@@ -191,11 +191,13 @@ endif
 
 #### Parse Chosen Data Formats to Build ####
 ############################################
+sbio_build_hdf5 = false
 sbio_build_xtc1 = false
 sbio_build_xtc2 = false
 sbio_build_sbiofmt = false
 
 if sbio_data_formats_opt == 'all'
+    sbio_build_hdf5 = true
     sbio_build_xtc1 = true
     sbio_build_xtc2 = true
     sbio_build_sbiofmt = true
@@ -203,7 +205,9 @@ else
     selected_formats = sbio_data_formats_opt.split(',')
     foreach data_fmt : selected_formats
         data_fmt = data_fmt.strip()
-        if data_fmt == 'xtc1'
+        if data_fmt == 'hdf5'
+            sbio_build_hdf5 = true
+        elif data_fmt == 'xtc1'
             sbio_build_xtc1 = true
         elif data_fmt == 'xtc2'
             sbio_build_xtc2 = true
@@ -218,6 +222,11 @@ endif
 # Export a list of the enabled data formats for downstream projects to link properly
 enabled_formats = []
 
+if sbio_build_hdf5
+    add_project_arguments('-DSBIO_HAS_HDF5', language: ['cpp', 'cuda'])
+    message('Will build HDF5 data format support.')
+    enabled_formats += ['hdf5']
+endif
 if sbio_build_xtc1
     add_project_arguments('-DSBIO_HAS_XTC1', language: ['cpp', 'cuda'])
     message('Will build XTC1 data format support.')
@@ -261,7 +270,12 @@ deps_for_sbio = []
 #### CUDA setup
 if sbio_has_cuda
     # CUDA driver and nvrtc are both for JIT
-    cuda_dep = dependency('cuda', modules: ['cuda', 'cufile', 'cudart'])
+    if host_machine.system() == 'windows'
+        # No cuFile for Windows
+        cuda_dep = dependency('cuda', modules: ['cuda', 'cudart'])
+    else
+        cuda_dep = dependency('cuda', modules: ['cuda', 'cufile', 'cudart'])
+    endif
     deps_for_sbio += cuda_dep
 endif
 
@@ -365,6 +379,7 @@ endif
 deps_for_sbio += ncarray_dep
 
 #### MPI
+sbio_has_mpi = false
 if build_mpi_opt == 'none'
     message('Skipping MPI support.')
 else
@@ -396,10 +411,13 @@ else
         endif
     endif
     if not found_mpi and try_mpich
-        message('Will try building MPICH subproject.')
-        mpi_proj = subproject('mpich')
-        mpi_dep = mpi_proj.get_variable('mpich_dep')
-        bundle_mpi = true
+        mpi_dep = dependency('mpich', required: false)
+        if not mpi_dep.found()
+            message('Will try building MPICH subproject.')
+            mpi_proj = subproject('mpich')
+            mpi_dep = mpi_proj.get_variable('mpich_dep')
+            bundle_mpi = true
+        endif
         found_mpi = true
     endif
     if not found_mpi and try_ompi
@@ -413,10 +431,146 @@ else
     if not found_mpi
         warning('MPI was requested, but was not built!')
     else
+        sbio_has_mpi = true
         add_project_arguments('-DSBIO_HAS_MPI', language: ['cpp', 'cuda'])
         deps_for_sbio += mpi_dep
     endif
 endif # MPI builds
+
+#### HDF5 setup
+if sbio_build_hdf5
+    hdf5_dep = dependency(
+        'hdf5',
+        language: 'c',
+        version: '>=1.14.0',
+        # default_options: ['default_library=static'],
+        required: false
+    )
+    hdf5_extra_args = []
+    if not hdf5_dep.found()
+        cmake = import('cmake')
+        hdf5_opts = cmake.subproject_options()
+        has_parallel_hdf5 = false
+        if sbio_has_mpi
+            has_parallel_hdf5 = true
+            message('Using HDF5 subproject with parallel support enabled')
+            add_project_arguments('-DSBIO_HAS_PARALLEL_HDF5', language: ['cpp', 'cuda'])
+            hdf5_opts.add_cmake_defines(
+                {
+                    'HDF5_ENABLE_PARALLEL': 'ON',
+                    # 'HDF5_BUILD_CPP_LIB': 'ON',
+                    'HDF5_BUILD_CPP_LIB': 'OFF',
+                    'HDF5_BUILD_TOOLS': 'OFF',
+                    'HDF5_BUILD_FORTRAN': 'OFF',
+                    # 'HDF5_BUILD_STATIC_LIBS': 'OFF',
+                    # 'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    # Didn't seem to be needed (for static). But add just in case
+                    # 'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
+                    # 'BUILD_SHARED_LIBS': 'OFF',
+                    # 'BUILD_STATIC_LIBS': 'ON',
+                    'BUILD_SHARED_LIBS': 'ON',
+                    'BUILD_STATIC_LIBS': 'OFF',
+                    'CMAKE_LINK_DEPENDS_USE_LINKER': 'OFF',
+                    'HDF5_BUILD_EXAMPLES': 'OFF',
+                    'HDF5_BUILD_TESTS': 'OFF',
+                    # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
+                },
+            )
+            # Horror ensues below. Turn back now if you value your sanity.
+            if bundle_mpi
+                mpich_root_src = meson.project_source_root() / 'subprojects' / 'mpich-5.0.1'
+                mpich_root_bld = meson.project_build_root() / 'subprojects' / 'mpich-5.0.1'
+                hdf5_opts.add_cmake_defines(
+                    {
+                        # Bootstrap FindMPI from the MPICH subproject (configured, not yet built)
+                        'MPI_C_HEADER_DIR': mpich_root_bld / 'build' / 'src' / 'include',
+                        'MPI_C_LIB_NAMES': 'm',
+                        'MPI_m_LIBRARY': 'm',
+                        'MPI_C_WORKS': 'TRUE',
+                        'MPI_C_VERSION': '5.0',
+                        'MPI_C_VERSION_MAJOR': '5',
+                        'MPI_C_VERSION_MINOR': '0',
+                        'MPI_SKIP_COMPILER_WRAPPER': 'TRUE',
+                        'MPI_ASSUME_NO_BUILTIN_MPI': 'TRUE',
+                        # HDF5 MPI symbol checks link against libmpi, which doesn't exist yet
+                        'H5_HAVE_MPI_MULTI_LANG_Comm': '1',
+                        'H5_HAVE_MPI_MULTI_LANG_Info': '1',
+                        'H5_HAVE_MPI_Ibarrier': '1',
+                        'H5_HAVE_MPI_Issend': '1',
+                        'H5_HAVE_MPI_Iprobe': '1',
+                        'H5_HAVE_MPI_Irecv': '1',
+                        'H5_HAVE_MPI_Get_elements_x': '1',
+                        'H5_HAVE_MPI_Type_size_x': '1',
+                        'H5_HAVE_MPI_Comm_split_type': '1',
+                    },
+                )
+                # mpi.h (generated, build dir) includes mpi_proto.h (source dir)
+                hdf5_opts.append_compile_args('c', '-I' + (mpich_root_src / 'src' / 'include'))
+                # libmpi is provided by libsbio at load time.
+                # -- It isn't built yet when libhdf5 links
+                hdf5_opts.set_override_option('b_lundef', 'false')
+                if host_machine.system() == 'darwin'
+                    hdf5_opts.append_link_args('-Wl,-undefined,dynamic_lookup')
+                endif
+
+                # Needed to reset the include paths, since now with this jank above
+                # sbio itself would pickup garbage through the hdf5_dep
+                hdf5_extra_args += ['-I' + (mpich_root_src / 'src' / 'include')]
+            endif
+        else
+            hdf5_opts.add_cmake_defines(
+                {
+                    # 'HDF5_BUILD_CPP_LIB': 'ON',
+                    'HDF5_BUILD_CPP_LIB': 'OFF',
+                    'HDF5_BUILD_TOOLS': 'OFF',
+                    'HDF5_BUILD_FORTRAN': 'OFF',
+                    # 'HDF5_BUILD_STATIC_LIBS': 'OFF',
+                    # 'HDF5_BUILD_SHARED_LIBS': 'ON',
+                    # Didn't seem to be needed (for static). But add just in case
+                    # 'CMAKE_POSITION_INDEPENDENT_CODE': 'ON',
+                    # 'BUILD_SHARED_LIBS': 'OFF',
+                    # 'BUILD_STATIC_LIBS': 'ON',
+                    'BUILD_SHARED_LIBS': 'ON',
+                    'BUILD_STATIC_LIBS': 'OFF',
+                    'CMAKE_LINK_DEPENDS_USE_LINKER': 'OFF',
+                    'HDF5_BUILD_EXAMPLES': 'OFF',
+                    'HDF5_BUILD_TESTS': 'OFF',
+                    # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
+                },
+            )
+        endif
+
+        # If building C++ can silent warnings until a real fix...
+        # if cpp.get_argument_syntax() == 'gcc'
+        #     hdf5_opts.append_compile_args('c', '-Wno-missing-include-dirs')
+        #     hdf5_opts.append_compile_args('cpp', '-Wno-missing-include-dirs')
+        # endif
+
+        # HDF5's HDopen macro needs MSVC's traditional preprocessor
+        # /std:c17 turns on the conforming one.
+        if cpp.get_id() == 'msvc'
+            hdf5_opts.set_override_option('c_std', 'none')
+        endif
+
+        # Set install so it goes to the same place as the other libs and then the
+        # auditwheel/delvewheel etc scripts can find it easily for packaging.
+        hdf5_opts.set_install(true)
+        hdf5_proj = cmake.subproject('hdf5', options: hdf5_opts)
+
+        hdf5_c_dep = hdf5_proj.dependency('hdf5-shared')
+        # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-shared')
+
+        # hdf5_c_dep = hdf5_proj.dependency('hdf5-static')
+        # # hdf5_cpp_dep = hdf5_proj.dependency('hdf5_cpp-static')
+
+        hdf5_dep = declare_dependency(
+            # dependencies: [hdf5_c_dep, hdf5_cpp_dep],
+            dependencies: [hdf5_c_dep],
+            compile_args: hdf5_extra_args,
+        )
+    endif # hdf5 not found
+    deps_for_sbio += hdf5_dep
+endif
 
 #### OpenMP
 #openmp_dep = dependency('openmp', required: true)
@@ -527,6 +681,10 @@ pc_libs = [libsbio]
 #     pc_libs += [libdevsbio]
 # endif
 
+if sbio_build_hdf5
+    pc_libs += [libsbioH5driver]
+endif
+
 if sbio_build_xtc1
     pc_libs += [libxtc1slim]
 endif
@@ -542,6 +700,10 @@ endif
 feature_flags = []
 if sbio_has_cuda
     feature_flags += ['-DSBIO_HAS_CUDA']
+endif
+
+if sbio_build_hdf5
+    feature_flags += ['-DSBIO_HAS_HDF5']
 endif
 
 if sbio_build_xtc1

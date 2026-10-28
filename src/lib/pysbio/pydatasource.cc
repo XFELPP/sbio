@@ -24,9 +24,18 @@
 #include "pysbio/io/pyio.hh"
 #include "pysbio/policies.hh"
 #include "pysbio/pybroker_group.hh"
+#include "pysbio/pyiteration.hh"
 
 #include "sbio/core/iteration.hh"
 #include "sbio/core/stream.hh"
+#include "sbio/locators/path_pattern.hh"
+#include "sbio/locators/single_file.hh"
+
+#ifdef SBIO_HAS_HDF5
+#include "sbio/formats/hdf5/cxi_locator.hh"
+#include "sbio/formats/hdf5/cxi_spec.hh"
+#endif
+
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_locator.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -51,9 +60,6 @@
 namespace py = pybind11;
 
 namespace {
-  // Simple Execution policy configuration
-  // The more technically inclined can use the full bindings via pysbio/execution
-
   template <class DS>
   void load_run(DS& ds,
                 const std::string& exp,
@@ -64,81 +70,41 @@ namespace {
     cfg.index_batch_size = evt_per_read;
     cfg.max_buffer_size = dgram_size;
 
-    ds.load_source(cfg, exp, run);
+    ds.template load_source_with<sbio::PathPatternLocator>(cfg, exp, run);
     ds.discover_metadata();
   }
 
-  template <class T, std::size_t>
-  using Repeat = T;
+  template <class DS>
+  void load_at_prefix(DS& ds,
+                      const std::string& directory,
+                      const std::string& prefix,
+                      int index_batch_size,
+                      int max_buffer_size,
+                      const std::string& tag,
+                      const std::string& ext) {
+    typename DS::StreamConfig cfg;
+    cfg.index_batch_size = index_batch_size;
+    cfg.max_buffer_size = max_buffer_size;
 
-  template <class Range>
-  struct ZipState {
-    template <class DS, class... Groups>
-    ZipState(DS& ds, const Groups&... groups)
-      : range(ds, groups...)
-    {}
+    ds.template load_source_with<sbio::PathPatternLocator>(cfg,
+                                                           directory,
+                                                           prefix,
+                                                           tag,
+                                                           ext);
+    ds.discover_metadata();
+  }
 
-    Range range;
-    std::optional<typename Range::ConstIterator> it {};
-    std::optional<typename Range::ConstIterator> end {};
-  };
+  template <class DS>
+  void load_file(DS& ds,
+                 const std::string& path,
+                 int index_batch_size,
+                 int max_buffer_size) {
+    typename DS::StreamConfig cfg;
+    cfg.index_batch_size = index_batch_size;
+    cfg.max_buffer_size = max_buffer_size;
 
-  template <class DS, class Group, std::size_t... Is>
-  std::unique_ptr<pysbio::ZipIterator> make_zip(DS& ds,
-                                                const std::vector<const Group*>& groups,
-                                                bool batched,
-                                                std::vector<py::object> keep_alive,
-                                                std::index_sequence<Is...>) {
-    auto make = [&](auto RangeTag) {
-      using Range = typename decltype(RangeTag)::type;
-      using State = ZipState<Range>;
-
-      auto state { std::make_shared<State>(ds, *groups[Is]...) };
-
-      auto next = [state, batched]() -> py::object {
-        {
-          // Fetching happens as the iterator moves
-          py::gil_scoped_release release;
-          if (!state->it) {
-            state->it.emplace(state->range.begin());
-            state->end.emplace(state->range.end());
-          } else {
-            ++(*state->it);
-          }
-        }
-
-        if (*state->it == *state->end) {
-          return py::none();
-        }
-
-        auto handle { **state->it };
-        if constexpr (requires { handle.batch(); }) {
-          return py::cast(pysbio::ZipBatch {
-            static_cast<std::size_t>(handle.first()),
-            static_cast<std::size_t>(handle.last()),
-            handle.status()
-          });
-        } else {
-          return
-            py::cast(pysbio::ZipStep {
-                static_cast<std::size_t>(handle.step()),
-                handle.status()
-              });
-        }
-      };
-
-      const std::size_t num_fetches { state->range.num_fetches() };
-      return std::make_unique<pysbio::ZipIterator>(std::move(next),
-                                                   std::move(state),
-                                                   num_fetches,
-                                                   std::move(keep_alive));
-    };
-
-    if (batched) {
-      return make(std::type_identity<sbio::ZippedBatchRange<DS, Repeat<Group, Is>...>> {});
-    }
-
-    return make(std::type_identity<sbio::ZippedGroupRange<DS, Repeat<Group, Is>...>> {});
+    ds.template load_source_with<sbio::SingleFileLocator>(cfg, path);
+    ds.discover_metadata();
   }
 } // anonymous namespace
 
@@ -152,8 +118,6 @@ namespace pysbio {
                              pysbio::ExecutionPolicy epolicy,
                              py::dict exec_cfg,
                              pysbio::IOPolicy io_policy)
-    : m_exp(exp)
-    , m_run(run)
   {
     auto make_for_format = [&](auto FormatTag) -> DataSourceV {
       using Format = typename decltype(FormatTag)::type;
@@ -161,7 +125,8 @@ namespace pysbio {
         using Policy = typename decltype(PolicyTag)::type;
 
         ensure_parallel_environment<Policy>();
-        DataSourceFor<Policy, Format> ds(parse_config<Policy>(exec_cfg));
+        DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
+
         load_run(ds, exp, run, evt_per_read, dgram_size);
 
         return DataSourceV { std::move(ds) };
@@ -171,17 +136,113 @@ namespace pysbio {
     };
 
     m_ds = with_format(data_fmt, make_for_format);
+
+    // Get a list of BrokerGroups (load_run runs discover_metadata)
+    enumerate_group_names();
+  }
+
+  // Search for multiple files using a directory/prefix/tag/ext combo
+  PyDataSource::PyDataSource(std::string directory,
+                             std::string prefix,
+                             int index_batch_size,
+                             int max_buffer_size,
+                             std::string tag,
+                             std::string ext,
+                             pysbio::FTraits data_fmt,
+                             pysbio::ExecutionPolicy epolicy,
+                             py::dict exec_cfg,
+                             pysbio::IOPolicy io_policy)
+  {
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+      auto make_for_policy = [&](auto PolicyTag) -> DataSourceV {
+        using Policy = typename decltype(PolicyTag)::type;
+
+        ensure_parallel_environment<Policy>();
+        DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
+
+#if defined(SBIO_HAS_HDF5)
+        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
+          load_at_prefix(ds,
+                         directory,
+                         prefix,
+                         index_batch_size,
+                         max_buffer_size,
+                         tag,
+                         ext);
+        } else {
+          throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+        }
+#else
+        throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+#endif
+        return DataSourceV { std::move(ds) };
+      };
+
+      return with_policy(epolicy, make_for_policy);
+    };
+
+    m_ds = with_format(data_fmt, make_for_format);
+
+    // Get a list of BrokerGroups (load_run runs discover_metadata)
+    enumerate_group_names();
+  }
+
+  // Setup to read 1 file (generally, HDF5, but XTC1/XTC2 work too)
+  PyDataSource::PyDataSource(std::string path,
+                             int index_batch_size,
+                             int max_buffer_size,
+                             pysbio::FTraits data_fmt,
+                             pysbio::ExecutionPolicy epolicy,
+                             py::dict exec_cfg,
+                             pysbio::IOPolicy io_policy)
+  {
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+      auto make_for_policy = [&](auto PolicyTag) -> DataSourceV {
+        using Policy = typename decltype(PolicyTag)::type;
+
+        ensure_parallel_environment<Policy>();
+        DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
+
+        load_file(ds, path, index_batch_size, max_buffer_size);
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return with_policy(epolicy, make_for_policy);
+    };
+
+    m_ds = with_format(data_fmt, make_for_format);
+
+    // Get a list of BrokerGroups (load_file runs discover_metadata)
+    enumerate_group_names();
+  }
+
+  void PyDataSource::enumerate_group_names() {
+    auto check_inventories = [&](auto& ds) {
+      for (std::size_t i = 0; i < ds.num_data_streams(); ++i) {
+        const auto& broker { ds.data_stream(i) };
+        const auto& inv { broker.metadata() };
+        for (const auto& inv_grp : inv.groups()) {
+          const auto& grp_key { inv_grp.key };
+          if (m_available_groups.find(grp_key.group_name) == m_available_groups.end()) {
+            m_available_groups.insert(grp_key.group_name);
+          }
+        }
+      }
+    };
+
+    std::visit(check_inventories, m_ds);
   }
 
   PyDataSource::PyDataSource(DataSourceV ds,
-                             std::string exp,
-                             unsigned run,
                              std::shared_ptr<ContextWrapper> context)
     : m_ds(std::move(ds))
-    , m_exp(std::move(exp))
-    , m_run(run)
     , m_context(std::move(context))
-  {}
+  {
+    enumerate_group_names();
+  }
 
   py::object PyDataSource::group(py::module& m, const char* name) {
     // TODO: This is quite kludgy because it goes back and forth between sbio det,
@@ -206,7 +267,8 @@ namespace pysbio {
       if constexpr (use_wrapper) {
         return wrap_xtc_detector(m, grp);
       } else {
-        return grp;
+        // TODO: Need to fix this... Need to bind for differetn Traits?
+        return py::cast(std::make_shared<BrokerGroupWrapper>(grp));
       }
     };
 
@@ -231,117 +293,9 @@ namespace pysbio {
     return std::visit(make, m_ds);
   }
 
-  std::unique_ptr<ZipIterator> PyDataSource::zip(const std::vector<py::object>& groups,
+  std::unique_ptr<ZipIterator> PyDataSource::zip(const std::vector<const BrokerGroupWrapper*>& groups,
                                                  bool batched) {
-    if (groups.empty() || groups.size() > ZipIterator::MaxGroups) {
-      throw std::invalid_argument("Can zip 1 to " + std::to_string(ZipIterator::MaxGroups) +
-                                  " groups (given " + std::to_string(groups.size()) + ")");
-    }
-
-    auto make = [&](auto& ds) -> std::unique_ptr<ZipIterator> {
-      using DS = std::remove_reference_t<decltype(ds)>;
-      using Group = std::remove_cvref_t<decltype(ds.get_stream_group(""))>;
-
-      std::vector<const Group*> zipped;
-      for (const auto& obj : groups) {
-        auto& wrapper { obj.cast<BrokerGroupWrapper&>() };
-        auto* grp { std::get_if<Group>(&wrapper.grp) };
-        if (grp == nullptr) {
-          throw py::type_error("Can only zip groups of this DataSource!");
-        }
-
-        // The group's StreamBrokers must be this DataSource's
-        const auto* first { ds.data_streams() };
-        const auto* last { first + ds.num_data_streams() };
-        for (std::size_t b = 0; b < grp->num_stream_brokers(); ++b) {
-          const auto* broker { grp->stream_brokers()[b] };
-          if (broker < first || broker >= last) {
-            throw py::value_error("Can only zip groups of this DataSource!");
-          }
-        }
-
-        zipped.push_back(grp);
-      }
-
-      switch (zipped.size()) {
-      case 1: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<1> {});
-      }
-      case 2: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<2> {});
-      }
-      case 3: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<3> {});
-      }
-      default: {
-        return make_zip<DS, Group>(ds,
-                                   zipped,
-                                   batched,
-                                   groups,
-                                   std::make_index_sequence<4> {});
-      }
-      }
-    };
-
-    return std::visit(make, m_ds);
-  }
-
-  /// --- Iterators --- ///
-  py::object StepIterator::next() {
-    py::object value { m_next ? m_next() : py::none() };
-    if (value.is_none()) {
-      close();
-      throw py::stop_iteration();
-    }
-
-    return value;
-  }
-
-  void StepIterator::close() {
-    m_next = nullptr;
-    if (m_range) {
-      // Ending the iteration may wait on other units (e.g. other threads)
-      if (Py_IsInitialized() && PyGILState_Check()) {
-        py::gil_scoped_release release;
-        m_range.reset();
-      } else {
-        m_range.reset();
-      }
-    }
-  }
-
-  py::object ZipIterator::next() {
-    py::object value { m_next ? m_next() : py::none() };
-    if (value.is_none()) {
-      close();
-      throw py::stop_iteration();
-    }
-
-    return value;
-  }
-
-  void ZipIterator::close() {
-    m_next = nullptr;
-    if (m_range) {
-      if (Py_IsInitialized() && PyGILState_Check()) {
-        py::gil_scoped_release release;
-        m_range.reset();
-      } else {
-        m_range.reset();
-      }
-    }
+    return make_zip(*this, groups, batched);
   }
 
   /// --- Context --- ///
@@ -356,7 +310,7 @@ namespace pysbio {
       ensure_parallel_environment<Policy>();
 
       return
-        std::make_unique<sbio::Context<sbio::SyncPOSIXIO, Policy>>(parse_config<Policy>(exec_cfg));
+        std::make_unique<sbio::Context<sbio::SyncPOSIXIO, Policy>>(parse_epolicy_config<Policy>(exec_cfg));
     };
 
     m_context = with_policy(epolicy, make);
@@ -419,6 +373,81 @@ namespace pysbio {
     // Load before handing `exp` over (argument evaluation order is unspecified)
     DataSourceV ds { with_format(data_fmt, make_for_format) };
 
-    return PyDataSource(std::move(ds), std::move(exp), run, self);
+    return PyDataSource(std::move(ds), self);
+  }
+
+  PyDataSource ContextWrapper::data_source(const std::shared_ptr<ContextWrapper>& self,
+                                           std::string directory,
+                                           std::string prefix,
+                                           int index_batch_size,
+                                           int max_buffer_size,
+                                           std::string tag,
+                                           std::string ext,
+                                           pysbio::FTraits data_fmt) {
+    if (!self->ok()) {
+      throw std::runtime_error("Invalid Context: " + self->error());
+    }
+
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+
+      auto make = [&](const auto& ctx) -> DataSourceV {
+        auto ds { ctx->template data_source<Format>() };
+
+#if defined(SBIO_HAS_HDF5)
+        if constexpr (std::is_same_v<Format, sbio::CXITraits>) {
+          load_at_prefix(ds,
+                         directory,
+                         prefix,
+                         index_batch_size,
+                         max_buffer_size,
+                         tag,
+                         ext);
+        } else {
+          throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+        }
+#else
+        throw std::runtime_error("XTC1 and XTC2 do not support this locator strategy!");
+#endif
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return std::visit(make, self->m_context);
+    };
+
+    // Load before handing `exp` over (argument evaluation order is unspecified)
+    DataSourceV ds { with_format(data_fmt, make_for_format) };
+
+    return PyDataSource(std::move(ds), self);
+  }
+
+  PyDataSource ContextWrapper::data_source(const std::shared_ptr<ContextWrapper>& self,
+                                           std::string path,
+                                           int index_batch_size,
+                                           int max_buffer_size,
+                                           pysbio::FTraits data_fmt) {
+    if (!self->ok()) {
+      throw std::runtime_error("Invalid Context: " + self->error());
+    }
+
+    auto make_for_format = [&](auto FormatTag) -> DataSourceV {
+      using Format = typename decltype(FormatTag)::type;
+
+      auto make = [&](const auto& ctx) -> DataSourceV {
+        auto ds { ctx->template data_source<Format>() };
+
+        load_file(ds, path, index_batch_size, max_buffer_size);
+
+        return DataSourceV { std::move(ds) };
+      };
+
+      return std::visit(make, self->m_context);
+    };
+
+    // Load before handing `exp` over (argument evaluation order is unspecified)
+    DataSourceV ds { with_format(data_fmt, make_for_format) };
+
+    return PyDataSource(std::move(ds), self);
   }
 } // namespace pysbio

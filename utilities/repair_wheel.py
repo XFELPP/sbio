@@ -60,7 +60,6 @@ def unmangle_wheel_libs_linux(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-
 def update_pc_in_repaired_wheel(whl_path: str):
     with zipfile.ZipFile(whl_path, "r") as z:
         pc_path_in_whl: Optional[str] = next(
@@ -76,7 +75,7 @@ def update_pc_in_repaired_wheel(whl_path: str):
             f
             for f in z.namelist()
             if re.search(
-                r"^(lib)?(dev)?(sbio|xtc)[a-zA-Z0-9_.\-]*\.(so|dylib|lib)",
+                r"^(lib)?(dev)?(hdf5|mpi|sbio|xtc)[a-zA-Z0-9_.\-]*\.(so|dylib|lib)",
                 os.path.basename(f),
             )
         ]
@@ -117,6 +116,19 @@ def update_pc_in_repaired_wheel(whl_path: str):
         os.replace(temp_whl, whl_path)
 
 
+def extra_lib_dirs(
+    search_root: str, lib_ptns: Tuple[str, ...] = ("libhdf5*",)
+) -> List[str]:
+    lib_dirs: List[str] = []
+    for ptn in lib_ptns:
+        for path in glob.glob(os.path.join(search_root, "**", ptn), recursive=True):
+            lib_dir: str = os.path.dirname(os.path.abspath(path))
+            if lib_dir not in lib_dirs:
+                lib_dirs.append(lib_dir)
+
+    return lib_dirs
+
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: repair_wheel.py <wheel_path> <dest_dir> [--no-exclude-core]")
@@ -142,6 +154,10 @@ def main():
             "repair",
         ]
 
+    install_dir: str = os.path.join(
+        os.environ.get("GITHUB_WORKSPACE", os.getcwd()), "install"
+    )
+    lib_dirs: List[str] = extra_lib_dirs(search_root=install_dir)
     if sys.platform == "darwin":
         mac_excludes: set = set()
         files_to_scan: List[bytes] = []
@@ -156,9 +172,6 @@ def main():
                 ):
                     files_to_scan.append(z.read(name))
 
-        install_dir: str = os.path.join(
-            os.environ.get("GITHUB_WORKSPACE", "."), "install"
-        )
         if os.path.exists(install_dir):
             for root, _, files in os.walk(install_dir):
                 for f in files:
@@ -228,8 +241,8 @@ def main():
         for pat in linux_excludes:
             cmd.extend(["--exclude", pat])
 
+    env: Dict[str, str] = os.environ.copy()
     if sys.platform == "darwin":
-        env: Dict[str, str] = os.environ.copy()
         try:
             site_pkg: str = subprocess.check_output(
                 [sys.executable, "-c", "import site; print(site.getsitepackages()[0])"],
@@ -239,7 +252,7 @@ def main():
                 os.path.join(os.environ.get("GITHUB_WORKSPACE", "."), "install", "lib"),
                 os.path.join(site_pkg, "ncarray", ".dylibs"),
                 os.path.join(site_pkg, "sbio", ".dylibs"),
-            ]
+            ] + lib_dirs
             env["DYLD_LIBRARY_PATH"] = (
                 ":".join(p for p in extra_paths if os.path.exists(p))
                 + ":"
@@ -258,6 +271,7 @@ def main():
         print(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True, env=env)
     else:
+        env["LD_LIBRARY_PATH"] = ":".join(lib_dirs + [os.getenv("LD_LIBRARY_PATH", "")])
         cmd.extend(
             [
                 "--exclude",
@@ -270,7 +284,7 @@ def main():
             ]
         )
         print(f"Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=env)
 
     repaired_wheels: List[str] = glob.glob(os.path.join(dest_dir, "*.whl"))
     if not repaired_wheels:

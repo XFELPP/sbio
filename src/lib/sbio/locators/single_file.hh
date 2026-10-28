@@ -61,15 +61,17 @@ namespace sbio {
 
     template <typename DS>
     static bool find_streams(DS& ds,
-                             const GenericStreamConfig<typename DS::DataFormat>& base_cfg,
-                             const char* filepath) {
+                             const LocatorParameters<typename DS::DataFormat>& params,
+                             const GenericStreamConfig<typename DS::DataFormat>& base_cfg) {
       using FTraits = typename DS::DataFormat;
       auto cfg { base_cfg };
 
       constexpr std::size_t VariantCount { LocatorTraits<FTraits>::provides_variants::size() };
 
       for (std::size_t r = 0; r < VariantCount; ++r) {
-        cfg.resources[r] = StreamResource::from_path(filepath);
+        // TODO: Think about this... The individual formats might not all have
+        //       the `path` field in their parameters?
+        cfg.resources[r] = StreamResource::from_path(params.path.c_str());
       }
 
       ds.add_data_stream(cfg);
