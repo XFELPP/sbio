@@ -2,6 +2,15 @@ if build_python_opt
     # Figure out dependencies
     deps_for_py_mod = deps_for_sbio + [pybind11_dep, py3_dep, sbio_dep]
 
+    # Add DELAYLOAD for Windows as needed
+    py_delay_lib_link_args = []
+    if sbio_has_cuda and host_machine.system() == 'windows' and cpp.get_id() == 'msvc'
+        py_delay_lib_link_args = [
+            '/DELAYLOAD:nvcuda.dll',
+            'delayimp.lib',
+        ]
+    endif
+
     py_mod = py3.extension_module(
         '_pysbio',
         [
@@ -18,7 +27,7 @@ if build_python_opt
         dependencies : deps_for_py_mod,
         install_rpath: py_to_lib_install_rpath,
         build_rpath: py_to_lib_install_rpath,
-        # link_args: py_mod_link_args,
+        link_args: py_delay_lib_link_args,
     )
 
     if sbio_has_cuda

@@ -31,9 +31,9 @@ jobs:
           - target: linux-glibc-x86_64
             os: ubuntu-latest
             container: quay.io/pypa/manylinux_2_28_x86_64
-          #- target: windows-x86_64
-          #  os: windows-2022
-          #  container: null
+          - target: windows-x86_64
+            os: windows-2022
+            container: null
 
     steps:
       - name: Free Unused Disk Space
@@ -96,10 +96,10 @@ jobs:
           python -m pip install "ncarray==0.7.8+cuda132" --extra-index-url https://pypi.xfelpp.org/cuda132/
           $env:PKG_CONFIG_PATH = "$(nca-pkg-config --pkg-config-path):$env:PKG_CONFIG_PATH"
 
-          $env:PATH += ";$GITHUB_WORKSPACE/install/bin;C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/bin"
+          $env:PATH += ";$env:GITHUB_WORKSPACE/install/bin;C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/bin"
           $env:CUDA_PATH = "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2"
           $env:CUDA_HOME = "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2"
-          $env:LIB += ";$GITHUB_WORKSPACE/install/lib"
+          $env:LIB += ";$env:GITHUB_WORKSPACE/install/lib"
 
           meson setup builddir -Dbuild_core=true -Dbuild_python=false -Dsbio_as_wheel=false -Dbuild_mpi=auto -Dbuildtype=release --prefix="$((Get-Location).Path)\install"
           meson compile -C builddir

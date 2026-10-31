@@ -21,6 +21,7 @@ if build_core_opt
             install_dir: libsbio_install_dir,
             install_rpath: lib_install_rpath,
             kwargs: sbio_version_kwargs,
+            link_args: fmt_delay_lib_link_args,
         )
 
         sbiofmt_dep = declare_dependency(

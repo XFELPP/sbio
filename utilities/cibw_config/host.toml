@@ -82,10 +82,8 @@ SYSTEM_VERSION_COMPAT = "0"
 # Not able to find cmake in wheel step otherwise?
 # Sigh... MPICH hacks.... see the horror in the CI
 PATH = "${RUNNER_TEMP}/mpich-install/bin:$PATH:/Applications/CMake.app/Contents/bin:$(pwd)/install/bin:$GITHUB_WORKSPACE/install/bin:/opt/homebrew/bin:/usr/local/bin"
-# For some reason ncarray 0.7.7 had a problem with RPATH in macOS. Maybe meson 1.12.1?
-# Hack for now... Just need to pickup libeagereval.1.dylib which is in ncarray/core
-LIBRARY_PATH = "$(pwd)/install/lib:$GITHUB_WORKSPACE/install/lib:/opt/homebrew/lib/python3.10/site-packages/ncarray/core:$LIBRARY_PATH"
-DYLD_LIBRARY_PATH = "$(pwd)/install/lib:$GITHUB_WORKSPACE/install/lib:/opt/homebrew/lib/python3.10/site-packages/ncarray/core:$DYLD_LIBRARY_PATH"
+LIBRARY_PATH = "$(pwd)/install/lib:$GITHUB_WORKSPACE/install/lib:$LIBRARY_PATH"
+DYLD_LIBRARY_PATH = "$(pwd)/install/lib:$GITHUB_WORKSPACE/install/lib:$DYLD_LIBRARY_PATH"
 LDFLAGS = "-L$GITHUB_WORKSPACE/install/lib -L$(pwd)/install/lib"
 PKG_CONFIG_PATH = "$(pwd)/install/lib/pkgconfig:$(pwd)/install/share/pkgconfig:$GITHUB_WORKSPACE/install/lib/pkgconfig:$GITHUB_WORKSPACE/install/share/pkgconfig:$PKG_CONFIG_PATH"
 

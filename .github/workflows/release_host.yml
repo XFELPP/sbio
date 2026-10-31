@@ -88,11 +88,6 @@ jobs:
           ccache -z
           python3.10 -m pip install --break-system-packages meson ninja "ncarray==0.7.8+host" --extra-index-url https://pypi.xfelpp.org/host/ || true
 
-          # For some reason ncarray 0.7.7 had a problem with RPATH in macOS. Maybe meson 1.12.1?
-          # Hack for now... Just need to pickup libeagereval.1.dylib which is in ncarray/core
-          export LIBRARY_PATH="/opt/homebrew/lib/python3.10/site-packages/ncarray/core:${LIBRARY_PATH}"
-          export DYLD_LIBRARY_PATH="/opt/homebrew/lib/python3.10/site-packages/ncarray/core:${DYLD_LIBRARY_PATH}"
-
           export PKG_CONFIG_PATH="$(nca-pkg-config --pkg-config-path):${PKG_CONFIG_PATH}"
 
           # Build MPICH first - make sure to set libdir.
