@@ -105,7 +105,6 @@ def sbio_pkg_config() -> None:
         print(pc_path)
 
 
-
 def get_include() -> str:
     sbio_wheel_include_dir: str = os.path.join(os.path.dirname(__file__), "include")
     if os.path.exists(sbio_wheel_include_dir):
@@ -184,6 +183,17 @@ elif platform.system() == "Linux":
         if os.path.exists(stub_path):
             try:
                 ctypes.CDLL(stub_path, mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                pass
+
+    has_ml: bool = ctypes.util.find_library("nvidia-ml") is not None
+    if not has_ml:
+        ml_stub_path: str = os.path.join(
+            os.path.dirname(__file__), "core", "stubs", "libnvidia-ml.so"
+        )
+        if os.path.exists(ml_stub_path):
+            try:
+                ctypes.CDLL(ml_stub_path, mode=ctypes.RTLD_GLOBAL)
             except Exception:
                 pass
 

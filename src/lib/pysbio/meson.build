@@ -2,6 +2,15 @@ if build_python_opt
     # Figure out dependencies
     deps_for_py_mod = deps_for_sbio + [pybind11_dep, py3_dep, sbio_dep]
 
+    # Add DELAYLOAD for Windows as needed
+    py_delay_lib_link_args = []
+    if sbio_has_cuda and host_machine.system() == 'windows' and cpp.get_id() == 'msvc'
+        py_delay_lib_link_args = [
+            '/DELAYLOAD:nvcuda.dll',
+            'delayimp.lib',
+        ]
+    endif
+
     py_mod = py3.extension_module(
         '_pysbio',
         [
@@ -18,11 +27,12 @@ if build_python_opt
         dependencies : deps_for_py_mod,
         install_rpath: py_to_lib_install_rpath,
         build_rpath: py_to_lib_install_rpath,
-        # link_args: py_mod_link_args,
+        link_args: py_delay_lib_link_args,
     )
 
     if sbio_has_cuda
         # Provide the stub for Linux
+        # Seems that libnvidia-ml.so can be required too
         if host_machine.system() == 'linux'
             fs = import('fs')
             nvcc_bin = find_program('nvcc')
@@ -30,29 +40,42 @@ if build_python_opt
 
             cuda_root = fs.parent(fs.parent(nvcc_path))
 
-            # Check `lib64/stubs` and `lib/stubs` for driver stub
-            cuda_stub_lib = cuda_root / 'lib64/stubs/libcuda.so'
-            if not fs.exists(cuda_stub_lib)
-                cuda_stub_lib = cuda_root / 'lib/stubs/libcuda.so'
-            endif
+            cuda_stub_dirs = [
+                cuda_root / 'lib64/stubs',
+                cuda_root / 'lib/stubs',
+                # Conda dirs.
+                cuda_root / 'targets/x86_64-linux/lib/stubs',
+                cuda_root / 'targets/sbsa-linux/lib/stubs',
+            ]
+            cuda_stubs = [
+                ['libcuda.so', true],
+                ['libnvidia-ml.so', false],
+            ]
 
-            # For conda environments it's generally under targets
-            if not fs.exists(cuda_stub_lib)
-                cuda_stub_lib = cuda_root / 'targets/x86_64-linux/lib/stubs/libcuda.so'
-            endif
+            foreach stub : cuda_stubs
+                stub_name = stub[0]
+                stub_required = stub[1]
 
-            if fs.exists(cuda_stub_lib)
-                message('**** Installing libcuda stub library: ' + cuda_stub_lib + ' ****')
+                stub_path = ''
+                foreach lib_dir : cuda_stub_dirs
+                    if stub_path == '' and fs.exists(lib_dir / stub_name)
+                        stub_path = lib_dir / stub_name
+                    endif
+                endforeach
 
-                install_data(
-                    cuda_stub_lib,
-                    install_dir: py3.get_install_dir() / 'sbio/core/stubs'
-                )
-            else
-                # The stub must be provided to prevent issues for CUDA-enabled builds
-                # for users running without the CUDA driver (CPU-only mode).
-                error('Cannot find CUDA driver stub (libcuda.so) from CUDA root: ' + cuda_root)
-            endif
+                if stub_path != ''
+                    message('**** Installing libcuda stub library: ' + stub_path + ' ****')
+                    install_data(
+                        stub_path,
+                        install_dir: py3.get_install_dir() / 'sbio/core/stubs',
+                    )
+                elif stub_required
+                    # Need at least libcuda.so. Not sure on the others.
+                    error('Cannot find CUDA driver stub (libcuda.so) from CUDA root: ' + cuda_root)
+                else
+                    warning('Cannot find CUDA stub (' + stub_name + ') from CUDA root: ' + cuda_root)
+                endif
+            endforeach
         endif # Linux guard
     endif # sbio_has_cuda
 endif # build_python_opt
