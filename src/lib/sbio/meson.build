@@ -6,9 +6,17 @@ subdir('formats')
 if build_core_opt
     core_sources = ['io/posix.cc']
 
+    # Add DELAYLOAD for Windows as needed
+    delay_lib_link_args = []
     if sbio_has_cuda
         if host_machine.system() != 'windows'
             core_sources += ['io/cufile.cc']
+        endif
+        if host_machine.system() == 'windows' and cpp.get_id() == 'msvc'
+            delay_lib_link_args = [
+                '/DELAYLOAD:nvcuda.dll',
+                'delayimp.lib',
+            ]
         endif
     endif
 
@@ -47,6 +55,7 @@ if build_core_opt
         install: true,
         install_dir: libsbio_install_dir,
         install_rpath: lib_install_rpath,
+        link_args: delay_lib_link_args,
         kwargs: sbio_version_kwargs,
     )
 

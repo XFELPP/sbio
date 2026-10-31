@@ -13,7 +13,7 @@ if build_python_opt
         dependencies : deps_for_py_mod,
         install_rpath: py_to_lib_install_rpath,
         build_rpath: py_to_lib_install_rpath,
-        # link_args: py_mod_link_args,
+        link_args: py_delay_lib_link_args,
     )
 
     if sbio_build_xtc1
@@ -28,6 +28,7 @@ if build_python_opt
             dependencies : deps_for_py_mod,
             install_rpath: py_to_lib_install_rpath,
             build_rpath: py_to_lib_install_rpath,
+            link_args: py_delay_lib_link_args,
         )
     endif # sbio_build_xtc1
 
@@ -43,7 +44,7 @@ if build_python_opt
             dependencies : deps_for_py_mod,
             install_rpath: py_to_lib_install_rpath,
             build_rpath: py_to_lib_install_rpath,
-            # link_args: py_mod_link_args,
+            link_args: py_delay_lib_link_args,
         )
     endif # sbio_build_xtc2
 endif # build_python_opt

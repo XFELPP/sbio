@@ -1,3 +1,12 @@
+# Add DELAYLOAD for Windows as needed
+fmt_delay_lib_link_args = []
+if sbio_has_cuda and host_machine.system() == 'windows' and cpp.get_id() == 'msvc'
+    fmt_delay_lib_link_args = [
+        '/DELAYLOAD:nvcuda.dll',
+        'delayimp.lib',
+    ]
+endif
+
 subdir('hdf5')
 subdir('xtc1')
 subdir('xtc2')
