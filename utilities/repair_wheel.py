@@ -10,6 +10,33 @@ import zipfile
 from typing import Dict, List, Optional, Tuple
 
 
+CUDA_DRIVER_LIB_EXCLUDES: Tuple[str, ...] = (
+    "libcuda.so*",
+    "libnvidia-*.so*",  # Caught on libnvidia-ml
+    "libnvcuvid.so*",
+)
+
+
+_CUDA_DRIVER_LIB_PTN: re.Pattern = re.compile(
+    r"^lib(cuda|nvidia-[A-Za-z0-9_]+|nvcuvid)(-[0-9a-f]{8})?\.so",
+)
+
+
+def assert_no_cuda_driver_libs(whl_path: str) -> None:
+    with zipfile.ZipFile(whl_path, "r") as z:
+        bundled: List[str] = [
+            name
+            for name in z.namelist()
+            if _CUDA_DRIVER_LIB_PTN.match(os.path.basename(name))
+        ]
+
+        if bundled:
+            print(f"ERROR: Found NVIDIA driver libraries in {whl_path}!")
+            for libname in bundled:
+                print(f"  - {libname}")
+            sys.exit(1)
+
+
 def unmangle_wheel_libs_linux(
     whl_path: str, prefixes: Tuple[str, ...] = ("libsbio", "libdevsbio", "libxtc")
 ):
@@ -232,6 +259,7 @@ def main():
             "libgcc_s*",
             "libstdc++*",
             "libgomp*",
+            *CUDA_DRIVER_LIB_EXCLUDES,
         ]
 
         if not no_exclude_core:
@@ -274,8 +302,6 @@ def main():
         env["LD_LIBRARY_PATH"] = ":".join(lib_dirs + [os.getenv("LD_LIBRARY_PATH", "")])
         cmd.extend(
             [
-                "--exclude",
-                "libcuda.so.1",
                 "--lib-sdir",
                 ".libs",
                 "-w",
@@ -340,6 +366,7 @@ def main():
             if sys.platform != "darwin":
                 unmangle_wheel_libs_linux(whl_path=whl)
             update_pc_in_repaired_wheel(whl_path=whl)
+            assert_no_cuda_driver_libs(whl_path=whl)
 
 
 if __name__ == "__main__":
