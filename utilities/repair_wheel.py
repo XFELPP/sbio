@@ -28,6 +28,7 @@ def assert_no_cuda_driver_libs(whl_path: str) -> None:
             name
             for name in z.namelist()
             if _CUDA_DRIVER_LIB_PTN.match(os.path.basename(name))
+            and "/core/stubs/" not in name  # sbio intentionally includes stubs here
         ]
 
         if bundled:
