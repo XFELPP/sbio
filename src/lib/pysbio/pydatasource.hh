@@ -67,6 +67,7 @@ namespace pysbio {
                  unsigned run,
                  int evt_per_read,
                  int dgram_size,
+                 int max_batch_size,
                  pysbio::FTraits data_fmt = pysbio::FTraits::XTC2,
                  pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPIThreaded,
                  py::dict exec_cfg = py::dict(),
@@ -77,6 +78,7 @@ namespace pysbio {
                  std::string prefix,
                  int index_batch_size,
                  int max_buffer_size,
+                 int max_batch_size,
                  std::string tag = {},
                  std::string ext = "cxi",
                  pysbio::FTraits data_fmt = pysbio::FTraits::CXI,
@@ -88,6 +90,7 @@ namespace pysbio {
     PyDataSource(std::string path,
                  int index_batch_size,
                  int max_buffer_size,
+                 int max_batch_size,
                  pysbio::FTraits data_fmt = pysbio::FTraits::CXI,
                  pysbio::ExecutionPolicy epolicy = pysbio::ExecutionPolicy::MPIThreaded,
                  py::dict exec_cfg = py::dict(),
@@ -144,12 +147,14 @@ namespace pysbio {
                                     unsigned run,
                                     int evt_per_read,
                                     int dgram_size,
+                                    int max_batch_size,
                                     pysbio::FTraits data_fmt);
     static PyDataSource data_source(const std::shared_ptr<ContextWrapper>& self,
                                     std::string directory,
                                     std::string prefix,
                                     int index_batch_size,
                                     int max_buffer_size,
+                                    int max_batch_size,
                                     std::string tag,
                                     std::string ext,
                                     pysbio::FTraits data_fmt);
@@ -157,6 +162,7 @@ namespace pysbio {
                                     std::string path,
                                     int index_batch_size,
                                     int max_buffer_size,
+                                    int max_batch_size,
                                     pysbio::FTraits data_fmt);
 
   private:

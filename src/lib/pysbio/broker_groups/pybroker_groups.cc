@@ -21,6 +21,7 @@
 
 #include "sbio/core/broker.hh"
 #include "sbio/core/broker_group.hh"
+#include "sbio/core/topology.hh"
 #include "sbio/execution/serial.hh"
 #include "sbio/execution/threaded.hh"
 #ifdef SBIO_HAS_MPI
@@ -35,12 +36,22 @@
 #include "sbio/formats/xtc2/xtc2_traits.hh"
 #endif
 
+#include <pybind11/native_enum.h>
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(pybroker_groups, broker_group_module, py::mod_gil_not_used()) {
   broker_group_module.doc() = "sbio Python bindings for Broker Groups.";
+
+  py::native_enum<sbio::StepMapping>(broker_group_module,
+                                     "StepMapping",
+                                     "enum.Enum",
+                                     "Enumerators for step alignment/mapping.")
+    .value("PerKind", sbio::StepMapping::PerKind)
+    .value("AlignTo", sbio::StepMapping::AlignTo)
+    .export_values()
+    .finalize();
 
 #ifdef SBIO_HAS_XTC1
   using XTC1SerialBroker = sbio::StreamBroker<

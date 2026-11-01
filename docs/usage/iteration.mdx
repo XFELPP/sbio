@@ -1,0 +1,344 @@
+---
+title: Advanced Iteration (and Event Building)
+description: "Stream Broker IO: sbio"
+sidebar:
+  order: 3
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+Beyond the simple single step at-a-time model, `sbio` has a number of tools to iterate across datasets. This affords a large degree of flexibility for different programming paradigms, and can help improve performance across the varied use cases for the framework.
+
+The following strategies will be covered:
+
+<Steps>
+1. Step mapping/alignment
+2. Zipping
+3. Batch read APIs
+4. `SourceSet`
+</Steps>
+
+## Step Alignment
+
+The default behaviour for `sbio` is that each `StreamBroker`, and as a result, each `BrokerGroup` managing those `StreamBrokers`, will have its own set of steps. I.e., there is no global alignment performed without explicit request. This is useful in some cases - if you want to look at a single `BrokerGroup`, there is no reason that the steps you iterate for that group should be compared to others which are of no interest to you.
+
+In some cases, however, it can be helpful to perform some amount alignment or coordination of steps. Internally, `sbio` uses a construct called the `GroupTopology` to handle how the various `SegmentRef`s of a `BrokerGroup` are laid out, and what their relationship is to all the other `StreamBroker`s that were discovered by the `DataSource`. This central topology provides the opportunity to perform all kinds of transformations and remapping as needed.
+
+In general, you do not need to manipulate the topology directly, though. The simplest kind of remapping of interest is to align the steps for a BrokerGroup of one type of `DataAccessPtn` to those of another. This configuration option is exposed through the high-level APIs in the `BrokerGroup` (in both C++ and Python).
+
+Specifically, what we are referring to is making step counters for different access patterns align such that the count for one group is always at the latest step at or before the corresponding count of our chosen alignment group. Consider the case where two different access patterns are recorded at very different rates, ie., there are many more steps for one than the other. In this case, we recorded 10 steps for the first type, and only 3 for the second.
+
+```
+Access pattern 1: | Step0 | Step1 | Step2 | Step3 | Step4 | Step5 | Step6 | Step7 | Step8 | Step9 |
+
+Access pattern 2:                 | Step0 |               | Step1 |               | Step2 |
+```
+
+If we leave the default configuration, then during iteration, there will be 10 steps returned for the first case, and 3 for the second. On the other hand, if we set the alignment/mapping for groups of access pattern 2, to align to access pattern 1, then when iterating, we will read 10 steps for both. We will have `Step0` returned for the first 3 steps, then `Step1` for the next 3, and so on.
+
+Setting up this alignment is quite straight forward. Following the creation of the `BrokerGroup`, but prior to iterating, simply call `set_step_mapping` (or equivalent Python below).
+
+<Tabs>
+  <TabItem label="C++" icon="seti:cpp">
+  ```cpp
+  // We assume we have an MPI, XTC2 group.
+  auto grp = ds.get_stream_group("group_name");
+
+  using BGType = std::decay_t<decltype(grp)>;
+  using DataAccessPtn = typename BGType::DataAccessPtn;
+  // The default pattern is StepMapping.PerKind
+  // Change to StepMapping.AlignTo, and provide the alignment pattern
+  grp.set_step_mapping(sbio::StepMapping::AlignTo, DataAccessPtn::L1Accept);
+  ```
+  </TabItem>
+  <TabItem label="Python (Tier 1)" icon="seti:python">
+  ```py
+  # We assume we have an MPI, XTC2 group.
+  grp: sbio.BrokerGroupWrapper = ds.group("group_name")
+
+  # Configure alignment to L1Accept
+  grp.align_steps_to(sbio.formats.pyformat_traits.XTC2DataAccessPtn.L1Accept)
+  ```
+  </TabItem>
+
+  <TabItem label="Python (Tier 2)" icon="seti:python">
+  ```py
+  # We assume we have an MPI, XTC2 group.
+  grp: sbio.broker_groups.pybroker_groups.XTC2MPIBrokerGroup = ds.get_stream_group(
+      "group_name"
+  )
+
+  # The default pattern is StepMapping.PerKind
+  # Change to StepMapping.AlignTo, and provide the alignment pattern
+  grp.set_step_mapping(
+      mapping=sbio.broker_groups.pybrokergroups.StepMapping.AlignTo,
+      align_to=sbio.formats.pyformat_traits.XTC2DataAccessPtn.L1Accept,
+  )
+  ```
+  </TabItem>
+</Tabs>
+
+## Zipping
+
+There is another implication of the default iteration strategy beyond just alignment of step counts. When reading multiple `BrokerGroup`s, the fetching of data can be inefficient if using the default, one-group optimized, configuration. The reason is that multiple `BrokerGroup`s may be using the same underlying `StreamBroker`s. I.e., two different `BrokerGroup`s could ultimately be reading from the same underlying physical resource (file, etc). Under the default configuration, two calls of `get_data`, one for each of the two `BrokerGroup`s, will result in two independent reads of the resource for the same step.
+
+This can be addressed, however, by the process `sbio` calls "zipping". I.e., multiple `BrokerGroup`s can be "zipped" together, in order to be read in a synchronized fashion.
+
+Construction of zipped groups is straight-forward. Simply provide the `DataSource` along with the groups of interest to the function. The zipped object that is returned is what is then iterated (not the `DataSource`!).
+
+The zipped iterator objects can be used with many of the same iteration APIs that are present directly on the `DataSource`. The one nuance is that the retrieval of the data is slightly different. A zipped return step includes instructions for data lookup - providing the `BrokerGroup` to use then leads to the actual resolution on request.
+
+<Tabs>
+  <TabItem label="C++" icon="seti:cpp">
+  ```cpp
+  #include <sbio/core/iteration.hh>
+
+  auto grp0 = ds.get_stream_group("det0");
+  auto grp1 = ds.get_stream_group("det1");
+
+  auto zipped_it = sbio::zip(ds, grp0, grp1);
+
+  for (auto step : zipped_it) {
+    if (step.status() != sbio::IOStatus::Success) {
+      // Error!
+    }
+
+    using namespace sbio::literals;
+
+    // Resolve data for each group as needed
+    auto data0 = step.get(grp0, "raw"_alg, "raw"_field);
+    auto data1 = step.get(grp1, "raw"_alg, "some_other_field"_field);
+  }
+  ```
+  </TabItem>
+  <TabItem label="Python (Tier 1)" icon="seti:python">
+  ```py  
+  grp0: sbio.BrokerGroupWrapper = ds.group("det0")
+  grp1: sbio.BrokerGroupWrapper = ds.group("det1")
+
+  # Unlike with the C++ API, zip is exposed through member methods, as opposed to
+  # free functions
+  zipped_gen: sbio.ZipIterator = ds.zip(grp0, grp1)
+  step: sbio.ZipStep = next(zip_gen) # Can also iterate directly: `for step in zip_gen:`
+
+  data0: ncarray.SOArrayView = step.get(grp0, "raw", "raw")
+  data1: ncarray.SOArrayView = step.get(grp1, "raw", "some_other_field")
+  ```
+  </TabItem>
+</Tabs>
+
+<Aside type="note" title="Zipping Beyond Tier 1">
+  The zip APIs have currently only been bound to the tier-1 Python bindings. All the infrastructure is in place to support them at the other API levels - but for build size and complexity this has been omitted until demand for it appears.
+</Aside>
+
+## Batch Read APIs
+
+A somewhat orthogonal consideration to the alignment discussions above is the use of batched reads. The default, and simplest, iterators all return a single step, and consequently, fetch data for a single step. `sbio` also exposes the option to perform batched reads. This can be done at all API levels, i.e., through direct calls to the `BrokerGroup` and `DataSource`, or through pre-constructed batch iterators (or zipped iterators). Note, however, that you will in general want to configure buffers to account for the increased read sizes!
+
+<Aside type="caution" title="Batch Read Buffers">
+  To read in data for multiple steps at a time, the buffers must be correspondingly configured to be large enough to accept the increased data size. Therefore there is a trade-off between IO efficiency from batching, and the increased memory utilization as a result.
+</Aside>
+
+<Tabs>
+  <TabItem label="C++" icon="seti:cpp">
+  ```cpp
+  #include <sbio/core/iteration.hh>
+
+  
+  sbio::GenericStreamConfig<sbio::XTC2Traits> base_cfg;
+  base_cfg.index_batch_size = 43200;    ///< How many step offsets will be read each time.
+  base_cfg.max_buffer_size = 0x4000000; ///< The maximum buffer size to read data into.
+
+  // ALSO - set the max batch size.
+  base_cfg.max_batch_size = 10;
+
+  // Rest of setup as before ...
+  // ...
+  std::string experiment { "abcd" };
+  unsigned run_num { 1234 };
+  bool found = ds.load_source(base_cfg, experiment, run_num);
+  auto status = ds.discover_metadata();
+
+  auto grp = ds.get_stream_group("group_name");
+
+  std::size_t batch_size { 8 }; // Less than our maximum of 10
+  // Setup batched reads
+  for (auto batch : ds.batches(batch_size)) {
+    auto start_step { batch.first };
+    auto end_step { batch.last };
+    auto batch_count { batch.count() }; // ACtual number included in batch
+
+    using namespace sbio::literals;
+
+    // Do batched retrieval
+    auto data = grp.get_multi_data({ start_step, end_step }, "raw"_alg, "raw"_field);
+  }
+  ```
+
+  </TabItem>
+  <TabItem label="Python (Tier 1)" icon="seti:python">
+  ```py
+  base_cfg: sbio.formats.XTC2StreamConfig = sbio.formats.XTC2StreamConfig()
+  base_cfg.index_batch_size = 43200
+  base_cfg.max_buffer_size = 0x4000000
+
+  # ALSO - set hte max batch size.
+  base_cfg.max_batch_size = 10
+
+  ds: sbio.DataSource = ctx.data_source(
+      exp=exp,
+      run=run_num,
+      events_per_read=43200,      # How many step offsets will be read each time.
+      max_dgram_size=0x4000000,   # The maximum buffer size to read data into.
+      max_batch_size=10,          # The maximum batch size
+      data_fmt=sbio.FTraits.XTC2, # Data format - not all formats have the same signature
+  )
+
+  # Rest of setup as before
+
+
+  grp: sbio.BrokerGroupWrapper = ds.group("group_name")
+
+  for batch in ds.batches(batch_size=8):
+      data: ncarray.SOArrayView = data.get_multi_data(
+          (batch.first, batch.last), "raw", "raw"
+      )
+
+  ```
+  </TabItem>
+
+  <TabItem label="Python (Tier 2)" icon="seti:python">
+  ```py
+  # Setup options for the reading
+  base_cfg: sbio.formats.XTC2StreamConfig = sbio.formats.XTC2StreamConfig()
+  base_cfg.index_batch_size = 43200
+  base_cfg.max_buffer_size = 0x4000000
+
+  # ALSO - set hte max batch size.
+  base_cfg.max_batch_size = 10
+
+  # Rest of setup as before
+  load_successful: bool = ds.load_source(base_cfg, exp, run_num)
+  status: sbio.IOStatus = ds.discover_metadata()
+
+  grp: sbio.BrokerGroupWrapper = ds.group("group_name")
+
+  for batch in ds.batches(batch_size=8):
+      data: ncarray.SOArrayView = data.get_multi_data(
+          (batch.first, batch.last), "raw", "raw"
+      )
+  ```
+  </TabItem>
+</Tabs>
+
+In addition to the direct `batches` calls on the `DataSource`, there are corresponding batch APIs for the zipped iterators:
+
+- For Python, after configuring everything, call `ds.zip_batches()` instead of `ds.zip()`.
+- For the C++ API, use `sbio::zip_batches` instead of `sbio::zip`.
+
+## `SourceSet` - Building Across `DataSource`s
+
+Up to this point, all the iteration and alignment strategies covered have been contained within a single `DataSource`. I.e., the `BrokerGroup`s all arose from a single initial set of data streams. `sbio`, however, also exposes tools to allow building *across* different `DataSources`. This allows data to be iterated in synchronized fashion between different sources, even if they are of different data formats. The APIs do require, though, that the constituent `DataSource`s be built from the same `ExecutionPolicy` and `IOPolicy`.
+
+The mechanism that allows this is called a `SourceSet`. Multiple `DataSource`s are combined into the set, and then the zipping process allows any `BrokerGroups` to be iterated together.
+
+<Aside type="note" title="SourceSet EPolicies">
+  The `SourceSet` must be constructed from `DataSource`s using the same Execution Policy. In addition, for the Python bindings, currently only `MPIThreadedExecution` and `SerialExecution` are supported.
+</Aside>
+
+<Tabs>
+  <TabItem label="C++" icon="seti:cpp">
+  ```cpp
+  sbio::MPIExecution::Config ecfg;
+  ecfg.main_rank = 0;          ///< The indexing rank is rank 0
+  ecfg.main_rank_loops = true; ///< Our indexing rank participates in iteration.
+  sbio::Context<sbio::SyncPOSIXIO, sbio::MPIExecution> ctx(ecfg);
+
+  auto ds0 = ctx.data_source<sbio::XTC2Traits>();
+  auto ds1 = ctx.data_source<sbio::CXITraits>();
+
+  sbio::GenericStreamConfig<sbio::XTC2Traits> base_cfg0;
+  base_cfg0.index_batch_size = 43200;    ///< How many step offsets will be read each time.
+  base_cfg0.max_buffer_size = 0x4000000; ///< The maximum buffer size to read data into.
+
+  // Rest of setup as before ...
+  // ...
+  std::string experiment { "abcd" };
+  unsigned run_num { 1234 };
+  bool found = ds0.load_source(base_cfg0, experiment, run_num);
+  auto status = ds0.discover_metadata();
+
+
+  sbio::GenericStreamConfig<sbio::CXITraits> base_cfg1;
+  base_cfg1.index_batch_size = 43200;
+  base_cfg1.max_buffer_size = 0x4000000;
+
+  std::string cxi_path { "/path/to/file.cxi" };
+  found = ds1.load_source(base_cfg1, cxi_path);
+  status = ds1.discover_metadata();
+
+  // Retrieve BrokerGroups from the DataSources themselves
+  auto grp0 = ds0.get_stream_group("group0");
+  auto grp1 = ds1.get_stream_group("/entry_1/data_1");
+
+  // Construct a SourceSet
+  auto ds_set = sbio::source_set(ds0, ds1); // Helper function
+
+  // Use the zipped APIs just like before
+  for (auto step : sbio::zip(ds_set, grp0, grp1)) {
+    auto data0 = step.get(grp0, "raw"_alg, "raw"_field);
+    auto data1 = step.get(grp1, "raw"_alg, "some_other_field"_field);
+  }
+  ```
+
+  </TabItem>
+  <TabItem label="Python (Tier 1)" icon="seti:python">
+  ```py
+  ctx: sbio.Context = sbio.Context(
+      epolicy=sbio.execution.ExecutionPolicy.MPI, # As above, MPIExecution.
+      exec_cfg = {
+          "main_rank": 0,
+          "main_rank_loops": True,
+      },
+      # io_policy=sbio.io.IOPolicy.SyncPOSIX,
+  )
+
+  ds0: sbio.DataSource = ctx.data_source(
+      exp=exp,
+      run=run_num,
+      events_per_read=43200,      # How many step offsets will be read each time.
+      max_dgram_size=0x4000000,   # The maximum buffer size to read data into.
+      max_batch_size=10,          # The maximum batch size
+      data_fmt=sbio.FTraits.XTC2, # Data format - not all formats have the same signature
+  )
+  ds1: sbio.DataSource = ctx.data_source(
+      path="/path/to/file.cxi",
+      index_batch_size=43200,     # How many step offsets will be read each time.
+      max_buffer_size=17108864,   # The maximum buffer size to read data into.
+      max_batch_size=10,          # The maximum batch size
+      data_fmt=sbio.FTraits.CXI,  # Data format - not all formats have the same signature
+  )
+
+  # Retrieve BrokerGroups from the DataSoruces themselves
+  grp0: sbio.BrokerGroupWrapper = ds0.group("group0")
+  grp1: sbio.BrokerGroupWrapper = ds1.group("/entry_1/data_1")
+
+  # Construct a SourceSet
+  ds_set: sbio.SourceSet = sbio.SourceSet(ds0, ds1)
+  
+  # Use the zipped APIs just like before.
+  zipped_gen: sbio.ZipIterator = ds_set.zip(grp0, grp1)
+  step: sbio.ZipStep = next(zip_gen) # Can also iterate directly: `for step in zip_gen:`
+
+  data0: ncarray.SOArrayView = step.get(grp0, "raw", "raw")
+  data1: ncarray.SOArrayView = step.get(grp1, "raw", "some_other_field")
+
+  ```
+  </TabItem>
+</Tabs>
+
+The `SourceSet` behaves like a normal `DataSource`, and as such, all the zip and iteration APIs and routines are available with it. I.e., both the single-step zip, as well as all the batch APIs can be used.
+
+<Aside type="note" title="SourceSet Beyond Tier 1">
+  As with the zip APIs, there currently isn't direct support for the `SourceSet` beyond the Tier 1 Python bindings. Should demand arise this can be explored further.
+</Aside>

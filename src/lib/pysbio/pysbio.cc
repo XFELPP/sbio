@@ -53,6 +53,8 @@ Args:
 
     max_dgram_size (int): The maximum size of a Datagram to accept.
 
+    max_batch_size (int): The maximum number of steps for a batched read request.
+
     data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
 
     epolicy (pysbio.ExecutionPolicy): The Execution policy to use (Serial, MPI, Threaded, etc.)
@@ -76,6 +78,8 @@ Args:
 
     max_buffer_size (int): The maximum size for a single data buffer.
 
+    max_batch_size (int): The maximum number of steps for a batched read request.
+
     tag (str): An optional tag that is appended to the prefix with a hyphen. Default: none.
 
     ext (str): The filename extension. Default: cxi.
@@ -96,6 +100,8 @@ Args:
     index_batch_size (int): The number of step offsets to index in one go.
 
     max_buffer_size (int): The maximum size for a single data buffer.
+
+    max_batch_size (int): The maximum number of steps for a batched read request.
 
     data_fmt (pysbio.FTraits): The data format to read (XTC1, XTC2, etc.)
 
@@ -133,6 +139,30 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def_property_readonly("group_type", &BrokerGroupWrapper::get_detector_type)
     .def_property_readonly("group_fields", &BrokerGroupWrapper::group_fields)
     .def_property_readonly("serial_number", &BrokerGroupWrapper::get_serial_number)
+#ifdef SBIO_HAS_HDF5
+    .def("align_steps_to",
+         [](BrokerGroupWrapper& self, sbio::CXITraits::DataAccessPtn align_to) {
+           self.align_steps_to(align_to);
+         },
+         py::arg("align_to"),
+         "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
+#endif
+#ifdef SBIO_HAS_XTC1
+    .def("align_steps_to",
+         [](BrokerGroupWrapper& self, sbio::XTC1Traits::DataAccessPtn align_to) {
+           self.align_steps_to(align_to);
+         },
+         py::arg("align_to"),
+         "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
+#endif
+#ifdef SBIO_HAS_XTC2
+    .def("align_steps_to",
+         [](BrokerGroupWrapper& self, sbio::XTC2Traits::DataAccessPtn align_to) {
+           self.align_steps_to(align_to);
+         },
+         py::arg("align_to"),
+         "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
+#endif
     .def("get_data",
          [](BrokerGroupWrapper& self,
             std::size_t step,
@@ -320,6 +350,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
            unsigned,
            int,
            int,
+           int,
            pysbio::FTraits,
            pysbio::ExecutionPolicy,
            py::dict,
@@ -329,6 +360,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("run"),
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
+         py::arg("max_batch_size") = 1,
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
          py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
          py::arg("exec_cfg") = py::dict(),
@@ -337,6 +369,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def(py::init<
            std::string,
            std::string,
+           int,
            int,
            int,
            std::string,
@@ -350,6 +383,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("prefix"),
          py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("max_batch_size") = 1,
          py::arg("tag") = "",
          py::arg("ext") = "cxi",
          py::arg("data_fmt") = pysbio::FTraits::CXI,
@@ -361,6 +395,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
            std::string,
            int,
            int,
+           int,
            pysbio::FTraits,
            pysbio::ExecutionPolicy,
            py::dict,
@@ -369,6 +404,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("path"),
          py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("max_batch_size") = 1,
          py::arg("data_fmt") = pysbio::FTraits::CXI,
          py::arg("epolicy") = pysbio::ExecutionPolicy::MPIThreaded,
          py::arg("exec_cfg") = py::dict(),
@@ -434,18 +470,21 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
             unsigned run,
             int evt_per_read,
             int dgram_size,
+            int max_batch_size,
             pysbio::FTraits data_fmt) {
            return ContextWrapper::data_source(self,
                                               exp,
                                               run,
                                               evt_per_read,
                                               dgram_size,
+                                              max_batch_size,
                                               data_fmt);
          },
          py::arg("exp"),
          py::arg("run"),
          py::arg("events_per_read") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_dgram_size") = 0x4000000, // ~67 MB
+         py::arg("max_batch_size") = 1,
          py::arg("data_fmt") = pysbio::FTraits::XTC2,
          "Create a DataSource for a run, using this Context (which it keeps alive).")
     .def("data_source",
@@ -454,6 +493,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
             std::string prefix,
             int index_batch_size,
             int max_buffer_size,
+            int max_batch_size,
             std::string tag,
             std::string ext,
             pysbio::FTraits data_fmt) {
@@ -462,6 +502,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
                                               prefix,
                                               index_batch_size,
                                               max_buffer_size,
+                                              max_batch_size,
                                               tag,
                                               ext,
                                               data_fmt);
@@ -470,6 +511,7 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
          py::arg("prefix"),
          py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("max_batch_size") = 1,
          py::arg("tag") = "",
          py::arg("ext") = "cxi",
          py::arg("data_fmt") = pysbio::FTraits::CXI,
@@ -479,16 +521,19 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
             std::string path,
             int index_batch_size,
             int max_buffer_size,
+            int max_batch_size,
             pysbio::FTraits data_fmt) {
            return ContextWrapper::data_source(self,
                                               path,
                                               index_batch_size,
                                               max_buffer_size,
+                                              max_batch_size,
                                               data_fmt);
          },
          py::arg("path"),
          py::arg("index_batch_size") = 43200,    // 6 minutes at 120 Hz
          py::arg("max_buffer_size") = 0x4000000, // ~67 MB
+         py::arg("max_batch_size") = 1,
          py::arg("data_fmt") = pysbio::FTraits::CXI,
          "Create a DataSource for a file, using this Context (which it keeps alive).");
 
