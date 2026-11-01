@@ -73,6 +73,14 @@ Releases with GPU support are configured as above, with either CUDA 12.8, or CUD
 
 Releases for the four core library host builds (glibc and musl Linux, macOS, Windows), as well as the variants with CUDA support, are also uploaded to the GitHub release independently of the Python wheel if that is preferred.
 
+<Aside type="caution" title="Using CUDA-Enabled Builds without a GPU">
+In general it is possible to use the CUDA-supported builds on a system without a GPU (or driver, more specifically). Both `sbio` and `ncarray` will provide stubs as needed (Windows uses `DELAYLOAD` directives instead). There is, however, one additional "gotcha" to look out for if using the pre-built wheels: `mpich` has its own requirements when configured and built with GPU support. In particular, you may get a CUDA error (and likely a segfault) arising from `mpich` if using the CUDA builds on a machine without a driver. Thankfully, the issue is simple to address. Setting the following environment variable will allow the libraries to be used without issue:
+
+```bash
+export MPIR_CVAR_ENABLE_GPU=0
+```
+</Aside>
+
 ## General Information
 
 `sbio` uses `meson` as its build system. It will also require a relatively modern compiler for C++23 support. If building with GPU support it then also requires the CUDA toolkit.
