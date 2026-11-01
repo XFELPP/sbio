@@ -54,6 +54,22 @@ namespace pysbio {
       init_group_fields();
     }
 
+    template <typename AccessPtn>
+    inline void align_steps_to(AccessPtn align_to) {
+      auto aligner = [&](auto& grp) -> void {
+        using BGType = std::remove_cvref_t<decltype(grp)>;
+        using DataAccessPtn = typename BGType::DataAccessPtn;
+
+        if constexpr (std::is_same_v<AccessPtn, DataAccessPtn>) {
+          grp.set_step_mapping(sbio::StepMapping::AlignTo, align_to);
+        } else {
+          throw std::runtime_error("The provided AccessPtn `align_to` is not for this data format!");
+        }
+      };
+
+      std::visit(aligner, this->grp);
+    }
+
     inline const std::vector<std::vector<std::string>>& group_fields() const {
       return m_fields;
     }

@@ -2,7 +2,7 @@
 title: Accessing Configuration and Type Information
 description: "Stream Broker IO: sbio"
 sidebar:
-  order: 4
+  order: 5
 ---
 
 import { Steps } from '@astrojs/starlight/components';
@@ -32,6 +32,7 @@ Like most the STL, and many other libraries, `sbio` defines a number of aliases 
 - `DataFormat`: The current data format (FormatTraits) being used.
 - `StreamType`: The derived `Stream` type.
 - `SBStorageType`: The derived type of the underlying `Storage` object used by each `StreamBroker`.
+- `DataSegmentRef`: For the BrokerGroup the segment struct organizing the managed StreamBrokers, and tracking fetch cursors etc.
 
 ### Configuration Object Types
 
@@ -47,6 +48,6 @@ Like most the STL, and many other libraries, `sbio` defines a number of aliases 
 ### Data Access
 
 - `DataAccessPtn`: The enumerator type for specifying which access pattern to use when requesting data from the `StreamBroker`.
-- `DataRequest`: The type for the object to use to query for data.
-- `DataResult`: The type for the object that will be received as a response for every data request.
+- `DataRequest`: The type for the object to use to query for data. This is generally the template specialization of the generic implementation.
 - `StepIdxType`: The type used to specify which step to read from the `Stream`, i.e. the event/step/chronological specifier. This type is required to be and guaranteed to be convertible in some manner to `std::size_t`; however, individual data formats may be implemented using different underlying types.
+- `MemTag`: Indicator for whether the retrieved data resides in host/CPU memory (`ncarray::HostTag`), or in GPU memory (`ncarray::DevTag`).

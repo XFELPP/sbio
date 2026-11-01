@@ -65,10 +65,12 @@ namespace {
                 const std::string& exp,
                 unsigned run,
                 int evt_per_read,
-                int dgram_size) {
+                int dgram_size,
+                int max_batch_size) {
     typename DS::StreamConfig cfg;
     cfg.index_batch_size = evt_per_read;
     cfg.max_buffer_size = dgram_size;
+    cfg.max_batch_size = max_batch_size;
 
     ds.template load_source_with<sbio::PathPatternLocator>(cfg, exp, run);
     ds.discover_metadata();
@@ -80,11 +82,13 @@ namespace {
                       const std::string& prefix,
                       int index_batch_size,
                       int max_buffer_size,
+                      int max_batch_size,
                       const std::string& tag,
                       const std::string& ext) {
     typename DS::StreamConfig cfg;
     cfg.index_batch_size = index_batch_size;
     cfg.max_buffer_size = max_buffer_size;
+    cfg.max_batch_size = max_batch_size;
 
     ds.template load_source_with<sbio::PathPatternLocator>(cfg,
                                                            directory,
@@ -98,10 +102,12 @@ namespace {
   void load_file(DS& ds,
                  const std::string& path,
                  int index_batch_size,
-                 int max_buffer_size) {
+                 int max_buffer_size,
+                 int max_batch_size) {
     typename DS::StreamConfig cfg;
     cfg.index_batch_size = index_batch_size;
     cfg.max_buffer_size = max_buffer_size;
+    cfg.max_batch_size = max_batch_size;
 
     ds.template load_source_with<sbio::SingleFileLocator>(cfg, path);
     ds.discover_metadata();
@@ -114,6 +120,7 @@ namespace pysbio {
                              unsigned run,
                              int evt_per_read,
                              int dgram_size,
+                             int max_batch_size,
                              pysbio::FTraits data_fmt,
                              pysbio::ExecutionPolicy epolicy,
                              py::dict exec_cfg,
@@ -127,7 +134,7 @@ namespace pysbio {
         ensure_parallel_environment<Policy>();
         DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
 
-        load_run(ds, exp, run, evt_per_read, dgram_size);
+        load_run(ds, exp, run, evt_per_read, dgram_size, max_batch_size);
 
         return DataSourceV { std::move(ds) };
       };
@@ -146,6 +153,7 @@ namespace pysbio {
                              std::string prefix,
                              int index_batch_size,
                              int max_buffer_size,
+                             int max_batch_size,
                              std::string tag,
                              std::string ext,
                              pysbio::FTraits data_fmt,
@@ -168,6 +176,7 @@ namespace pysbio {
                          prefix,
                          index_batch_size,
                          max_buffer_size,
+                         max_batch_size,
                          tag,
                          ext);
         } else {
@@ -192,6 +201,7 @@ namespace pysbio {
   PyDataSource::PyDataSource(std::string path,
                              int index_batch_size,
                              int max_buffer_size,
+                             int max_batch_size,
                              pysbio::FTraits data_fmt,
                              pysbio::ExecutionPolicy epolicy,
                              py::dict exec_cfg,
@@ -205,7 +215,7 @@ namespace pysbio {
         ensure_parallel_environment<Policy>();
         DataSourceFor<Policy, Format> ds(parse_epolicy_config<Policy>(exec_cfg));
 
-        load_file(ds, path, index_batch_size, max_buffer_size);
+        load_file(ds, path, index_batch_size, max_buffer_size, max_batch_size);
 
         return DataSourceV { std::move(ds) };
       };
@@ -351,6 +361,7 @@ namespace pysbio {
                                            unsigned run,
                                            int evt_per_read,
                                            int dgram_size,
+                                           int max_batch_size,
                                            pysbio::FTraits data_fmt) {
     if (!self->ok()) {
       throw std::runtime_error("Invalid Context: " + self->error());
@@ -362,7 +373,7 @@ namespace pysbio {
       auto make = [&](const auto& ctx) -> DataSourceV {
         auto ds { ctx->template data_source<Format>() };
 
-        load_run(ds, exp, run, evt_per_read, dgram_size);
+        load_run(ds, exp, run, evt_per_read, dgram_size, max_batch_size);
 
         return DataSourceV { std::move(ds) };
       };
@@ -381,6 +392,7 @@ namespace pysbio {
                                            std::string prefix,
                                            int index_batch_size,
                                            int max_buffer_size,
+                                           int max_batch_size,
                                            std::string tag,
                                            std::string ext,
                                            pysbio::FTraits data_fmt) {
@@ -401,6 +413,7 @@ namespace pysbio {
                          prefix,
                          index_batch_size,
                          max_buffer_size,
+                         max_batch_size,
                          tag,
                          ext);
         } else {
@@ -426,6 +439,7 @@ namespace pysbio {
                                            std::string path,
                                            int index_batch_size,
                                            int max_buffer_size,
+                                           int max_batch_size,
                                            pysbio::FTraits data_fmt) {
     if (!self->ok()) {
       throw std::runtime_error("Invalid Context: " + self->error());
@@ -437,7 +451,7 @@ namespace pysbio {
       auto make = [&](const auto& ctx) -> DataSourceV {
         auto ds { ctx->template data_source<Format>() };
 
-        load_file(ds, path, index_batch_size, max_buffer_size);
+        load_file(ds, path, index_batch_size, max_buffer_size, max_batch_size);
 
         return DataSourceV { std::move(ds) };
       };

@@ -2,7 +2,7 @@
 title: Architecture Overview
 description: "Stream Broker IO: sbio"
 sidebar:
-  order: 3
+  order: 4
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
@@ -36,6 +36,24 @@ Each Execution policy indicates the types of parallelization strategies that it 
 
 In general, the default configuration of a policy can be used - however, in some specific instances, explicit configuration may be needed. As a concrete example, consider an MPI-based program. By default, the MPI policy may consider all ranks as participating in the sbio framework; however, if this is not the case, the policy must be configured to understand which ranks do not participate. If this information is provided, the guarantee is then that the ranks which were indicated as not belonging to the "sbio MPI world" will not be interferred with by any actions taken by the Execution policy.
 
+## `Context` and `Locator` Infrastructure - Assisting the `DataSource`
+
+In `sbio`, data formats are integrated (as described a little more below) using the idea of `FormatTraits`. This, however, only describes a binary distribution for the integrated data format. I.e., it determines how to read the bytes. Unfortunately, though, there is often a second component to reading the data that is left vaguely/implicitly defined, if at all. That is, the data format often relies on a mixture of environment variables, heuristics and other mechanisms to actually find where those bytes are stored, and even sometimes affect how they are read.
+
+More concretely, the problem that `FormatTraits` does NOT solve is how to find the files (etc) to read and interpret in the first place. This is where `sbio`'s `Context` and `Locator` systems come in. The former is a general purpose environment management system. It can be used to create new `DataSource` instances, and also provides a nice side effect of allowing for checks on the compatibility of chosen combinations of IOPolicy, ExecutionPolicy and so on. Furhtermore, it provides checking of the environment for requirements of the ExecutionPolicy and IOPolicy - before even getting to the data. For example, some policies may require certain configuration to run at all - an exmaple would be the `MPIThreaded` execution policy which requires initializing MPI with the necessary thread support level. The `Context` can check this.
+
+The `Context` makes use of `Locator` plugins which define strategies for going out and finding the `Stream`s that make up the requested `DataSource`. There are currently 3 main `Locators`:
+
+<Steps>
+1. `PathPatternLocator`: Searches a file system for any number of `Stream`s that will match a patterned string.
+2. `SingleFileLocator`: Will find, as you can imagine, a single file.
+3. `CustomLambdaLocator`: Allows injection of arbitrary search logic. (Generally used for internal machinery)
+</Steps>
+
+Each of these `Locators` has a corresponding traits object, which is specialized by the data format integraitons. These specializations provide a set of parameters that allow the object to give the `Locator` what it needs to do its job. For instance, the `PathPatternLocatorTraits` for XTC1 and XTC2 will convert an experiment and run number into a search path. Then the `PathPatternLocator` can find Streams at the provided paths.
+
+The `Locator` can be used directly with the `DataSource` - i.e., without the `Context`. However, the `Context` provides the ability to manage environment variables, set overrides and fallback values in addition to its roles in compatibility and sufficiency checks. It is therefore often a good idea to use it where possible (some examples are provided on the first steps page).
+
 ## `StreamBroker` State Machine
 
 The Execution policy hooks are organized around a state machine for the principle logical unit in the framework, the `StreamBroker`. This will progress through various stages as controlled by the Execution policy to allow for efficient data access.
@@ -67,23 +85,26 @@ The specific set of requirements as defined by the concept is:
   template <typename T, typename IO, typename EPolicy>
   concept FormatTraits =
     // Indicates size of headers, etc.
-    HasBoundedDataDimensions<T>                                                     &&
+    HasBoundedDataDimensions<T>                                                      &&
     // Definition of "streamable" - Countable units, and indicates exhaustion:
-    HasCountableDataUnits<T>                                                        &&
-    CanFindAndConfigureStreams<T>                                                   &&
-    CanAllocateStorage<T>                                                           &&
-    HasDataRequest<T>                                                               &&
+    HasCountableDataUnits<T>                                                         &&
+    CanFindAndConfigureStreams<T>                                                    &&
+    CanAllocateStorage<T>                                                            &&
+    HasDataRequest<T>                                                                &&
     HasStreamState<
       T,
-      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
-    CanOpenStreams<T, IO>                                                           &&
-    CanDiscoverMetadata<T> && CanFindGroupSegments<T>                               &&
-    CanFetchStreamData<
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>  &&
+    CanDiscoverMetadata<
       T,
       IO,
-      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>> &&
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>  &&
+    (HasGenericIndex<T>                                                              ||
+     CanFetchStreamData<
+      T,
+      IO,
+      StorageView<Storage<typename T::BrokerBufferRequirements, EPolicy>, EPolicy>>) &&
     // Simple data fetching API
-    CanResolveData<T>                                                               &&
+    CanResolveData<T>                                                                &&
     // Advanced data fetching API
     CanFillBuffer<
       T,
@@ -100,3 +121,7 @@ These are each individual concepts, the definitions of which are beyond the scop
 - It specifics a mechanism to request specific data: both a struct to use to do so, and one possible implementation of the lookup.
 - Given an IO policy, it will know which Streams to open.
 - And, it can use the data request mechanism to fill in a provided buffer.
+
+It is important to point out the `HasGenericIndex` concept - this greatly simplifies the integration of data formats where applicable. The `sbio` core infrastructure is capable of providing both indexing and data fetching routines. In fact, this is the preferred route as it simplifies the decision process for various execution policies, in particular on the memory management side (e.g., consider cases where you may need to copy data between CPU and GPU for interpretation). When using the the generic backends, the set of required function implementations is reduced, and they are simplified.
+
+In addition to implementing the above, a complete data format integration will also provide specializations for supported `LocatorTraits`. These are small structs which convert user-provided arguments into the required backend parameters for the corresponding `Locator` system to actually find the Streams of interest. E..g, converting experiment and run number to search path and so on.
