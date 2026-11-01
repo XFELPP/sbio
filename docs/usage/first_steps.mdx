@@ -236,7 +236,7 @@ The tier 2 API looks very similar to the C++ example.
   # Setup options for the reading
   base_cfg: sbio.formats.XTC2StreamConfig = sbio.formats.XTC2StreamConfig()
   base_cfg.index_batch_size = 43200
-  base_cfg.max_buffer_size = 0x4000000;
+  base_cfg.max_buffer_size = 0x4000000
 
   exp: str = "abcd"
   run_num: int = 1234
@@ -333,3 +333,16 @@ Since the Execution policy is used as a template parameter for the other objects
 <Aside type="note" title="Overriding Other Classes">
   Currently, only the Execution policy is overrdiable. Furthermore, it must be derived from one of the existing Execution policies to start with. This is due to the way the storage allocation machinery works - providing a mechanism to allocate the `Storage` classes from Python in a robust way is quite challenging. Likewise, overriding the other classes (e.g., the data format specifications, or the StreamBrokers) has limited benefit versus just implementing it in Python from the start.
 </Aside>
+
+## Next Steps
+
+Beyond these initial constructions, `sbio` also provides tools for progressively more involved "event building" and additional iteration tools. Refer to the page on iteration techniques for more information on these aspects of the framework.
+
+As a quick overview of the capabilities, `sbio` provides support for the following:
+
+<Steps>
+1. Step alignment to data access patterns of a different `BrokerGroup` (e.g. have the EPICS step count aligned to an event count for an area detector with XTC2).
+2. Grouped reads for multiple `BrokerGroup`s at a time.
+3. Batch read APIs - read multiple steps at once for better IO performance.
+4. `SourceSet` constructions - combine multiple `DataSource`s into a single set to align and read together.
+</Steps>
