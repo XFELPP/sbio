@@ -24,6 +24,7 @@
 
 #include "sbio/core/io.hh"
 #include "sbio/core/result.hh"
+#include "sbio/core/topology.hh"
 #ifdef SBIO_HAS_XTC1
 #include "sbio/formats/xtc1/xtc1_locator.hh"
 #include "sbio/formats/xtc1/xtc1_traits.hh"
@@ -88,8 +89,35 @@ namespace pysbio::impl {
    */
   template <typename BrokerGroupT, typename SegRef, typename PyBrokerGroup>
   void bind_broker_group_functions(PyBrokerGroup& group_cls) {
+    using DataAccessPtn = typename BrokerGroupT::DataAccessPtn;
+
     group_cls.def(py::init<>())
       .def(py::init<const char*, const char*, std::size_t, SegRef*>())
+      .def("set_step_mapping",
+           &BrokerGroupT::set_step_mapping,
+           py::arg("mapping") = sbio::StepMapping::PerKind, // Dont align to another pattern
+           py::arg("align_to") = DataAccessPtn {},
+           R"a(Set step alignment and mapping policy.
+
+By default, steps are counted for each StreamBroker, and transitively, the BrokerGroup
+managing it. This means that steps do NOT in general align between BrokerGroups managing
+underlying data accessed via different DataAccessPtn. E.g., more specifically, the step
+counts for BrokerGroups that were recorded at different rates will not be aligned - there
+will be many more steps for a "faster" BrokerGroup than a slower one.
+
+It is possible to enforce a mapping policy instead. This will set the BrokerGroup's step
+number `n` to match the latest step at or before step `n` of the provided alignment
+pattern. E.g., for an XTC2 BrokerGroup for EpicsArch, the alignment can be done against
+the L1Accept pattern - then steps will be aligned against the L1Accepts. Otherwise, there
+will only be the true number of recored EpicsArch steps before exhausting the iterator.
+
+Args:
+    mapping (StepMapping): The mapping/alignment policy to use: PerKind or AlignTo.
+
+    align_to (DataAccessPtn): If using StepMapping::AlignTo, the pattern to which
+        this BrokerGroups steps will be remapped against. For StepMapping::PerKind,
+        this argument has no effect.
+)a")
       .def("group_name", &BrokerGroupT::group_name)
       .def("group_type", &BrokerGroupT::group_type)
       .def("num_segments", &BrokerGroupT::num_segments)
