@@ -41,6 +41,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+[project.optional-dependencies]
+mpi = [
+    "mpich==5.0.1; sys_platform != 'win32'",
+    "impi-rt; sys_platform == 'win32'",
+]
+
 [project.scripts]
 sbio-pkg-config = "sbio:sbio_pkg_config"
 
