@@ -46,7 +46,7 @@ classifiers = [
 
 [project.optional-dependencies]
 mpi = [
-    "mpich==5.0.1; sys_platform != 'win32'",
+    "mpich==5.0.2; sys_platform != 'win32'",
     "impi-rt; sys_platform == 'win32'",
 ]
 
