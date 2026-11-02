@@ -23,7 +23,7 @@ def update_pc_in_repaired_wheel(whl_path: str):
             f
             for f in z.namelist()
             if re.search(
-                r"(?<!py)(dev)?(hdf5|mpi|sbio|xtc)[a-zA-Z0-9_.\-]*\.lib",
+                r"(?<!py)(dev)?(hdf5|sbio|xtc)[a-zA-Z0-9_.\-]*\.lib",
                 os.path.basename(f),
             )
         ]
@@ -106,6 +106,8 @@ def main():
             "ncdevarray.dll",
             "--no-dll",
             "ncarrayjit.dll",
+            "--no-dll",
+            "mpi_abi.dll",
         ]
     )
     if not no_exclude_core:
