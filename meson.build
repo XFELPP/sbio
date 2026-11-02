@@ -2,7 +2,7 @@ project(
     'sbio',
     'c',
     'cpp',
-    version: '0.3.2',
+    version: '0.4.0',
     meson_version: '>=1.10.0',
     default_options: [
         'c_std=c17',
@@ -380,8 +380,19 @@ deps_for_sbio += ncarray_dep
 
 #### MPI
 sbio_has_mpi = false
+sbio_has_mpi_abi = false
 if build_mpi_opt == 'none'
     message('Skipping MPI support.')
+elif build_mpi_opt == 'abi'
+    mpi_abi_proj = subproject('mpi-abi-stubs')
+    mpi_dep = mpi_abi_proj.get_variable('mpi_abi_dep')
+    sbio_has_mpi = true
+    sbio_has_mpi_abi = true
+    bundle_mpi = false
+    found_mpi = true
+    add_project_arguments('-DSBIO_HAS_MPI', language: ['cpp', 'cuda'])
+    add_project_arguments('-DSBIO_HAS_MPI_ABI', language: ['cpp', 'cuda'])
+    deps_for_sbio += mpi_dep
 else
     try_sys = false
     try_mpich = false
@@ -476,6 +487,19 @@ if sbio_build_hdf5
                     # 'ALLOW_UNSUPPORTED': 'ON', # For C++ only + MPI
                 },
             )
+            if sbio_has_mpi_abi and host_machine.system() == 'windows'
+                mpi_abi_prefix = run_command(
+                    py3, '-c', 'import os; print(os.environ.get("SBIO_MPI_PREFIX", ""))',
+                    check: true
+                ).stdout().strip()
+                hdf5_opts.add_cmake_defines({
+                    'MPI_C_HEADER_DIR': mpi_abi_prefix / 'include',
+                    'MPI_C_LIB_NAMES': 'mpi_abi',
+                    'MPI_mpi_abi_LIBRARY': mpi_abi_prefix / 'lib' / 'mpi_abi.lib',
+                    'MPI_SKIP_COMPILER_WRAPPER': 'TRUE',
+                    'MPI_ASSUME_NO_BUILTIN_MPI': 'TRUE',
+                })
+            endif
             # Horror ensues below. Turn back now if you value your sanity.
             if bundle_mpi
                 mpich_root_src = meson.project_source_root() / 'subprojects' / 'mpich-5.0.1'
@@ -720,6 +744,10 @@ endif
 
 if get_variable('found_mpi', false)
     feature_flags += ['-DSBIO_HAS_MPI']
+endif
+
+if sbio_has_mpi_abi
+    feature_flags += ['-DSBIO_HAS_MPI_ABI']
 endif
 
 pc_headers = ['.', 'sbio']

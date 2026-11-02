@@ -72,11 +72,11 @@ CUDA_PATH = "/usr/local/cuda-12.8"
 CUDA_HOME = "/usr/local/cuda-12.8"
 # MPICH build requires this NVCC variable
 NVCC = "/usr/local/cuda-12.8/bin/nvcc"
-PATH = "/__w/_temp/mpich-install/bin:/usr/local/cuda-12.8/bin:/usr/local/cuda/bin:$PATH"
+PATH = "/__w/_temp/mpi-abi-stubs/bin:/usr/local/cuda-12.8/bin:/usr/local/cuda/bin:$PATH"
 LIBRARY_PATH = "/project/install/lib:/project/install/lib64:$LIBRARY_PATH"
 LD_LIBRARY_PATH = "/project/install/lib:/project/install/lib64:/usr/local/cuda-12.8/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
 LDFLAGS = "-Wl,--allow-shlib-undefined -L/project/install/lib -L/project/install/lib64"
-MPI_HOME = "/__w/_temp/mpich-install"
+MPI_HOME = "/__w/_temp/mpi-abi-stubs"
 PKG_CONFIG_PATH = "/project/install/lib/pkgconfig:/project/install/lib64/pkgconfig:$PKG_CONFIG_PATH"
 
 [tool.cibuildwheel.windows]

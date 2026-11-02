@@ -106,6 +106,8 @@ def main():
             "ncdevarray.dll",
             "--no-dll",
             "ncarrayjit.dll",
+            "--no-dll",
+            "mpi_abi.dll",
         ]
     )
     if not no_exclude_core:

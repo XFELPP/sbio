@@ -244,8 +244,11 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   py::classh<MPICfg>(exec_module, "MPIExecutionConfig")
     .def(py::init<>())
     .def("communicator", [](MPICfg& self, int comm_f) {
-      MPI_Comm comm = MPI_Comm_f2c(comm_f);
-      self.communicator = comm;
+#ifdef SBIO_HAS_MPI_ABI
+      self.communicator = MPI_Comm_fromint(comm_f); // MPI ABI equivalent of MPI_Comm_f2c
+#else
+      self.communicator = MPI_Comm_f2c(comm_f);
+#endif // SBIO_HAS_MPI_ABI
     })
     .def_readwrite("active_ranks", &MPICfg::active_ranks)
     .def_readwrite("main_rank", &MPICfg::main_rank)
@@ -257,7 +260,11 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   py::classh<MPIThreadedCfg>(exec_module, "MPIThreadedExecutionConfig")
     .def(py::init<>())
     .def("communicator", [](MPIThreadedCfg& self, int comm_f) {
+#ifdef SBIO_HAS_MPI_ABI
+      MPI_Comm comm = MPI_Comm_fromint(comm_f); // MPI ABI equivalent of MPI_Comm_f2c
+#else
       MPI_Comm comm = MPI_Comm_f2c(comm_f);
+#endif // SBIO_HAS_MPI_ABI
       self.communicator = comm;
     })
     .def_readwrite("active_ranks", &MPIThreadedCfg::active_ranks)
@@ -328,7 +335,11 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   py::classh<MPICudaCfg>(exec_module, "MPICudaExecutionConfig")
     .def(py::init<>())
     .def("communicator", [](MPICudaCfg& self, int comm_f) {
+#ifdef SBIO_HAS_MPI_ABI
+      self.communicator = MPI_Comm_fromint(comm_f); // MPI ABI equivalent of MPI_Comm_f2c
+#else
       self.communicator = MPI_Comm_f2c(comm_f);
+#endif // SBIO_HAS_MPI_ABI
     })
     .def_readwrite("active_ranks", &MPIDistCfg::active_ranks)
     .def_readwrite("main_rank", &MPIDistCfg::main_rank)
@@ -342,7 +353,11 @@ PYBIND11_MODULE(pyexecution, exec_module, py::mod_gil_not_used()) {
   py::classh<MPIThreadedCudaCfg>(exec_module, "MPIThreadedCudaExecutionConfig")
     .def(py::init<>())
     .def("communicator", [](MPIThreadedCudaCfg& self, int comm_f) {
-      self.communicator = MPI_Comm_f2c(comm_f);
+#ifdef SBIO_HAS_MPI_ABI
+        self.communicator = MPI_Comm_fromint(comm_f); // MPI ABI equivalent of MPI_Comm_f2c
+#else
+        self.communicator = MPI_Comm_f2c(comm_f);
+#endif // SBIO_HAS_MPI_ABI
     })
     .def_readwrite("active_ranks", &MPIThreadedDistCfg::active_ranks)
     .def_readwrite("main_rank", &MPIThreadedDistCfg::main_rank)

@@ -103,7 +103,7 @@ def update_pc_in_repaired_wheel(whl_path: str):
             f
             for f in z.namelist()
             if re.search(
-                r"^(lib)?(dev)?(hdf5|mpi|sbio|xtc)[a-zA-Z0-9_.\-]*\.(so|dylib|lib)",
+                r"^(lib)?(dev)?(hdf5|sbio|xtc)[a-zA-Z0-9_.\-]*\.(so|dylib|lib)",
                 os.path.basename(f),
             )
         ]
@@ -221,6 +221,8 @@ def main():
             b"gcc_s",
             b"stdc++",
             b"gomp",
+            b"libmpi_abi",
+            b"libmpi",
         ]
 
         if not no_exclude_core:
@@ -260,6 +262,8 @@ def main():
             "libgcc_s*",
             "libstdc++*",
             "libgomp*",
+            "libmpi_abi*",
+            "libmpi*",
             *CUDA_DRIVER_LIB_EXCLUDES,
         ]
 
