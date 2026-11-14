@@ -69,6 +69,15 @@ namespace sbio {
         return FTraits::DataAccessPtnCount;
       }
     }
+
+    template <typename FTraits>
+    SBIO_HD constexpr hd_std::size_t num_step_sub_kinds() {
+      if constexpr (requires { FTraits::StepKind::NumSubKinds; }) {
+        return FTraits::StepKind::NumSubKinds;
+      } else {
+        return 1;
+      }
+    }
   } // namespace impl
 
   inline constexpr hd_std::size_t NoRow { 0xFFFFFFFFu };
@@ -76,6 +85,7 @@ namespace sbio {
   template <typename FTraits>
   struct StreamCatalog {
     static constexpr hd_std::size_t NumStepKinds { impl::num_step_kinds<FTraits>() };
+    static constexpr hd_std::size_t NumSubKinds { impl::num_step_sub_kinds<FTraits>() };
 
     hd_std::size_t index_epoch { 0 };
     hd_std::array<hd_std::size_t, NumStepKinds> num_steps         { 0 }; ///< Current readable steps (per pattern)
@@ -85,6 +95,9 @@ namespace sbio {
     bool chunk_complete { false }; ///< Whetehr the indexed chunk is done (end of file/stream, or format marker)
     hd_std::array<hd_std::uint32_t, NumStepKinds> first_row {};
     hd_std::array<hd_std::uint32_t, NumStepKinds> last_row {};
+
+    hd_std::array<hd_std::array<hd_std::uint32_t, NumSubKinds>, NumStepKinds> first_sub_row {};
+    hd_std::array<hd_std::array<hd_std::uint32_t, NumSubKinds>, NumStepKinds> last_sub_row {};
 
     SBIO_HD constexpr hd_std::size_t max_capacity() const noexcept {
       hd_std::size_t max { 0 };
@@ -217,6 +230,7 @@ namespace sbio {
   template <typename FTraits>
   struct SegmentCursor {
     static constexpr hd_std::size_t NumStepKinds { impl::num_step_kinds<FTraits>() };
+    static constexpr hd_std::size_t NumSubKinds { impl::num_step_sub_kinds<FTraits>() };
 
     hd_std::array<hd_std::size_t, NumStepKinds> offset_index {}; ///< Index into offset buffers
     /**

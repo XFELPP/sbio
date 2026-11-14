@@ -105,7 +105,7 @@ namespace sbio {
     };
     static constexpr std::size_t DataAccessPtnCount { 3 };
 
-    enum class StepKind : std::uint8_t {
+    enum class DgramKind : std::uint8_t {
       ClearReadout =  0,
       Reset        =  1,
       Configure    =  2,
@@ -121,7 +121,46 @@ namespace sbio {
       L1Accept     = 12
     };
 
-    static constexpr std::size_t NumStepKinds { static_cast<std::size_t>(StepKind::L1Accept) + 1 };
+#pragma pack(push, 2)
+    struct StepKind {
+      static constexpr std::size_t NumSubKinds { 8 }; // UNIQUE kinds. Combos don't count.
+
+      StepKind() = default;
+
+      StepKind(DgramKind kind)
+        : m_rogs(0)
+        , m_dgram_kind(kind)
+      {}
+
+      StepKind(std::uint16_t rogs, DgramKind kind)
+        : m_rogs(rogs)
+        , m_dgram_kind(kind)
+      {}
+
+      operator std::size_t() const { return static_cast<std::size_t>(m_dgram_kind); }
+
+      std::size_t subkind() const { return static_cast<std::size_t>(m_rogs); }
+
+      bool same_subkind(StepKind other) const {
+        // For XTC2's purposes, only care that the readout group was present, not all
+        // readout groups. So return true if so. If other has more than one ROG,
+        // they should all be present. So order doesn't matter, the StepKind with fewer
+        // ROGs is used. I.e., all ROGs should be present for the smallest quantity.
+        auto rogs { subkind() };
+        auto orogs { other.subkind() };
+
+        return m_dgram_kind == other.m_dgram_kind &&
+          (rogs & orogs) == ( rogs < orogs ? rogs : orogs);
+      }
+
+    private:
+      std::uint16_t m_rogs { 0 };
+      DgramKind m_dgram_kind { DgramKind::L1Accept };
+    };
+#pragma pack(pop)
+
+    // These are top-level "Main Kinds"
+    static constexpr std::size_t NumStepKinds { static_cast<std::size_t>(DgramKind::L1Accept) + 1 };
 
     using DataUnit = XTC2::Dgram;
     using StepIdxType = std::size_t; // Unit type for indexing and selecting data units ("events")
@@ -179,8 +218,13 @@ namespace sbio {
       request.size_requests[1] = cfg.max_buffer_size * cfg.max_batch_size;
       request.size_requests[2] = cfg.max_buffer_size;
       request.size_requests[3] = cfg.max_buffer_size;
+
+      // When re-indexing, we can hold over previous entries for the various alignemnt
+      // to pattern procedures. So we have to add space for a number of extra rows
+      // 1 extra row for each "main kind", and then for each unique sub kind (ROG for XTC2).
+      const auto extra_rows { NumStepKinds * (StepKind::NumSubKinds + 1) };
       request.size_requests[4] =
-        (cfg.index_batch_size + NumStepKinds) * sizeof(StepOffset<XTC2Traits>);
+        (cfg.index_batch_size + extra_rows) * sizeof(StepOffset<XTC2Traits>);
       request.size_requests[5] = cfg.index_batch_size * (sizeof(XTC2::Dgram) + 80);
 
       return request;
@@ -246,29 +290,57 @@ namespace sbio {
 
     SBIO_HD static constexpr StepKind kind_for_ptn(DataAccessPtn ptn) {
       switch (ptn) {
-      case DataAccessPtn::SlowUpdate: { return StepKind::SlowUpdate; }
-      case DataAccessPtn::BeginStep:  { return StepKind::BeginStep; }
-      default:                        { return StepKind::L1Accept; }
+      case DataAccessPtn::SlowUpdate: { return StepKind { DgramKind::SlowUpdate }; }
+      case DataAccessPtn::BeginStep:  { return StepKind { DgramKind::BeginStep }; }
+      default:                        { return StepKind { DgramKind::L1Accept }; }
       }
     }
 
     SBIO_HD static std::optional<StepKind> kind_for_step(const DataUnit* step_data) {
       if (step_data != nullptr) {
         switch (step_data->service()) {
-        case XTC2::TransitionId::ClearReadout: { return StepKind::ClearReadout; }
-        case XTC2::TransitionId::Reset:        { return StepKind::Reset; }
-        case XTC2::TransitionId::Configure:    { return StepKind::Configure; }
-        case XTC2::TransitionId::Unconfigure:  { return StepKind::Unconfigure; }
-        case XTC2::TransitionId::BeginRun:     { return StepKind::BeginRun; }
-        case XTC2::TransitionId::EndRun:       { return StepKind::EndRun; }
-        case XTC2::TransitionId::BeginStep:    { return StepKind::BeginStep; }
-        case XTC2::TransitionId::EndStep:      { return StepKind::EndStep; }
-        case XTC2::TransitionId::Enable:       { return StepKind::Enable; }
-        case XTC2::TransitionId::Disable:      { return StepKind::Disable; }
-        case XTC2::TransitionId::SlowUpdate:   { return StepKind::SlowUpdate; }
-        case XTC2::TransitionId::Unused_11:    { return StepKind::Unused; }
-        case XTC2::TransitionId::L1Accept:     { return StepKind::L1Accept; }
-        default:                               { return std::nullopt; }
+        case XTC2::TransitionId::ClearReadout: {
+          return StepKind { step_data->readoutGroups(), DgramKind::ClearReadout };
+        }
+        case XTC2::TransitionId::Reset: {
+          return StepKind { step_data->readoutGroups(), DgramKind::Reset };
+        }
+        case XTC2::TransitionId::Configure: {
+          return StepKind { step_data->readoutGroups(), DgramKind::Configure };
+        }
+        case XTC2::TransitionId::Unconfigure: {
+          return StepKind { step_data->readoutGroups(), DgramKind::Unconfigure };
+        }
+        case XTC2::TransitionId::BeginRun: {
+          return StepKind { step_data->readoutGroups(), DgramKind::BeginRun };
+        }
+        case XTC2::TransitionId::EndRun: {
+          return StepKind { step_data->readoutGroups(), DgramKind::EndRun };
+        }
+        case XTC2::TransitionId::BeginStep: {
+          return StepKind { step_data->readoutGroups(), DgramKind::BeginStep };
+        }
+        case XTC2::TransitionId::EndStep: {
+          return StepKind { step_data->readoutGroups(), DgramKind::EndStep };
+        }
+        case XTC2::TransitionId::Enable: {
+          return StepKind { step_data->readoutGroups(), DgramKind::Enable };
+        }
+        case XTC2::TransitionId::Disable: {
+          return StepKind { step_data->readoutGroups(), DgramKind::Disable };
+        }
+        case XTC2::TransitionId::SlowUpdate: {
+          return StepKind { step_data->readoutGroups(), DgramKind::SlowUpdate };
+        }
+        case XTC2::TransitionId::Unused_11: {
+          return StepKind { step_data->readoutGroups(), DgramKind::Unused };
+        }
+        case XTC2::TransitionId::L1Accept: {
+          return StepKind { step_data->readoutGroups(), DgramKind::L1Accept };
+        }
+        default: {
+          return std::nullopt;
+        }
         }
       }
 
@@ -292,7 +364,7 @@ namespace sbio {
       constexpr auto smd { static_cast<std::uint32_t>(StreamTypes::index_of<SMD>) };
       constexpr auto bd { static_cast<std::uint32_t>(StreamTypes::index_of<BD>) };
 
-      if (kind == StepKind::L1Accept && scanned_stream == smd) {
+      if (kind == StepKind { DgramKind::L1Accept } && scanned_stream == smd) {
         // L1Accept is 48 bytes into the SMD payload
         // And since offset and size are both 8 bytes, size is 1 unit after
         std::size_t offset_in_payload { 48 };

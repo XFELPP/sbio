@@ -37,6 +37,7 @@
 
 #ifdef __CUDACC__
 
+#include <cuda/std/bitset>
 #include <cuda/std/concepts>
 #include <cuda/std/cstdint>
 #include <cuda/std/initializer_list>
@@ -50,6 +51,7 @@ namespace hd_std = cuda::std;
 
 #else
 
+#include <bitset>
 #include <concepts>
 #include <cstdint>
 #include <initializer_list>
@@ -827,7 +829,8 @@ namespace sbio {
                                       KindT ref_kind,
                                       hd_std::uint64_t ref_ordinal,
                                       hd_std::uint64_t& ordinal,
-                                      SegmentCursor<FTraits>& cursor) {
+                                      SegmentCursor<FTraits>& cursor,
+                                      bool by_subkind = false) {
       StorageView<SBStorageType, EPolicy> sv(m_storage);
       const auto* rows { acquire_rows(sv) };
 
@@ -836,30 +839,45 @@ namespace sbio {
         find_row(rows, ref_kind, ref_ordinal, cursor.offset_index[kind_idx(ref_kind)], ref_row)
       };
 
+      auto is_equal = [&by_subkind](KindT k1, KindT k2) {
+        if constexpr (requires { k1.subkind(); }) {
+          return by_subkind ? k1.same_subkind(k2) : k1 == k2;
+        } else {
+          return k1 == k2;
+        }
+      };
+
       if (status == IOStatus::Success) {
         cursor.offset_index[kind_idx(ref_kind)] = ref_row;
 
         const auto k { kind_idx(kind) };
         hd_std::uint32_t r { static_cast<hd_std::uint32_t>(cursor.offset_index[k]) };
-        if (r < m_catalog.num_rows && rows[r].step_kind == kind && r < ref_row) {
+
+        hd_std::uint32_t final_row { r };
+        if (r < m_catalog.num_rows && is_equal(rows[r].step_kind, kind) && r < ref_row) {
           // Hint is before the reference: walk forward
           while (rows[r].next_of_kind != NoRow && rows[r].next_of_kind < ref_row) {
             r = rows[r].next_of_kind;
+            // Skip subkinds if needed
+            if (is_equal(rows[r].step_kind, kind)) {
+              final_row = r;
+            }
           }
         } else {
           // Otherwise walk back from the last step of this kind
           r = m_catalog.last_row[k];
-          while (r != NoRow && r > ref_row) {
+          while (r != NoRow && (r > ref_row || !(is_equal(rows[r].step_kind, kind)))) {
             r = rows[r].prev_of_kind;
           }
+          final_row = r;
         }
 
-        if (r == NoRow) {
+        if (final_row == NoRow) {
           // Nothing of this kind before the reference
           status = IOStatus::NoOffsetInData;
         } else {
-          cursor.offset_index[k] = r;
-          ordinal = rows[r].ordinal;
+          cursor.offset_index[k] = final_row;
+          ordinal = rows[final_row].ordinal;
         }
       }
 
@@ -931,6 +949,16 @@ namespace sbio {
       return static_cast<hd_std::size_t>(kind);
     }
 
+    template <typename KindT>
+    SBIO_HD static constexpr hd_std::bitset<StreamCatalog<FTraits>::NumSubKinds>
+    sub_kind_idxs(KindT kind) {
+      if constexpr (requires { kind.subkind(); }) {
+        return hd_std::bitset<StreamCatalog<FTraits>::NumSubKinds> { kind.subkind() };
+      } else {
+        return hd_std::bitset<StreamCatalog<FTraits>::NumSubKinds> { 0x1 };
+      }
+    }
+
     template <typename UnitT>
     SBIO_HD static hd_std::size_t unit_size(const UnitT* unit) {
       if constexpr (requires { FTraits::unit_size(unit); }) {
@@ -956,7 +984,8 @@ namespace sbio {
                               KindT kind,
                               hd_std::uint64_t ordinal,
                               hd_std::size_t hint,
-                              hd_std::uint32_t& row) const {
+                              hd_std::uint32_t& row,
+                              bool by_subkind = false) const {
       const auto k { kind_idx(kind) };
       if (ordinal >= m_catalog.cummulative_steps[k]) {
         return IOStatus::AllRequestedRead;
@@ -970,10 +999,19 @@ namespace sbio {
       }
 
       hd_std::uint32_t r { first };
-      if (hint < m_catalog.num_rows    &&
-          rows[hint].step_kind == kind &&
-          rows[hint].ordinal <= ordinal) {
-        r = static_cast<hd_std::uint32_t>(hint);
+
+      if constexpr (requires { kind.subkind(); }) {
+        if (hint < m_catalog.num_rows                                                             &&
+            (by_subkind ? rows[hint].step_kind.same_subkind(kind) : rows[hint].step_kind == kind) &&
+            rows[hint].ordinal <= ordinal) {
+          r = static_cast<hd_std::uint32_t>(hint);
+        }
+      } else {
+        if (hint < m_catalog.num_rows    &&
+            rows[hint].step_kind == kind &&
+            rows[hint].ordinal <= ordinal) {
+          r = static_cast<hd_std::uint32_t>(hint);
+        }
       }
 
       while (rows[r].ordinal < ordinal) {
@@ -988,6 +1026,7 @@ namespace sbio {
     SBIO_HD IOStatus generic_index(SV& sv) {
       using Unit = typename FTraits::DataUnit;
       constexpr hd_std::size_t NumKinds { StreamCatalog<FTraits>::NumStepKinds };
+      constexpr hd_std::size_t NumSubKinds { StreamCatalog<FTraits>::NumSubKinds };
 
       constexpr auto IndexSlotSigned {
         FTraits::StreamTypes::template index_of_role<roles::Index>
@@ -1014,30 +1053,131 @@ namespace sbio {
         sv.template size<roles::Metadata, index_ids::Scratch>()
       };
 
-      hd_std::array<StepOffset<FTraits>, NumKinds> carried {};
-      hd_std::array<bool, NumKinds> has_carried {};
+      hd_std::array<StepOffset<FTraits>, NumKinds * (NumSubKinds + 1)> carried {};
+      hd_std::array<bool, NumKinds * (NumSubKinds + 1)> has_carried {};
+
+      hd_std::array<hd_std::uint32_t, NumKinds> earliest { 0 };
+      hd_std::array<hd_std::array<hd_std::size_t, NumSubKinds>, NumKinds> ordered_sk_idxs {};
       for (hd_std::size_t k = 0; k < NumKinds; ++k) {
-        has_carried[k] = (m_catalog.index_epoch > 0 && m_catalog.last_row[k] != NoRow);
-        if (has_carried[k]) {
-          carried[k] = rows[m_catalog.last_row[k]];
+        const auto k_idx { k * (NumSubKinds + 1) };
+
+        has_carried[k_idx] = ((m_catalog.index_epoch > 0) && (m_catalog.last_row[k] != NoRow));
+        if (has_carried[k_idx]) {
+          carried[k_idx] = rows[m_catalog.last_row[k]];
+
+          earliest[k] = m_catalog.last_row[k];
+
+          for (hd_std::size_t sk = 0; sk < NumSubKinds; ++sk) {
+            ordered_sk_idxs[k][sk] = sk;
+            const auto sk_idx { k_idx + (sk + 1) };
+            const bool sk_has_carried { (m_catalog.last_sub_row[k][sk] != NoRow) };
+
+            has_carried[sk_idx] = sk_has_carried;
+            if (sk_has_carried) {
+              carried[sk_idx] = rows[m_catalog.last_sub_row[k][sk]];
+
+              if (m_catalog.last_sub_row[k][sk] < earliest[k]) {
+                earliest[k] = m_catalog.last_sub_row[k][sk];
+              }
+            }
+          }
         }
       }
 
+      auto carry_over_row = [&](hd_std::size_t kind, hd_std::size_t carry_row_idx) {
+        const auto r { static_cast<hd_std::uint32_t>(m_catalog.num_rows++) };
+        rows[r] = carried[carry_row_idx];
+        rows[r].next_of_kind = NoRow;
+        rows[r].prev_of_kind = m_catalog.last_row[kind];
+        if (m_catalog.last_row[kind] != NoRow) {
+          rows[m_catalog.last_row[kind]].next_of_kind = r;
+        } else {
+          m_catalog.first_row[kind] = r;
+        }
+        m_catalog.last_row[kind] = r;
+      };
+
       m_catalog.num_rows = 0;
       for (hd_std::size_t k = 0; k < NumKinds; ++k) {
+        auto old_last_row { m_catalog.last_row[k] };
+
         m_catalog.num_steps[k] = 0;
         m_catalog.first_row[k] = NoRow;
         m_catalog.last_row[k] = NoRow;
 
-        if (has_carried[k]) {
-          const auto r { static_cast<hd_std::uint32_t>(m_catalog.num_rows++) };
-          rows[r] = carried[k];
-          rows[r].next_of_kind = NoRow;
-          rows[r].prev_of_kind = NoRow;
-          m_catalog.first_row[k] = r;
-          m_catalog.last_row[k] = r;
+        const auto k_idx { k * (NumSubKinds + 1) };
+        if (has_carried[k_idx]) {
+          for (hd_std::size_t i = 0; i < NumSubKinds - 1; ++i) {
+            hd_std::uint32_t best { static_cast<hd_std::uint32_t>(i) };
+            for (hd_std::size_t j = i + 1; j < NumSubKinds; ++j) {
+              // Dont need to use has_carried becaues NoRow sorts last
+
+              const auto idx_best { ordered_sk_idxs[k][best] };
+              const auto idx_j { ordered_sk_idxs[k][j] };
+
+              hd_std::uint32_t diff_best { m_catalog.last_sub_row[k][idx_best] - earliest[k] };
+              hd_std::uint32_t diff_j { m_catalog.last_sub_row[k][idx_j] - earliest[k] };
+
+              if (diff_j < diff_best) {
+                best = j;
+              }
+            }
+
+            if (best != i) {
+              const auto tmp { ordered_sk_idxs[k][i] };
+              ordered_sk_idxs[k][i] = ordered_sk_idxs[k][best];
+              ordered_sk_idxs[k][best] = tmp;
+            }
+          }
+
+          hd_std::uint32_t prev_batch_row { NoRow };
+          for (hd_std::size_t sk = 0; sk < NumSubKinds; ++sk) {
+            const auto ordered_sk { ordered_sk_idxs[k][sk] };
+            const auto sk_idx { k_idx + (ordered_sk + 1) };
+            if (has_carried[sk_idx]) {
+              if (m_catalog.last_sub_row[k][ordered_sk] == NoRow) {
+                m_catalog.first_sub_row[k][ordered_sk] = NoRow;
+                m_catalog.last_sub_row[k][ordered_sk] = NoRow;
+                continue;
+              }
+
+              // Check if we already inserted this row number
+              if (m_catalog.num_rows > 0 && m_catalog.last_sub_row[k][ordered_sk] == prev_batch_row) {
+                const auto r { m_catalog.last_row[k] };
+                m_catalog.first_sub_row[k][ordered_sk] = r;
+                m_catalog.last_sub_row[k][ordered_sk] = r;
+
+                continue;
+              } else {
+                prev_batch_row = m_catalog.last_sub_row[k][ordered_sk];
+
+                // Create a new row carrying over the previous batch
+                carry_over_row(k, sk_idx);
+
+                // Assign the sub kind row as well (last_row was updated in carry_over_row)
+                m_catalog.first_sub_row[k][ordered_sk] = m_catalog.last_row[k];
+                m_catalog.last_sub_row[k][ordered_sk] = m_catalog.last_row[k];
+              }
+            } else {
+              m_catalog.first_sub_row[k][ordered_sk] = NoRow;
+              m_catalog.last_sub_row[k][ordered_sk] = NoRow;
+            }
+          }
+
+          if (old_last_row != prev_batch_row) {
+            // This case is should be unnecessary since by definition, if subkinds exist
+            // all entries must have one. Leave just in case this breaks somehow.
+            // This is just the main kind. No sub kind updates for this case.
+            carry_over_row(k, k_idx);
+          }
+        } else {
+          for (hd_std::size_t sk = 0; sk < NumSubKinds; ++sk) {
+            m_catalog.first_sub_row[k][sk] = NoRow;
+            m_catalog.last_sub_row[k][sk] = NoRow;
+          }
         }
       }
+
       const hd_std::size_t carried_rows { m_catalog.num_rows };
 
       IOStatus status { IOStatus::Success };
@@ -1084,6 +1224,7 @@ namespace sbio {
           }
 
           const auto k { kind_idx(kind) };
+          const auto sk { sub_kind_idxs(kind) };
           const auto r { static_cast<hd_std::uint32_t>(m_catalog.num_rows++) };
 
           auto& step { rows[r] };
@@ -1100,10 +1241,22 @@ namespace sbio {
             rows[m_catalog.last_row[k]].next_of_kind = r;
           } else {
             m_catalog.first_row[k] = r;
+
+            for (hd_std::size_t i = 0; i < NumSubKinds; ++i) {
+              if (sk.test(i)) {
+                m_catalog.first_sub_row[k][i] = r;
+              }
+            }
           }
           m_catalog.last_row[k] = r;
           m_catalog.num_steps[k]++;
           m_catalog.cummulative_steps[k]++;
+
+          for (hd_std::size_t i = 0; i < NumSubKinds; ++i) {
+            if (sk.test(i)) {
+              m_catalog.last_sub_row[k][i] = r;
+            }
+          }
 
           // The increment may push past the read byte count --> Refill from that point
           // next
