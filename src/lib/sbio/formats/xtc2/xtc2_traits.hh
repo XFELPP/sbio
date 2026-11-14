@@ -98,12 +98,65 @@ namespace sbio {
     using StreamTypes = StreamSet<SMD, BD>;
 
     // Ways of looking up data inside of an XTC2 file for different detector kinds
-    enum class DataAccessPtn : std::uint8_t {
-      L1Accept = 0, // "Normal detectors"     - Look for data in L1Accept dgrams
-      SlowUpdate,   // "EPICS Arch detectors" - Look for data in SlowUpdate dgrams
-      BeginStep     // "Scan detectors"       - Look for data in BeginStep dgrams
+    struct DataAccessPtn {
+      // Main access patterns
+      enum type : std::uint8_t {
+        L1Accept   = 0, // "Normal detectors"     - Look for data in L1Accept dgrams
+        SlowUpdate = 1, // "EPICS Arch detectors" - Look for data in SlowUpdate dgrams
+        BeginStep  = 2  // "Scan detectors"       - Look for data in BeginStep dgrams
+      };
+
+      // "Sub kind" filters
+      enum sub_type : std::uint8_t {
+        ROG0 = 0,
+        ROG1 = 1,
+        ROG2 = 2,
+        ROG3 = 3,
+        ROG4 = 4,
+        ROG5 = 5,
+        ROG6 = 6,
+        ROG7 = 7
+      };
+
+      static constexpr std::size_t Count { 3 }; ///< Number of main patterns
+
+      DataAccessPtn() = default;
+      DataAccessPtn(type ptn)
+        : m_ptn(ptn)
+      {}
+      DataAccessPtn(std::uint8_t ptn)
+        : DataAccessPtn(static_cast<type>(ptn))
+      {}
+
+      operator std::size_t() const { return static_cast<std::size_t>(m_ptn); }
+
+      template <typename... ROG>
+      requires ( std::is_same_v<ROG, sub_type> && ... )
+      void set_filter(ROG... rog) {
+        ( ( m_filter |= (1 << rog) ), ... );
+      }
+
+      void set_filter(std::size_t filter) { m_filter = filter; }
+
+      std::size_t filter() const { return m_filter; }
+
+      bool same_subkind(DataAccessPtn other) const {
+        // For XTC2's purposes, only care that the readout group was present, not all
+        // readout groups. So return true if so. If other has more than one ROG,
+        // they should all be present. So order doesn't matter, the StepKind with fewer
+        // ROGs is used. I.e., all ROGs should be present for the smallest quantity.
+        auto rogs { filter() };
+        auto orogs { other.filter() };
+
+        return m_ptn == other.m_ptn &&
+          (rogs & orogs) == (rogs < orogs ? rogs : orogs);
+      }
+
+    private:
+      type m_ptn { L1Accept };
+      std::size_t m_filter { 0 };
     };
-    static constexpr std::size_t DataAccessPtnCount { 3 };
+    static constexpr std::size_t DataAccessPtnCount { DataAccessPtn::Count };
 
     enum class DgramKind : std::uint8_t {
       ClearReadout =  0,
@@ -290,9 +343,24 @@ namespace sbio {
 
     SBIO_HD static constexpr StepKind kind_for_ptn(DataAccessPtn ptn) {
       switch (ptn) {
-      case DataAccessPtn::SlowUpdate: { return StepKind { DgramKind::SlowUpdate }; }
-      case DataAccessPtn::BeginStep:  { return StepKind { DgramKind::BeginStep }; }
-      default:                        { return StepKind { DgramKind::L1Accept }; }
+      case DataAccessPtn::SlowUpdate: {
+        return StepKind {
+          static_cast<std::uint16_t>(ptn.filter()),
+          DgramKind::SlowUpdate
+        };
+      }
+      case DataAccessPtn::BeginStep: {
+        return StepKind {
+          static_cast<std::uint16_t>(ptn.filter()),
+          DgramKind::BeginStep
+        };
+      }
+      default: {
+        return StepKind {
+          static_cast<std::uint16_t>(ptn.filter()),
+          DgramKind::L1Accept
+        };
+      }
       }
     }
 
@@ -452,6 +520,9 @@ namespace sbio {
       }
 
       DataResult res = XTC2Traits::resolve_data(dg, inv, corrected_req, cache);
+      if (res.data != nullptr) {
+        cache.common_subkind() &= dg->readoutGroups();
+      }
 
       auto release_ptn_buffer = [&](auto P) {
         res.data =

@@ -111,8 +111,11 @@ namespace sbio {
    * that a low-frequency step kind is retrieved in alignment with a high-frequency one.
    */
   enum class StepMapping : hd_std::uint8_t {
-    PerKind = 0, ///< The BrokerGroup's step n is the SegmentRef's step n.
-    AlignTo      ///< The BrokerGroup's step n is the SegmentRef's latest step at or before step n of `align_ptn`
+    PerKind             = 0, ///< The BrokerGroup's step n is the SegmentRef's step n.
+    AlignTo             = 1, ///< The BG's step n is the SegmentRef's latest step at or before step n of `align_ptn`
+    AlignToSubKind      = 2, ///< As AlignTo, but considering the subkind as well
+    AlignToExact        = 3, ///< As AlignTo, but must be latest step at (exact alignment), not before
+    AlignToExactSubKind = 4  ///< As AlignToExact, but considering the subkind as well
   };
 
   /**
@@ -399,17 +402,52 @@ namespace sbio {
                               hd_std::size_t step_idx,
                               hd_std::size_t& ordinal) {
       if constexpr (BrokerType::UsesGenericIndex) {
-        if (step_mapping == StepMapping::AlignTo && seg.access_ptn != align_ptn) {
-          hd_std::uint64_t ord { 0 };
-          const auto status {
-            seg.broker->preceding(DataFormat::kind_for_ptn(seg.access_ptn),
-                                  DataFormat::kind_for_ptn(align_ptn),
-                                  step_idx,
-                                  ord,
-                                  seg.cursor.get())
+        // PerKind == 0, all alignment strategies are >= 1 when cast to integer
+        if (static_cast<hd_std::uint8_t>(step_mapping) >= 1) {
+          const bool by_subkind {
+            (step_mapping == StepMapping::AlignToSubKind)      ||
+            (step_mapping == StepMapping::AlignToExactSubKind)
           };
-          ordinal = static_cast<hd_std::size_t>(ord);
-          return status;
+          const bool exact {
+            (step_mapping == StepMapping::AlignToExact)        ||
+            (step_mapping == StepMapping::AlignToExactSubKind)
+          };
+
+          auto is_equal = [&by_subkind](DataFormat::DataAccessPtn ptn1,
+                                        DataFormat::DataAccessPtn ptn2) {
+            if constexpr (requires { ptn1.same_subkind(ptn2); }) {
+              return by_subkind ? ptn1.same_subkind(ptn2) : ptn1 == ptn2;
+            } else {
+              return ptn1 == ptn2;
+            }
+          };
+
+          auto& cursor { seg.cursor.get() };
+          auto seg_ptn { seg.access_ptn };
+          if constexpr (requires { seg_ptn.set_filter(hd_std::size_t {}); }) {
+            // The cursor's cache tracks and learns the kind over time
+            // Use it to narrow the access pattern as needed
+            const auto sk { cursor.payload_offsets.common_subkind() };
+            if (sk != 0 && ((sk & (sk - 1)) == 0)) {
+              // Only set the filter once a unique subkind is found (1 bit)
+              seg_ptn.set_filter(sk);
+            }
+          }
+
+          if (!is_equal(seg_ptn, align_ptn)) {
+            hd_std::uint64_t ord { 0 };
+            const auto status {
+              seg.broker->preceding(DataFormat::kind_for_ptn(seg_ptn),
+                                    DataFormat::kind_for_ptn(align_ptn),
+                                    step_idx,
+                                    ord,
+                                    cursor,
+                                    by_subkind,
+                                    exact)
+            };
+            ordinal = static_cast<hd_std::size_t>(ord);
+            return status;
+          }
         }
       }
 

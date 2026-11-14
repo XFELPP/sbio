@@ -183,10 +183,10 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
 
 #ifdef SBIO_HAS_XTC2
 
-  py::native_enum<sbio::XTC2Traits::DataAccessPtn>(ftraits_module,
-                                                   "XTC2DataAccessPtn",
-                                                   "enum.Enum",
-                                                   "Enumerators for access styles of XTC2 data.")
+  py::native_enum<sbio::XTC2Traits::DataAccessPtn::type>(ftraits_module,
+                                                         "XTC2DataAccessPtn",
+                                                         "enum.Enum",
+                                                         "Enumerators for access styles of XTC2 data.")
     .value("L1Accept", sbio::XTC2Traits::DataAccessPtn::L1Accept)
     .value("SlowUpdate", sbio::XTC2Traits::DataAccessPtn::SlowUpdate)
     .value("BeginStep", sbio::XTC2Traits::DataAccessPtn::BeginStep)

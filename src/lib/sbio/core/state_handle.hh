@@ -212,12 +212,18 @@ namespace sbio {
       m_slots[field_id % NumSlots] = Slot { field_id, offset };
     }
 
+    SBIO_HD inline hd_std::size_t& common_subkind() { return m_common_subkind; }
+
   private:
     struct Slot {
       hd_std::uint32_t field_id { NoField };
       hd_std::uint32_t offset { 0 };
     };
 
+    /**
+     * Sub-type for the segment the cursor tracks - learned over steps
+     */
+    hd_std::size_t m_common_subkind { static_cast<hd_std::size_t>(~0) };
     hd_std::array<Slot, NumSlots> m_slots {};
   };
 

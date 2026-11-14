@@ -830,7 +830,8 @@ namespace sbio {
                                       hd_std::uint64_t ref_ordinal,
                                       hd_std::uint64_t& ordinal,
                                       SegmentCursor<FTraits>& cursor,
-                                      bool by_subkind = false) {
+                                      bool by_subkind = false,
+                                      bool exact = false) {
       StorageView<SBStorageType, EPolicy> sv(m_storage);
       const auto* rows { acquire_rows(sv) };
 
@@ -870,6 +871,13 @@ namespace sbio {
             r = rows[r].prev_of_kind;
           }
           final_row = r;
+        }
+
+        // TODO: For exact matches, should provide a more generic hook that the data
+        //       format can create. Row identity is a good default though
+        if (exact && final_row != NoRow && final_row != ref_row) {
+          // The nearest row is before the rerference, not exactly on the reference
+          final_row = NoRow;
         }
 
         if (final_row == NoRow) {
