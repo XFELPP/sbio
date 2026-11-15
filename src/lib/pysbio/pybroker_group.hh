@@ -22,6 +22,8 @@
 
 #include "pysbio/policies.hh"
 
+#include "sbio/core/filter.hh"
+
 #include <ncarray/soarrays.hh>
 #ifdef SBIO_HAS_CUDA
 #include <ncarray/sodevarrays.cuh>
@@ -33,6 +35,7 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <variant>
@@ -55,19 +58,42 @@ namespace pysbio {
     }
 
     template <typename AccessPtn>
-    inline void align_steps_to(AccessPtn align_to) {
+    inline void
+    align_steps_to(AccessPtn align_to,
+                   bool exact = false,
+                   std::optional<sbio::SubKindFilter<AccessPtn>> sk_filt = std::nullopt) {
       auto aligner = [&](auto& grp) -> void {
         using BGType = std::remove_cvref_t<decltype(grp)>;
         using DataAccessPtn = typename BGType::DataAccessPtn;
 
         if constexpr (std::is_same_v<AccessPtn, DataAccessPtn>) {
-          grp.set_step_mapping(sbio::StepMapping::AlignTo, align_to);
+          auto mapping {
+            exact ? sbio::StepMapping::AlignToExact : sbio::StepMapping::AlignTo
+          };
+          auto ptn { align_to };
+          if (sk_filt.has_value()) {
+            ptn.set_filter(static_cast<std::size_t>(*sk_filt));
+            if (exact) {
+              mapping = sbio::StepMapping::AlignToExactSubKind;
+            } else {
+              mapping = sbio::StepMapping::AlignToSubKind;
+            }
+          }
+          grp.set_step_mapping(mapping, ptn);
         } else {
           throw std::runtime_error("The provided AccessPtn `align_to` is not for this data format!");
         }
       };
 
       std::visit(aligner, this->grp);
+    }
+
+    template <typename AccessPtn>
+    inline void
+    align_steps_to(typename AccessPtn::type align_to,
+                   bool exact = false,
+                   std::optional<sbio::SubKindFilter<AccessPtn>> sk_filt = std::nullopt) {
+      align_steps_to(AccessPtn { align_to }, exact, sk_filt);
     }
 
     inline const std::vector<std::vector<std::string>>& group_fields() const {

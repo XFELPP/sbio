@@ -21,6 +21,7 @@
 
 #include "pysbio/io/pyio.hh"
 
+#include "sbio/core/filter.hh"
 #include "sbio/util/string.hh"
 
 #ifdef SBIO_HAS_HDF5
@@ -38,10 +39,41 @@
 #include <pybind11/native_enum.h>
 #include <pybind11/pybind11.h>
 
+#include <bitset>
+#include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 namespace py = pybind11;
+
+namespace {
+
+  template <typename AccessPtn, typename PyAccess>
+  void bind_subkind_filter(PyAccess& ptn_cls) {
+    if constexpr (requires { typename AccessPtn::sub_kind; }) {
+      using Filter = sbio::SubKindFilter<AccessPtn>;
+
+      py::classh<Filter>(ptn_cls, "SubKindFilter")
+        .def(py::init<>())
+        .def("enable_all", &Filter::enable_all, "Allow all sub-kinds.")
+        .def("disable_all", &Filter::disable_all, "Disable (filter) all sub-kinds.")
+        .def("allow_subkind",
+             &Filter::allow_subkind,
+             py::arg("subkind"),
+             "Allow/enable a single unique sub-kind.")
+        .def("disable_subkind",
+             &Filter::disable_subkind,
+             py::arg("subkind"),
+             "Disable/filter a single unique sub-kind.")
+        .def("full_filter",
+             &Filter::full_filter,
+             "Retrieve the integer representation of the full filter.");
+
+      ptn_cls.def("filter", [](const AccessPtn& self) { return Filter(); });
+    }
+  }
+} // anonymous namespace
 
 PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
   ftraits_module.doc() = "sbio Python bindings for the generic data format traits.";
@@ -59,15 +91,20 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .finalize();
 
 #ifdef SBIO_HAS_HDF5
-
-  py::native_enum<sbio::CXITraits::DataAccessPtn>(ftraits_module,
-                                                  "CXIDataAccessPtn",
-                                                  "enum.Enum",
-                                                  "Enumerators for access styles of CXI data.")
+  py::native_enum<sbio::CXITraits::DataAccessPtn::type>(ftraits_module,
+                                                        "CXIDataAccessPtnType",
+                                                        "enum.IntEnum",
+                                                        "Enumerators for access styles of CXI data.")
     .value("Frames", sbio::CXITraits::DataAccessPtn::Frames)
     .value("PerStep", sbio::CXITraits::DataAccessPtn::PerStep)
-    .export_values()
+    //.export_values()
     .finalize();
+  auto cxi_ptn = py::classh<sbio::CXITraits::DataAccessPtn>(ftraits_module, "CXIDataAccessPtn")
+    .def(py::init<>())
+    .def(py::init<sbio::CXITraits::DataAccessPtn::type>());
+  cxi_ptn.attr("Frames") = py::cast(sbio::CXITraits::DataAccessPtn::Frames);
+  cxi_ptn.attr("PerStep") = py::cast(sbio::CXITraits::DataAccessPtn::PerStep);
+  bind_subkind_filter<sbio::CXITraits::DataAccessPtn>(cxi_ptn);
 
   pysbio::impl::bind_stream_config<sbio::CXITraits>(ftraits_module, "CXIStreamConfig");
 
@@ -120,17 +157,23 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
 #endif // SBIO_HAS_HDF5
 
 #ifdef SBIO_HAS_XTC1
-
-  py::native_enum<sbio::XTC1Traits::DataAccessPtn>(ftraits_module,
-                                                   "XTC1DataAccessPtn",
-                                                   "enum.Enum",
-                                                   "Enumerators for access styles of XTC1 data.")
+  py::native_enum<sbio::XTC1Traits::DataAccessPtn::type>(ftraits_module,
+                                                         "XTC1DataAccessPtnType",
+                                                         "enum.IntEnum",
+                                                         "Enumerators for access styles of XTC1 data.")
     .value("L1Accept", sbio::XTC1Traits::DataAccessPtn::L1Accept)
     .value("SlowUpdate", sbio::XTC1Traits::DataAccessPtn::SlowUpdate)
     .value("BeginStep", sbio::XTC1Traits::DataAccessPtn::BeginStep)
     //.export_values()
     // Values don't export because of clash with the XTC2 version
     .finalize();
+  auto xtc1_ptn = py::classh<sbio::XTC1Traits::DataAccessPtn>(ftraits_module, "XTC1DataAccessPtn")
+    .def(py::init<>())
+    .def(py::init<sbio::XTC1Traits::DataAccessPtn::type>());
+  xtc1_ptn.attr("L1Accept") = py::cast(sbio::XTC1Traits::DataAccessPtn::L1Accept);
+  xtc1_ptn.attr("SlowUpdate") = py::cast(sbio::XTC1Traits::DataAccessPtn::SlowUpdate);
+  xtc1_ptn.attr("BeginStep") = py::cast(sbio::XTC1Traits::DataAccessPtn::BeginStep);
+  bind_subkind_filter<sbio::XTC1Traits::DataAccessPtn>(xtc1_ptn);
 
   pysbio::impl::bind_stream_config<sbio::XTC1Traits>(ftraits_module, "XTC1StreamConfig");
 
@@ -182,16 +225,22 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
 #endif // SBIO_HAS_XTC1
 
 #ifdef SBIO_HAS_XTC2
-
   py::native_enum<sbio::XTC2Traits::DataAccessPtn::type>(ftraits_module,
-                                                         "XTC2DataAccessPtn",
-                                                         "enum.Enum",
+                                                         "XTC2DataAccessPtnType",
+                                                         "enum.IntEnum",
                                                          "Enumerators for access styles of XTC2 data.")
     .value("L1Accept", sbio::XTC2Traits::DataAccessPtn::L1Accept)
     .value("SlowUpdate", sbio::XTC2Traits::DataAccessPtn::SlowUpdate)
     .value("BeginStep", sbio::XTC2Traits::DataAccessPtn::BeginStep)
-    .export_values()
+    //.export_values()
     .finalize();
+  auto xtc2_ptn = py::classh<sbio::XTC2Traits::DataAccessPtn>(ftraits_module, "XTC2DataAccessPtn")
+    .def(py::init<>())
+    .def(py::init<sbio::XTC2Traits::DataAccessPtn::type>());
+  xtc2_ptn.attr("L1Accept") = py::cast(sbio::XTC2Traits::DataAccessPtn::L1Accept);
+  xtc2_ptn.attr("SlowUpdate") = py::cast(sbio::XTC2Traits::DataAccessPtn::SlowUpdate);
+  xtc2_ptn.attr("BeginStep") = py::cast(sbio::XTC2Traits::DataAccessPtn::BeginStep);
+  bind_subkind_filter<sbio::XTC2Traits::DataAccessPtn>(xtc2_ptn);
 
   pysbio::impl::bind_stream_config<sbio::XTC2Traits>(ftraits_module, "XTC2StreamConfig");
 

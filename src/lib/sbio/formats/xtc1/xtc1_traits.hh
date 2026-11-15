@@ -56,6 +56,57 @@ namespace sbio {
     // }
   } // namespace literals
 
+  namespace impl::XTC1 {
+    // The XTC1 transitions
+    enum class DgramKind : std::uint8_t {
+      Unknown         =  0,
+      Reset           =  1,
+      Map             =  2,
+      Unmap           =  3,
+      Configure       =  4,
+      Unconfigure     =  5,
+      BeginRun        =  6,
+      EndRun          =  7,
+      BeginCalibCycle =  8,
+      EndCalibCycle   =  9,
+      Enable          = 10,
+      Disable         = 11,
+      L1Accept        = 12
+    };
+
+    struct StepKind {
+      static constexpr std::size_t NumSubKinds { 8 }; // UNIQUE kinds. Combos don't count.
+
+      constexpr StepKind() = default;
+
+      constexpr StepKind(DgramKind kind)
+        : m_rogs(0)
+        , m_dgram_kind(kind)
+      {}
+
+      constexpr StepKind(std::uint16_t rogs, DgramKind kind)
+        : m_rogs(rogs)
+        , m_dgram_kind(kind)
+      {}
+
+      constexpr operator std::size_t() const { return static_cast<std::size_t>(m_dgram_kind); }
+
+      constexpr std::size_t subkind() const { return static_cast<std::size_t>(m_rogs); }
+
+      constexpr bool same_subkind(StepKind other) const {
+        auto rogs { subkind() };
+        auto orogs { other.subkind() };
+
+        return m_dgram_kind == other.m_dgram_kind &&
+          (rogs & orogs) == (rogs < orogs ? rogs : orogs);
+      }
+
+    private:
+      std::uint16_t m_rogs { 0 };
+      DgramKind m_dgram_kind { DgramKind::L1Accept };
+    };
+  } // namespace impl::XTC1
+
   struct SBIO_API XTC1Traits : public BaseTraits {
     using DefaultLocator = PathPatternLocator;
 
@@ -83,34 +134,72 @@ namespace sbio {
 
     // NOTE: The EPICS data comes in the L1Accept in XTC1, Begin/EndCalibCycle are scans
     // TODO: These access patterns aren't accurate for EPICS in XTC1 - need update
-    enum class DataAccessPtn : std::uint8_t {
-      L1Accept = 0, // "Normal detectors"     - Look for data in L1Accept dgrams
-      SlowUpdate,   // "EPICS Arch detectors" - Look for data in SlowUpdate dgrams
-      BeginStep     // "Scan detectors"       - Look for data in BeginStep dgrams
-    };
-    static constexpr std::size_t DataAccessPtnCount { 3 };
+    struct DataAccessPtn {
+      // Main access patterns
+      enum type : std::uint8_t {
+        L1Accept   = 0, // "Normal detectors"     - Look for data in L1Accept dgrams
+        SlowUpdate = 1, // "EPICS Arch detectors" - Look for data in SlowUpdate dgrams
+        BeginStep  = 2  // "Scan detectors"       - Look for data in BeginStep dgrams
+      };
 
-    // The XTC1 transitions
-    enum class StepKind : std::uint8_t {
-      Unknown         =  0,
-      Reset           =  1,
-      Map             =  2,
-      Unmap           =  3,
-      Configure       =  4,
-      Unconfigure     =  5,
-      BeginRun        =  6,
-      EndRun          =  7,
-      BeginCalibCycle =  8,
-      EndCalibCycle   =  9,
-      Enable          = 10,
-      Disable         = 11,
-      L1Accept        = 12
-    };
+      // "Sub kind" filters
+      enum sub_kind : std::uint8_t {
+        ROG0 = 0,
+        ROG1 = 1,
+        ROG2 = 2,
+        ROG3 = 3,
+        ROG4 = 4,
+        ROG5 = 5,
+        ROG6 = 6,
+        ROG7 = 7
+      };
 
-    static constexpr std::size_t NumStepKinds { static_cast<std::size_t>(StepKind::L1Accept) + 1 };
+      static constexpr std::size_t Count { 3 };        ///< Number of main patterns
+      static constexpr std::size_t SubKindCount { 8 }; ///< Number of filterable unique types
+
+      DataAccessPtn() = default;
+      DataAccessPtn(type ptn)
+        : m_ptn(ptn)
+      {}
+      DataAccessPtn(std::uint8_t ptn)
+        : DataAccessPtn(static_cast<type>(ptn))
+      {}
+
+      operator std::size_t() const { return static_cast<std::size_t>(m_ptn); }
+
+      template <typename... ROG>
+      requires ( std::is_same_v<ROG, sub_kind> && ... )
+      void set_filter(ROG... rog) {
+        ( ( m_filter |= (1 << rog ) ), ... );
+      }
+
+      void set_filter(std::size_t filter) { m_filter = filter; }
+
+      std::size_t filter() const { return m_filter; }
+
+      bool same_subkind(DataAccessPtn other) const {
+        auto rogs { filter() };
+        auto orogs { other.filter() };
+
+        return m_ptn == other.m_ptn &&
+          (rogs & orogs) == (rogs < orogs ? rogs : orogs);
+      }
+
+    private:
+      type m_ptn { L1Accept };
+      std::size_t m_filter { 0 };
+    };
+    static constexpr std::size_t DataAccessPtnCount { DataAccessPtn::Count };
+
+    // NOTE: Defined above in impl namespace so the classes are fully defined
+    //       and can be used in constexpr expressions below
+    using DgramKind = impl::XTC1::DgramKind;
+    using StepKind = impl::XTC1::StepKind;
+
+    static constexpr std::size_t NumStepKinds { static_cast<std::size_t>(DgramKind::L1Accept) + 1 };
 
     // Events are spread over the streams; transitions are in every stream
-    static constexpr StepKind ChronologicalKind { StepKind::L1Accept };
+    static constexpr StepKind ChronologicalKind { StepKind { DgramKind::L1Accept } };
 
     // TODO: XTC1 schemas are currently host-only -- all requests must be resolved
     //       host side. Pure device-side policies are therefore not currently
@@ -206,8 +295,13 @@ namespace sbio {
       request.size_requests[1] = cfg.max_buffer_size * cfg.max_batch_size;
       request.size_requests[2] = cfg.max_buffer_size;
       request.size_requests[3] = cfg.max_buffer_size * cfg.max_batch_size;
+
+      // When re-indexing, we can hold over previous entries for the various alignemnt
+      // to pattern procedures. So we have to add space for a number of extra rows
+      // 1 extra row for each "main kind", and then for each unique sub kind (ROG for XTC1).
+      const auto extra_rows { NumStepKinds * (StepKind::NumSubKinds + 1) };
       request.size_requests[4] =
-        (cfg.index_batch_size + NumStepKinds) * sizeof(StepOffset<XTC1Traits>);
+        (cfg.index_batch_size + extra_rows) * sizeof(StepOffset<XTC1Traits>);
       // SMD L1Accepts are read whole to find their offsets in the BD file (see locate_bytes)
       request.size_requests[5] = cfg.index_batch_size * (sizeof(XTC1::Dgram) + 128);
 
@@ -243,9 +337,25 @@ namespace sbio {
 
     SBIO_HD static constexpr StepKind kind_for_ptn(DataAccessPtn ptn) {
       switch (ptn) {
-      case DataAccessPtn::BeginStep:  { return StepKind::BeginCalibCycle; }
-      case DataAccessPtn::SlowUpdate: { return StepKind::Unknown; } // Never indexed
-      default:                        { return StepKind::L1Accept; }
+      case DataAccessPtn::BeginStep: {
+        return {
+          static_cast<std::uint16_t>(ptn.filter()),
+          DgramKind::BeginCalibCycle
+        };
+      }
+      case DataAccessPtn::SlowUpdate: {
+        // Never indexed
+        return {
+          static_cast<std::uint16_t>(ptn.filter()),
+          DgramKind::Unknown
+        };
+      }
+      default: {
+        return {
+          static_cast<std::uint16_t>(ptn.filter()),
+          DgramKind::L1Accept
+        };
+      }
       }
     }
 
@@ -259,7 +369,11 @@ namespace sbio {
         return std::nullopt;
       }
 
-      return static_cast<StepKind>(service);
+      // return static_cast<StepKind>(service);
+      return StepKind {
+        static_cast<std::uint16_t>(step_data->env.value() & 0xFFFF),
+        static_cast<DgramKind>(service)
+      };
     }
 
     /**
@@ -298,7 +412,7 @@ namespace sbio {
       constexpr auto smd { static_cast<std::uint32_t>(StreamTypes::index_of<SMD>) };
       constexpr auto bd { static_cast<std::uint32_t>(StreamTypes::index_of<BD>) };
 
-      if (kind == StepKind::L1Accept && scanned_stream == smd) {
+      if (kind == StepKind { DgramKind::L1Accept } && scanned_stream == smd) {
         if (const auto* orig { find_smd_offset(&dg->xtc) }) {
           // Since alignment is only 4-byte, use copies to get fields out
           std::int64_t file_offset { 0 };

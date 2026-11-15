@@ -801,15 +801,85 @@ namespace sbio {
       : public StreamVariant<roles::Metadata, roles::Index, roles::Data> {};
     using StreamTypes = StreamSet<DataStream>;
 
-    enum class DataAccessPtn : std::uint8_t {
+    struct DataAccessPtn {
+      // Main access patterns
+      enum type : std::uint8_t {
+        Frames  = 0,
+        PerStep = 1
+      };
+
+      // "Sub kind" filters
+      enum sub_kind : std::uint8_t {
+        DSET = 0
+      };
+
+      static constexpr std::size_t Count { 2 };        ///< Number of main patterns
+      static constexpr std::size_t SubKindCount { 1 }; ///< Number of filterable unique types
+
+      DataAccessPtn() = default;
+      DataAccessPtn(type ptn)
+        : m_ptn(ptn)
+      {}
+      DataAccessPtn(std::uint8_t ptn)
+        : DataAccessPtn(static_cast<type>(ptn))
+      {}
+
+      operator std::size_t() const { return static_cast<std::size_t>(m_ptn); }
+
+      template <typename... SK>
+      requires ( std::is_same_v<SK, sub_kind> && ... )
+      void set_filter(SK... sk) {
+        // For uniformity only. Sub-kinds not implemented formally
+        ( ( m_filter |= (1 << sk ) ), ... );
+      }
+
+      void set_filter(std::size_t filter) { m_filter = filter; }
+
+      std::size_t filter() const { return m_filter; }
+
+      bool same_subkind(DataAccessPtn other) const {
+        // No sub-kinds implemented currently.
+        return m_ptn == other.m_ptn;
+      }
+
+    private:
+      type m_ptn { Frames };
+      std::size_t m_filter { 0 };
+    };
+    static constexpr std::size_t DataAccessPtnCount { DataAccessPtn::Count };
+
+    enum class DSetKind : std::uint8_t {
       Frames = 0,
       PerStep = 1
     };
-    static constexpr std::size_t DataAccessPtnCount { 2 };
 
-    enum class StepKind : std::uint8_t {
-      Frames = 0,
-      PerStep = 1
+    struct StepKind {
+      static constexpr std::size_t NumSubKinds { 1 }; // UNIQUE kinds. Don't implement any atm
+
+      constexpr StepKind() = default;
+
+      constexpr StepKind(DSetKind kind)
+        : m_sks(0)
+        , m_dset_kind(kind)
+      {}
+
+      constexpr StepKind(std::uint16_t sks, DSetKind kind)
+        : m_sks(sks)
+        , m_dset_kind(kind)
+      {}
+
+      constexpr operator std::size_t() const { return static_cast<std::size_t>(m_dset_kind); }
+
+      constexpr std::size_t subkind() const { return static_cast<std::size_t>(m_sks); }
+
+      constexpr bool same_subkind(StepKind other) const {
+        // No sub-kinds implemented currently.
+        return m_dset_kind == other.m_dset_kind;
+      }
+
+    private:
+      std::uint16_t m_sks { 0 };
+      DSetKind m_dset_kind { DSetKind::Frames };
     };
     static constexpr std::size_t NumStepKinds { 2 };
 
@@ -845,7 +915,8 @@ namespace sbio {
     };
 
     static constexpr StepKind kind_for_ptn(DataAccessPtn ptn) {
-      return static_cast<StepKind>(ptn);
+      auto int_ptn { static_cast<std::size_t>(ptn) };
+      return StepKind { static_cast<DSetKind>(int_ptn) };
     }
 
     static AllocationRequest<Self> get_allocation_request(GenericStreamConfig<Self>& cfg) {
@@ -919,7 +990,11 @@ namespace sbio {
           status = IOStatus::FunctionUnavailable; // Filtered/compact/virtual -- see HOOK in inspect
         } else {
           status =
-            add_step_field(Spec::FramesPath, StepKind::Frames, frames, *table, inv);
+            add_step_field(Spec::FramesPath,
+                           StepKind { DSetKind::Frames },
+                           frames,
+                           *table,
+                           inv);
         }
       }
 
@@ -976,7 +1051,7 @@ namespace sbio {
           }
 
           const IOStatus field_status {
-            add_step_field(path, StepKind::PerStep, info, *table, inv)
+            add_step_field(path, StepKind { DSetKind::PerStep }, info, *table, inv)
           };
 
           if (field_status != IOStatus::Success) {
@@ -1360,7 +1435,7 @@ namespace sbio {
         hdf5::align_up(table.step_bytes[kind_idx] + info.row_bytes);
 
       const auto cls {
-        kind == StepKind::Frames ? hdf5::FieldClass::Frames : hdf5::FieldClass::PerStep
+        kind == StepKind { DSetKind::Frames } ? hdf5::FieldClass::Frames : hdf5::FieldClass::PerStep
       };
       register_field(inv,
                      path,
@@ -1514,7 +1589,7 @@ namespace sbio {
                                 StepIdxType count,
                                 DataAccessPtn ptn) {
       // All kinds advance together - the Frames kind always has a field
-      constexpr auto FrameKind { static_cast<std::size_t>(StepKind::Frames) };
+      constexpr auto FrameKind { static_cast<std::size_t>(StepKind { DSetKind::Frames }) };
       const std::uint64_t window_end { catalog.cummulative_steps[FrameKind] };
       const std::uint64_t window_first { window_end - catalog.num_steps[FrameKind] };
 

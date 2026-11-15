@@ -35,6 +35,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <optional>
 #include <string>
 
 namespace py = pybind11;
@@ -141,26 +142,74 @@ PYBIND11_MODULE(_pysbio, pysbio_module, py::mod_gil_not_used()) {
     .def_property_readonly("serial_number", &BrokerGroupWrapper::get_serial_number)
 #ifdef SBIO_HAS_HDF5
     .def("align_steps_to",
-         [](BrokerGroupWrapper& self, sbio::CXITraits::DataAccessPtn align_to) {
-           self.align_steps_to(align_to);
+         [](BrokerGroupWrapper& self,
+            sbio::CXITraits::DataAccessPtn align_to,
+            bool exact = false,
+            std::optional<sbio::SubKindFilter<sbio::CXITraits::DataAccessPtn>> filt = std::nullopt) {
+           self.align_steps_to(align_to, exact, filt);
          },
          py::arg("align_to"),
+         py::arg("exact") = false,
+         py::arg("filter") = py::none(),
+         "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
+    .def("align_steps_to",
+         [](BrokerGroupWrapper& self,
+            typename sbio::CXITraits::DataAccessPtn::type align_to,
+            bool exact = false,
+            std::optional<sbio::SubKindFilter<sbio::CXITraits::DataAccessPtn>> filt = std::nullopt) {
+           self.align_steps_to(align_to, exact, filt);
+         },
+         py::arg("align_to"),
+         py::arg("exact") = false,
+         py::arg("filter") = py::none(),
          "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
 #endif
 #ifdef SBIO_HAS_XTC1
     .def("align_steps_to",
-         [](BrokerGroupWrapper& self, sbio::XTC1Traits::DataAccessPtn align_to) {
-           self.align_steps_to(align_to);
+         [](BrokerGroupWrapper& self,
+            sbio::XTC1Traits::DataAccessPtn align_to,
+            bool exact = false,
+            std::optional<sbio::SubKindFilter<sbio::XTC1Traits::DataAccessPtn>> filt = std::nullopt) {
+           self.align_steps_to(align_to, exact, filt);
          },
          py::arg("align_to"),
+         py::arg("exact") = false,
+         py::arg("filter") = py::none(),
+         "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
+    .def("align_steps_to",
+         [](BrokerGroupWrapper& self,
+            typename sbio::XTC1Traits::DataAccessPtn::type align_to,
+            bool exact = false,
+            std::optional<sbio::SubKindFilter<sbio::XTC1Traits::DataAccessPtn>> filt = std::nullopt) {
+           self.align_steps_to(align_to, exact, filt);
+         },
+         py::arg("align_to"),
+         py::arg("exact") = false,
+         py::arg("filter") = py::none(),
          "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
 #endif
 #ifdef SBIO_HAS_XTC2
     .def("align_steps_to",
-         [](BrokerGroupWrapper& self, sbio::XTC2Traits::DataAccessPtn align_to) {
-           self.align_steps_to(align_to);
+         [](BrokerGroupWrapper& self,
+            sbio::XTC2Traits::DataAccessPtn align_to,
+            bool exact = false,
+            std::optional<sbio::SubKindFilter<sbio::XTC2Traits::DataAccessPtn>> filt = std::nullopt) {
+           self.align_steps_to(align_to, exact, filt);
          },
          py::arg("align_to"),
+         py::arg("exact") = false,
+         py::arg("filter") = py::none(),
+         "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
+    .def("align_steps_to",
+         [](BrokerGroupWrapper& self,
+            typename sbio::XTC2Traits::DataAccessPtn::type align_to,
+            bool exact = false,
+            std::optional<sbio::SubKindFilter<sbio::XTC2Traits::DataAccessPtn>> filt = std::nullopt) {
+           self.align_steps_to(align_to, exact, filt);
+         },
+         py::arg("align_to"),
+         py::arg("exact") = false,
+         py::arg("filter") = py::none(),
          "Configure the BrokerGroup to remap steps in alignment with the provided DataAccessPtn")
 #endif
     .def("get_data",

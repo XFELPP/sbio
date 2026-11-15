@@ -107,7 +107,7 @@ namespace sbio {
       };
 
       // "Sub kind" filters
-      enum sub_type : std::uint8_t {
+      enum sub_kind : std::uint8_t {
         ROG0 = 0,
         ROG1 = 1,
         ROG2 = 2,
@@ -118,7 +118,8 @@ namespace sbio {
         ROG7 = 7
       };
 
-      static constexpr std::size_t Count { 3 }; ///< Number of main patterns
+      static constexpr std::size_t Count { 3 };        ///< Number of main patterns
+      static constexpr std::size_t SubKindCount { 8 }; ///< Number of filterable unique types
 
       DataAccessPtn() = default;
       DataAccessPtn(type ptn)
@@ -131,7 +132,7 @@ namespace sbio {
       operator std::size_t() const { return static_cast<std::size_t>(m_ptn); }
 
       template <typename... ROG>
-      requires ( std::is_same_v<ROG, sub_type> && ... )
+      requires ( std::is_same_v<ROG, sub_kind> && ... )
       void set_filter(ROG... rog) {
         ( ( m_filter |= (1 << rog) ), ... );
       }
