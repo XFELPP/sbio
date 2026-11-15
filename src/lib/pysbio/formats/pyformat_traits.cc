@@ -59,11 +59,11 @@ namespace {
         .def("enable_all", &Filter::enable_all, "Allow all sub-kinds.")
         .def("disable_all", &Filter::disable_all, "Disable (filter) all sub-kinds.")
         .def("allow_subkind",
-             &Filter::allow_subkind,
+             py::overload_cast<std::size_t>(&Filter::allow_subkind),
              py::arg("subkind"),
              "Allow/enable a single unique sub-kind.")
         .def("disable_subkind",
-             &Filter::disable_subkind,
+             py::overload_cast<std::size_t>(&Filter::disable_subkind),
              py::arg("subkind"),
              "Disable/filter a single unique sub-kind.")
         .def("full_filter",
@@ -99,11 +99,23 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .value("PerStep", sbio::CXITraits::DataAccessPtn::PerStep)
     //.export_values()
     .finalize();
+
+  py::native_enum<sbio::CXITraits::DataAccessPtn::sub_kind>(ftraits_module,
+                                                            "CXIDataAccessPtnSubKind",
+                                                            "enum.IntEnum",
+                                                            "Enumerators for sub kinds of CXI data.")
+    .value("DSET", sbio::CXITraits::DataAccessPtn::DSET)
+    .finalize();
+
   auto cxi_ptn = py::classh<sbio::CXITraits::DataAccessPtn>(ftraits_module, "CXIDataAccessPtn")
     .def(py::init<>())
     .def(py::init<sbio::CXITraits::DataAccessPtn::type>());
+
   cxi_ptn.attr("Frames") = py::cast(sbio::CXITraits::DataAccessPtn::Frames);
   cxi_ptn.attr("PerStep") = py::cast(sbio::CXITraits::DataAccessPtn::PerStep);
+
+  cxi_ptn.attr("DSET") = py::cast(sbio::CXITraits::DataAccessPtn::DSET);
+
   bind_subkind_filter<sbio::CXITraits::DataAccessPtn>(cxi_ptn);
 
   pysbio::impl::bind_stream_config<sbio::CXITraits>(ftraits_module, "CXIStreamConfig");
@@ -167,12 +179,38 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     //.export_values()
     // Values don't export because of clash with the XTC2 version
     .finalize();
+
+  py::native_enum<sbio::XTC1Traits::DataAccessPtn::sub_kind>(ftraits_module,
+                                                             "XTC1DataAccessPtnSubKind",
+                                                             "enum.IntEnum",
+                                                             "Enumerators for sub kinds of XTC1 data.")
+    .value("ROG0", sbio::XTC1Traits::DataAccessPtn::ROG0)
+    .value("ROG1", sbio::XTC1Traits::DataAccessPtn::ROG1)
+    .value("ROG2", sbio::XTC1Traits::DataAccessPtn::ROG2)
+    .value("ROG3", sbio::XTC1Traits::DataAccessPtn::ROG3)
+    .value("ROG4", sbio::XTC1Traits::DataAccessPtn::ROG4)
+    .value("ROG5", sbio::XTC1Traits::DataAccessPtn::ROG5)
+    .value("ROG6", sbio::XTC1Traits::DataAccessPtn::ROG6)
+    .value("ROG7", sbio::XTC1Traits::DataAccessPtn::ROG7)
+    .finalize();
+
   auto xtc1_ptn = py::classh<sbio::XTC1Traits::DataAccessPtn>(ftraits_module, "XTC1DataAccessPtn")
     .def(py::init<>())
     .def(py::init<sbio::XTC1Traits::DataAccessPtn::type>());
+
   xtc1_ptn.attr("L1Accept") = py::cast(sbio::XTC1Traits::DataAccessPtn::L1Accept);
   xtc1_ptn.attr("SlowUpdate") = py::cast(sbio::XTC1Traits::DataAccessPtn::SlowUpdate);
   xtc1_ptn.attr("BeginStep") = py::cast(sbio::XTC1Traits::DataAccessPtn::BeginStep);
+
+  xtc1_ptn.attr("ROG0") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG0);
+  xtc1_ptn.attr("ROG1") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG1);
+  xtc1_ptn.attr("ROG2") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG2);
+  xtc1_ptn.attr("ROG3") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG3);
+  xtc1_ptn.attr("ROG4") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG4);
+  xtc1_ptn.attr("ROG5") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG5);
+  xtc1_ptn.attr("ROG6") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG6);
+  xtc1_ptn.attr("ROG7") = py::cast(sbio::XTC1Traits::DataAccessPtn::ROG7);
+
   bind_subkind_filter<sbio::XTC1Traits::DataAccessPtn>(xtc1_ptn);
 
   pysbio::impl::bind_stream_config<sbio::XTC1Traits>(ftraits_module, "XTC1StreamConfig");
@@ -234,12 +272,38 @@ PYBIND11_MODULE(pyformat_traits, ftraits_module, py::mod_gil_not_used()) {
     .value("BeginStep", sbio::XTC2Traits::DataAccessPtn::BeginStep)
     //.export_values()
     .finalize();
+
+  py::native_enum<sbio::XTC2Traits::DataAccessPtn::sub_kind>(ftraits_module,
+                                                             "XTC2DataAccessPtnSubKind",
+                                                             "enum.IntEnum",
+                                                             "Enumerators for sub kinds of XTC2 data.")
+    .value("ROG0", sbio::XTC2Traits::DataAccessPtn::ROG0)
+    .value("ROG1", sbio::XTC2Traits::DataAccessPtn::ROG1)
+    .value("ROG2", sbio::XTC2Traits::DataAccessPtn::ROG2)
+    .value("ROG3", sbio::XTC2Traits::DataAccessPtn::ROG3)
+    .value("ROG4", sbio::XTC2Traits::DataAccessPtn::ROG4)
+    .value("ROG5", sbio::XTC2Traits::DataAccessPtn::ROG5)
+    .value("ROG6", sbio::XTC2Traits::DataAccessPtn::ROG6)
+    .value("ROG7", sbio::XTC2Traits::DataAccessPtn::ROG7)
+    .finalize();
+
   auto xtc2_ptn = py::classh<sbio::XTC2Traits::DataAccessPtn>(ftraits_module, "XTC2DataAccessPtn")
     .def(py::init<>())
     .def(py::init<sbio::XTC2Traits::DataAccessPtn::type>());
+
   xtc2_ptn.attr("L1Accept") = py::cast(sbio::XTC2Traits::DataAccessPtn::L1Accept);
   xtc2_ptn.attr("SlowUpdate") = py::cast(sbio::XTC2Traits::DataAccessPtn::SlowUpdate);
   xtc2_ptn.attr("BeginStep") = py::cast(sbio::XTC2Traits::DataAccessPtn::BeginStep);
+
+  xtc2_ptn.attr("ROG0") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG0);
+  xtc2_ptn.attr("ROG1") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG1);
+  xtc2_ptn.attr("ROG2") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG2);
+  xtc2_ptn.attr("ROG3") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG3);
+  xtc2_ptn.attr("ROG4") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG4);
+  xtc2_ptn.attr("ROG5") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG5);
+  xtc2_ptn.attr("ROG6") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG6);
+  xtc2_ptn.attr("ROG7") = py::cast(sbio::XTC2Traits::DataAccessPtn::ROG7);
+
   bind_subkind_filter<sbio::XTC2Traits::DataAccessPtn>(xtc2_ptn);
 
   pysbio::impl::bind_stream_config<sbio::XTC2Traits>(ftraits_module, "XTC2StreamConfig");
