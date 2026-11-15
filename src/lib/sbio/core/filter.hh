@@ -60,9 +60,15 @@ namespace sbio {
     SBIO_HD void allow_subkind(hd_std::size_t sk) {
       m_filter.set(sk);
     }
+    SBIO_HD void allow_subkind(typename AccessPtn::sub_kind sk) {
+      allow_subkind(static_cast<hd_std::size_t>(sk));
+    }
 
     SBIO_HD void disable_subkind(hd_std::size_t sk) {
       m_filter.reset(sk);
+    }
+    SBIO_HD void disable_subkind(typename AccessPtn::sub_kind sk) {
+      disable_subkind(static_cast<hd_std::size_t>(sk));
     }
 
     SBIO_HD hd_std::size_t full_filter() const { return m_filter.to_ullong(); }
@@ -102,7 +108,7 @@ namespace sbio {
     }
 
   private:
-    hd_std::bitset<AccessPtn::SubKindCount> m_filter { static_cast<hd_std::size_t>(~0) };
+    hd_std::bitset<AccessPtn::SubKindCount> m_filter { 0x0 };
   };
 
 } // namespace sbio
